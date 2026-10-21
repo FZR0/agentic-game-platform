@@ -478,6 +478,36 @@ def invite():
     print("已寄出邀請。對方在 GitHub 的通知或信箱按「接受」後，照 README.md 下載專案。")
 
 
+ROLES = {"admin": "管理者", "maintain": "維護者", "write": "可上傳", "triage": "可分類", "read": "只能看"}
+
+
+def members():
+    """成員列表（2026-10-21 使用者要求）：兩個儲存庫各有誰、誰還沒接受邀請。"""
+    joined = {}
+    for label, repo in (("公開", repo_of(ROOT)), ("私人", private_repo())):
+        people = run("gh", "api", f"repos/{repo}/collaborators?per_page=100")
+        pending = run("gh", "api", f"repos/{repo}/invitations?per_page=100")
+        print(f"\n{label}儲存庫 {repo}：")
+        if people.returncode or pending.returncode:
+            print("  讀不到（需要管理者權限，或網路不通）")
+            continue
+        for person in json.loads(people.stdout):
+            print(f"  {person['login']}（{ROLES.get(person['role_name'], person['role_name'])}）")
+            joined.setdefault(person["login"], set()).add(label)
+        for invitation in json.loads(pending.stdout):
+            login = (invitation.get("invitee") or {}).get("login", "?")
+            print(f"  {login}（邀請中，還沒接受）")
+            joined.setdefault(login, set()).add(label)
+    missing = incomplete(joined)
+    if missing:
+        print("\n只加入其中一個儲存庫：" + "、".join(missing) + "。用「邀請成員」再邀請一次就會補上。")
+
+
+def incomplete(joined):
+    """只在一個儲存庫的成員：只在公開的拿不到文件與伺服器位址，只在私人的不能上傳程式。"""
+    return [f"{login}（只在{''.join(labels)}儲存庫）" for login, labels in sorted(joined.items()) if len(labels) == 1]
+
+
 # ---- 給 Claude Code 用的指令：不問問題，由 Claude Code 先問成員（2026-10-21 使用者要求；.claude/skills/save-work）----
 
 def status_cli():
@@ -613,6 +643,7 @@ def main():
     actions = {"1": update, "2": start_work, "3": commit, "4": submit, "5": review}
     if admin:
         actions["6"] = invite
+        actions["7"] = members
     while True:
         branch = current_branch()
         print(f"\n== 專案版本管理（{repo_of(ROOT)}）==")
@@ -620,7 +651,7 @@ def main():
               + f"，文件（私人儲存庫）：{len(private_changes())} 個")
         print("1. 取得最新版本\n2. 開始新工作\n3. 存檔（commit）\n4. 送審\n5. 審核送審")
         if admin:
-            print("6. 邀請成員")
+            print("6. 邀請成員\n7. 成員列表")
         print("0. 離開")
         choice = ask("請選擇：")
         if choice == "0":
