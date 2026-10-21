@@ -1,0 +1,19 @@
+# 每台電腦自己的東西（docs/交接.md 4.8、9.3）
+.venv/
+__pycache__/
+obj/
+.vs/
+*.pyproj.user
+.claude/settings.local.json
+.claude/worktrees/
+# 機密與每台電腦的選擇：SECRET_KEY 等（config/local.py）、SQL Server 的選擇（config/sqlserver.py）
+config/local.json
+config/sqlserver.json
+# 文件（.md）與 private/ 歸私人儲存庫：規則不能寫在這裡（.gitignore 比私人儲存庫自己的排除清單優先，
+# 私人儲存庫會看不到它們），由 tools/git_menu.py 寫進 .git/info/exclude（docs/交接.md 4.8）
+# 沒有 private/ 的電腦，工作紀錄寫在這裡（.claude/hooks/log_progress.py）
+/工作紀錄.md
+# 遊戲引擎：啟動遊戲平台.bat 會從官方發行版下載並比對 SHA-256（tools/setup_engines.py），檔案太大不放進儲存庫
+tools/katago/
+tools/pikafish/
+tools/stockfish/

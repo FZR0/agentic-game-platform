@@ -1,0 +1,21 @@
+[00:25:11] before gemma4:e2b: /api/ps = []
+chess / gemma4:e2b: 每手約 1.1 秒（最慢 1.3），冷啟動 5.3 秒，成功 0/6，與引擎相同 6/6，理由通過檢查 0/0
+    代下原因：Agent 沒有完成這一手（4 次內沒有決定；已做的步驟：查威脅→看 Stockfish 候選→想下 {'move': 'c3', 'reason': '根據引擎推薦，白棋應走 c3 以發展馬並鞏固中心控制。'} 被退回（走法格式不對，請用 UCI 記法：起點格加終點格，例如 g1f3（升變 e7e8q））），改由引擎代下。
+    代下原因：Agent 沒有完成這一手（4 次內沒有決定；已做的步驟：查威脅→看 Stockfish 候選→想下 {'move': 'c3', 'reason': '根據引擎推薦，白棋應走c3以發展馬並鞏固中心控制。'} 被退回（走法格式不對，請用 UCI 記法：起點格加終點格，例如 g1f3（升變 e7e8q））），改由引擎代下。
+    代下原因：Agent 沒有完成這一手（4 次內沒有決定；已做的步驟：查威脅→看 Stockfish 候選→想下 {'move': 'e5', 'reason': 'e5是Stockfish推薦的走法，以挑戰黑方的中心控制。'} 被退回（走法格式不對，請用 UCI 記法：起點格加終點格，例如 g1f3（升變 e7e8q））），改由引擎代下。
+    代下原因：Agent 沒有完成這一手（4 次內沒有決定；已做的步驟：查威脅→看 Stockfish 候選→想下 {'move': 'e5', 'reason': '選擇 e5 以挑戰黑方的中心控制。'} 被退回（走法格式不對，請用 UCI 記法：起點格加終點格，例如 g1f3（升變 e7e8q））），改由引擎代下。
+    代下原因：Agent 沒有完成這一手（4 次內沒有決定；已做的步驟：看 Stockfish 候選→想下 {'move': 'b5', 'reason': '選擇 Bb5 作為最佳走法，以發展象並施加壓力。'} 被退回（走法格式不對，請用 UCI 記法：起點格加終點格，例如 g1f3（升變 e7e8q））→想下 {'move': 'd4', 'reason': '選擇 d4 作為最佳走法，以挑戰中心。'} 被退回（走法格式不對，請用 UCI 記法：起點格加終點格，例如 g1f3（升變 e7e8q））），改由引擎代下。
+已寫入 C:\Users\user\OneDrive\桌面\test1\test1\arena\model_benchmarks_research.json
+[00:25:26] before qwen3:8b: /api/ps = []
+chess / qwen3:8b: 每手約 3.5 秒（最慢 6.4），冷啟動 8.5 秒，成功 4/6，與引擎相同 6/6，理由通過檢查 4/4
+    代下原因：Agent 沒有完成這一手（4 次內沒有決定；已做的步驟：查威脅→看 Stockfish 候選→想下 {'move': 'Nc3', 'reason': '馬 b1→c3（Nc3）是 Stockfish 推薦的走法，能維持勝率約 52%。'} 被退回（走法格式不對，請用 UCI 記法：起點格加終點格，例如 g1f3（升變 e7e8q））），改由引擎代下。
+已寫入 C:\Users\user\OneDrive\桌面\test1\test1\arena\model_benchmarks_research.json
+[00:25:59] before qwen2.5:7b: /api/ps = []
+chess / qwen2.5:7b: 每手約 6.3 秒（最慢 10.8），冷啟動 11.6 秒，成功 3/6，與引擎相同 6/6，理由通過檢查 3/3
+    代下原因：Agent 沒有完成這一手（4 次內沒有決定；已做的步驟：查威脅→看 Stockfish 候選→檢查 b1→c3），改由引擎代下。
+    代下原因：Agent 沒有完成這一手（4 次內沒有決定；已做的步驟：查威脅→看 Stockfish 候選），改由引擎代下。
+已寫入 C:\Users\user\OneDrive\桌面\test1\test1\arena\model_benchmarks_research.json
+[00:26:57] before gemma4:26b: /api/ps = []
+chess / gemma4:26b: 每手約 2.8 秒（最慢 3.6），冷啟動 14.0 秒，成功 6/6，與引擎相同 6/6，理由通過檢查 6/6
+已寫入 C:\Users\user\OneDrive\桌面\test1\test1\arena\model_benchmarks_research.json
+[00:27:31] finished

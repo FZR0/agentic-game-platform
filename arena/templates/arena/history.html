@@ -1,0 +1,38 @@
+{% extends "arena/base.html" %}
+{% block title %}對局紀錄｜益智遊戲 AI 教練{% endblock %}
+{% block content %}
+  <h1 class="page-title">對局紀錄</h1>
+
+  <div class="filters">
+    <nav class="chips" aria-label="依遊戲篩選">
+      <a href="?result={{ result }}"{% if not game_key %} aria-current="true"{% endif %}>全部遊戲</a>
+      {% for game in games %}
+      <a href="?game={{ game.key }}&amp;result={{ result }}"{% if game_key == game.key %} aria-current="true"{% endif %}>{{ game.name }}</a>
+      {% endfor %}
+    </nav>
+    <nav class="chips" aria-label="依結果篩選">
+      <a href="?game={{ game_key }}"{% if not result %} aria-current="true"{% endif %}>全部結果</a>
+      {% for key, text in results.items %}
+      <a href="?game={{ game_key }}&amp;result={{ key }}"{% if result == key %} aria-current="true"{% endif %}>{{ text }}</a>
+      {% endfor %}
+    </nav>
+  </div>
+
+  <p class="list-count">共 {{ page.paginator.count }} 盤{% if page.paginator.num_pages > 1 %}，第 {{ page.number }} / {{ page.paginator.num_pages }} 頁{% endif %}</p>
+
+  {% if cards %}
+  <ul class="row-list">
+    {% for card in cards %}{% include "arena/_game_row.html" %}{% endfor %}
+  </ul>
+  {% else %}
+  <p class="empty">沒有符合的對局。{% if game_key or result %}<a href="?">看全部對局</a>{% else %}到<a href="{% url 'arena:home' %}">首頁</a>選一個遊戲開始吧。{% endif %}</p>
+  {% endif %}
+
+  {% if page.paginator.num_pages > 1 %}
+  <nav class="pagination" aria-label="分頁">
+    {% if page.has_previous %}<a class="button" href="?game={{ game_key }}&amp;result={{ result }}&amp;page={{ page.previous_page_number }}">‹ 上一頁</a>{% endif %}
+    <span>第 {{ page.number }} / {{ page.paginator.num_pages }} 頁</span>
+    {% if page.has_next %}<a class="button" href="?game={{ game_key }}&amp;result={{ result }}&amp;page={{ page.next_page_number }}">下一頁 ›</a>{% endif %}
+  </nav>
+  {% endif %}
+{% endblock %}

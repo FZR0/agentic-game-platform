@@ -1,0 +1,1 @@
+請到 https://www.python.org/downloads/ 下載安裝 Python 3.11，再執行一次這個檔案。

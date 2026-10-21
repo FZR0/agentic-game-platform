@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 100">
+  <defs>
+    <linearGradient id="wood" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e6bf74"/>
+      <stop offset="1" stop-color="#cf9f52"/>
+    </linearGradient>
+    <radialGradient id="black" cx=".35" cy=".32" r=".75">
+      <stop offset="0" stop-color="#5a5a5a"/>
+      <stop offset="1" stop-color="#111111"/>
+    </radialGradient>
+    <radialGradient id="white" cx=".35" cy=".32" r=".8">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#d8d4c8"/>
+    </radialGradient>
+  </defs>
+  <rect width="160" height="100" fill="url(#wood)"/>
+  <path stroke="#4a3518" stroke-opacity=".5" fill="none"
+        d="M8 0V100M20 0V100M32 0V100M44 0V100M56 0V100M68 0V100M80 0V100M92 0V100M104 0V100M116 0V100M128 0V100M140 0V100M152 0V100
+           M0 2H160M0 14H160M0 26H160M0 38H160M0 50H160M0 62H160M0 74H160M0 86H160M0 98H160"/>
+  <g fill="#4a3518">
+    <circle cx="32" cy="26" r="1.8"/>
+    <circle cx="128" cy="26" r="1.8"/>
+    <circle cx="32" cy="74" r="1.8"/>
+    <circle cx="128" cy="74" r="1.8"/>
+  </g>
+  <!-- 黑棋的「開花」（提子後的形狀），四周是白棋 -->
+  <g fill="url(#white)" stroke="#8a7550" stroke-width=".8">
+    <circle cx="92" cy="38" r="5.6"/>
+    <circle cx="104" cy="50" r="5.6"/>
+    <circle cx="92" cy="62" r="5.6"/>
+    <circle cx="44" cy="62" r="5.6"/>
+    <circle cx="56" cy="26" r="5.6"/>
+    <circle cx="116" cy="62" r="5.6"/>
+  </g>
+  <g fill="url(#black)">
+    <circle cx="68" cy="38" r="5.6"/>
+    <circle cx="56" cy="50" r="5.6"/>
+    <circle cx="80" cy="50" r="5.6"/>
+    <circle cx="68" cy="62" r="5.6"/>
+    <circle cx="44" cy="38" r="5.6"/>
+    <circle cx="80" cy="74" r="5.6"/>
+  </g>
+</svg>

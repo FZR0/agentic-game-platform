@@ -1,0 +1,31 @@
+{% extends "arena/base.html" %}{% load static %}
+{% block title %}怎麼玩｜益智遊戲 AI 教練{% endblock %}
+{% block content %}
+  <h1 class="page-title">怎麼玩</h1>
+  <nav class="chips guide-nav" aria-label="跳到遊戲">
+    {% for game in games %}<a href="#{{ game.key }}">{{ game.name }}</a>{% endfor %}
+    <a href="#screen">畫面怎麼用</a>
+  </nav>
+
+  {% for game in games %}
+  <section id="{{ game.key }}" class="guide-section">
+    <header class="guide-head">
+      <img class="guide-icon" src="{% static game.icon %}?v={{ asset_version }}" alt="" width="96" height="60">
+      <div class="guide-title">
+        <h2>{{ game.name }}</h2>
+        <p>{{ game.tagline }}</p>
+      </div>
+      <a class="button primary" href="{% url 'arena:play' game.key %}">開始對局</a>
+    </header>
+    {% for section in game.rules %}
+    <h3>{{ section.title }}</h3>
+    <ul>{% for item in section.items %}<li>{{ item }}</li>{% endfor %}</ul>
+    {% endfor %}
+  </section>
+  {% endfor %}
+
+  <section id="screen" class="guide-section">
+    <header class="guide-head"><div class="guide-title"><h2>畫面怎麼用</h2><p>五個遊戲共用同一套畫面。</p></div></header>
+    {% include "arena/_how_to_use.html" %}
+  </section>
+{% endblock %}

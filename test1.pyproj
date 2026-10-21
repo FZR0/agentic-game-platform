@@ -1,0 +1,223 @@
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003" ToolsVersion="4.0">
+  <PropertyGroup>
+    <VisualStudioVersion Condition="'$(VisualStudioVersion)' == ''">10.0</VisualStudioVersion>
+    <Name>test1</Name>
+    <RootNamespace>test1</RootNamespace>
+  </PropertyGroup>
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <SchemaVersion>2.0</SchemaVersion>
+    <ProjectGuid>18d446a4-2b84-4828-84d9-5c3209188884</ProjectGuid>
+    <ProjectHome>.</ProjectHome>
+    <ProjectTypeGuids>{5F0BE9CA-D677-4A4D-8806-6076C0FAAD37};{349c5851-65df-11da-9384-00065b846f21};{888888a0-9f3d-457c-b088-3a5042f75d52}</ProjectTypeGuids>
+    <StartupFile>manage.py</StartupFile>
+    <SearchPath>
+    </SearchPath>
+    <WorkingDirectory>.</WorkingDirectory>
+    <LaunchProvider>Django launcher</LaunchProvider>
+    <DjangoSettingsModule>config.settings</DjangoSettingsModule>
+    <WebBrowserUrl>http://localhost</WebBrowserUrl>
+    <OutputPath>.</OutputPath>
+    <SuppressCollectPythonCloudServiceFiles>true</SuppressCollectPythonCloudServiceFiles>
+    <InterpreterId>MSBuild|.venv|$(MSBuildProjectFullPath)</InterpreterId>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
+    <DebugSymbols>true</DebugSymbols>
+    <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)' == 'Release' ">
+    <DebugSymbols>true</DebugSymbols>
+    <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
+  </PropertyGroup>
+  <ItemGroup>
+    <Interpreter Include=".venv\">
+      <Id>.venv</Id>
+      <Version>3.11</Version>
+      <Description>.venv (Python 3.11 (64-bit))</Description>
+      <InterpreterPath>Scripts\python.exe</InterpreterPath>
+      <WindowsInterpreterPath>Scripts\pythonw.exe</WindowsInterpreterPath>
+      <PathEnvironmentVariable>PYTHONPATH</PathEnvironmentVariable>
+      <Architecture>X64</Architecture>
+    </Interpreter>
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="arena\__init__.py" />
+    <Compile Include="arena\admin.py" />
+    <Compile Include="arena\agent.py" />
+    <Compile Include="arena\apps.py" />
+    <Compile Include="arena\base.py" />
+    <Compile Include="arena\games.py" />
+    <Compile Include="arena\management\__init__.py" />
+    <Compile Include="arena\management\commands\__init__.py" />
+    <Compile Include="arena\management\commands\benchmark_models.py" />
+    <Compile Include="arena\management\commands\import_sqlite_games.py" />
+    <Compile Include="arena\management\commands\model_report.py" />
+    <Compile Include="arena\migrations\0001_initial.py" />
+    <Compile Include="arena\migrations\0002_copy_gomoku_games.py" />
+    <Compile Include="arena\migrations\0003_game_secret.py" />
+    <Compile Include="arena\migrations\0004_modelrun.py" />
+    <Compile Include="arena\migrations\0005_game_ended.py" />
+    <Compile Include="arena\migrations\__init__.py" />
+    <Compile Include="arena\models.py" />
+    <Compile Include="arena\narrator.py" />
+    <Compile Include="arena\tests.py" />
+    <Compile Include="arena\urls.py" />
+    <Compile Include="arena\views.py" />
+    <Compile Include="chessgame\__init__.py" />
+    <Compile Include="chessgame\apps.py" />
+    <Compile Include="chessgame\module.py" />
+    <Compile Include="chessgame\rules.py" />
+    <Compile Include="chessgame\stockfish.py" />
+    <Compile Include="chessgame\tests.py" />
+    <Compile Include="config\__init__.py" />
+    <Compile Include="config\asgi.py" />
+    <Compile Include="config\local.py" />
+    <Compile Include="config\settings.py" />
+    <Compile Include="config\sqlserver.py" />
+    <Compile Include="config\urls.py" />
+    <Compile Include="config\wsgi.py" />
+    <Compile Include="gomoku\__init__.py" />
+    <Compile Include="gomoku\admin.py" />
+    <Compile Include="gomoku\apps.py" />
+    <Compile Include="gomoku\engine.py" />
+    <Compile Include="gomoku\migrations\0001_initial.py" />
+    <Compile Include="gomoku\migrations\0002_game_level.py" />
+    <Compile Include="gomoku\migrations\0003_ainote.py" />
+    <Compile Include="gomoku\migrations\0004_remove_game_level.py" />
+    <Compile Include="gomoku\migrations\0005_delete_moved_models.py" />
+    <Compile Include="gomoku\migrations\__init__.py" />
+    <Compile Include="gomoku\models.py" />
+    <Compile Include="gomoku\module.py" />
+    <Compile Include="gomoku\tests.py" />
+    <Compile Include="holdem\__init__.py" />
+    <Compile Include="holdem\apps.py" />
+    <Compile Include="holdem\cards.py" />
+    <Compile Include="holdem\management\__init__.py" />
+    <Compile Include="holdem\management\commands\__init__.py" />
+    <Compile Include="holdem\management\commands\poker_equity_table.py" />
+    <Compile Include="holdem\migrations\__init__.py" />
+    <Compile Include="holdem\module.py" />
+    <Compile Include="holdem\rules.py" />
+    <Compile Include="holdem\tests.py" />
+    <Compile Include="manage.py" />
+    <Compile Include="weiqi\__init__.py" />
+    <Compile Include="weiqi\apps.py" />
+    <Compile Include="weiqi\katago.py" />
+    <Compile Include="weiqi\migrations\__init__.py" />
+    <Compile Include="weiqi\module.py" />
+    <Compile Include="weiqi\rules.py" />
+    <Compile Include="weiqi\tests.py" />
+    <Compile Include="xiangqi\__init__.py" />
+    <Compile Include="xiangqi\apps.py" />
+    <Compile Include="xiangqi\module.py" />
+    <Compile Include="xiangqi\pikafish.py" />
+    <Compile Include="xiangqi\rules.py" />
+    <Compile Include="xiangqi\tests.py" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="arena\model_benchmarks.json" />
+    <Content Include="arena\model_benchmarks_research.json" />
+    <Content Include="arena\static\arena\app.js" />
+    <Content Include="arena\static\arena\style.css" />
+    <Content Include="arena\templates\arena\_game_row.html" />
+    <Content Include="arena\templates\arena\_how_to_use.html" />
+    <Content Include="arena\templates\arena\base.html" />
+    <Content Include="arena\templates\arena\guide.html" />
+    <Content Include="arena\templates\arena\history.html" />
+    <Content Include="arena\templates\arena\home.html" />
+    <Content Include="arena\templates\arena\play.html" />
+    <Content Include="chessgame\static\chessgame\board.js" />
+    <Content Include="chessgame\static\chessgame\icon.svg" />
+    <Content Include="CLAUDE.md" />
+    <Content Include="docs\交接.md" />
+    <Content Include="docs\四種遊戲設計規劃.md" />
+    <Content Include="gomoku\static\gomoku\board.js" />
+    <Content Include="gomoku\static\gomoku\icon.svg" />
+    <Content Include="holdem\preflop_equity.json" />
+    <Content Include="holdem\static\holdem\board.js" />
+    <Content Include="holdem\static\holdem\icon.svg" />
+    <Content Include="README.md" />
+    <Content Include="requirements.txt" />
+    <Content Include="weiqi\static\weiqi\board.js" />
+    <Content Include="weiqi\static\weiqi\icon.svg" />
+    <Content Include="xiangqi\static\xiangqi\board.js" />
+    <Content Include="xiangqi\static\xiangqi\icon.svg" />
+    <Content Include="啟動本機測試.bat" />
+    <Content Include="啟動遊戲平台.bat" />
+    <Content Include="版本管理.bat" />
+  </ItemGroup>
+  <ItemGroup>
+    <Folder Include=".github\" />
+    <Folder Include="arena\" />
+    <Folder Include="arena\management\" />
+    <Folder Include="arena\management\commands\" />
+    <Folder Include="arena\migrations\" />
+    <Folder Include="arena\static\" />
+    <Folder Include="arena\static\arena\" />
+    <Folder Include="arena\templates\" />
+    <Folder Include="arena\templates\arena\" />
+    <Folder Include="chessgame\" />
+    <Folder Include="chessgame\static\" />
+    <Folder Include="chessgame\static\chessgame\" />
+    <Folder Include="config\" />
+    <Folder Include="docs\" />
+    <Folder Include="docs\logs\" />
+    <Folder Include="gomoku\" />
+    <Folder Include="gomoku\migrations\" />
+    <Folder Include="gomoku\static\" />
+    <Folder Include="gomoku\static\gomoku\" />
+    <Folder Include="holdem\" />
+    <Folder Include="holdem\management\" />
+    <Folder Include="holdem\management\commands\" />
+    <Folder Include="holdem\migrations\" />
+    <Folder Include="holdem\static\" />
+    <Folder Include="holdem\static\holdem\" />
+    <Folder Include="weiqi\" />
+    <Folder Include="weiqi\migrations\" />
+    <Folder Include="weiqi\static\" />
+    <Folder Include="weiqi\static\weiqi\" />
+    <Folder Include="xiangqi\" />
+    <Folder Include="xiangqi\static\" />
+    <Folder Include="xiangqi\static\xiangqi\" />
+  </ItemGroup>
+  <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.Django.targets" />
+  <!-- Specify pre- and post-build commands in the BeforeBuild and
+       AfterBuild targets below. -->
+  <Target Name="BeforeBuild">
+  </Target>
+  <Target Name="AfterBuild">
+  </Target>
+  <ProjectExtensions>
+    <VisualStudio>
+      <FlavorProperties GUID="{349c5851-65df-11da-9384-00065b846f21}">
+        <WebProjectProperties>
+          <AutoAssignPort>True</AutoAssignPort>
+          <UseCustomServer>True</UseCustomServer>
+          <CustomServerUrl>http://localhost</CustomServerUrl>
+          <SaveServerSettingsInUserFile>False</SaveServerSettingsInUserFile>
+        </WebProjectProperties>
+      </FlavorProperties>
+      <FlavorProperties GUID="{349c5851-65df-11da-9384-00065b846f21}" User="">
+        <WebProjectProperties>
+          <StartPageUrl>
+          </StartPageUrl>
+          <StartAction>CurrentPage</StartAction>
+          <AspNetDebugging>True</AspNetDebugging>
+          <SilverlightDebugging>False</SilverlightDebugging>
+          <NativeDebugging>False</NativeDebugging>
+          <SQLDebugging>False</SQLDebugging>
+          <ExternalProgram>
+          </ExternalProgram>
+          <StartExternalURL>
+          </StartExternalURL>
+          <StartCmdLineArguments>
+          </StartCmdLineArguments>
+          <StartWorkingDirectory>
+          </StartWorkingDirectory>
+          <EnableENC>False</EnableENC>
+          <AlwaysStartWebServerOnDebug>False</AlwaysStartWebServerOnDebug>
+        </WebProjectProperties>
+      </FlavorProperties>
+    </VisualStudio>
+  </ProjectExtensions>
+</Project>

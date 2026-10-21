@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 100">
+  <defs>
+    <linearGradient id="wood" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ecd29e"/>
+      <stop offset="1" stop-color="#dcb878"/>
+    </linearGradient>
+  </defs>
+  <rect width="160" height="100" fill="url(#wood)"/>
+  <!-- 棋盤線：中間一條是楚河漢界，直線在河的地方斷開 -->
+  <path stroke="#5a3e1b" stroke-opacity=".55" fill="none"
+        d="M0 10H160M0 26H160M0 42H160M0 58H160M0 74H160M0 90H160
+           M16 0V42M32 0V42M48 0V42M64 0V42M80 0V42M96 0V42M112 0V42M128 0V42M144 0V42
+           M16 58V100M32 58V100M48 58V100M64 58V100M80 58V100M96 58V100M112 58V100M128 58V100M144 58V100
+           M64 58L96 90M96 58L64 90"/>
+  <g font-family="Microsoft JhengHei, PingFang TC, Noto Sans CJK TC, sans-serif" font-size="15" font-weight="700"
+     text-anchor="middle" dominant-baseline="central">
+    <g stroke-width="1.6">
+      <circle cx="80" cy="26" r="13" fill="#f6e3bf" stroke="#1d1d1d"/>
+      <circle cx="128" cy="26" r="13" fill="#f6e3bf" stroke="#1d1d1d"/>
+      <circle cx="80" cy="74" r="13" fill="#f6e3bf" stroke="#c0392b"/>
+      <circle cx="32" cy="74" r="13" fill="#f6e3bf" stroke="#c0392b"/>
+    </g>
+    <g fill="none" stroke-width=".8">
+      <circle cx="80" cy="26" r="10" stroke="#1d1d1d"/>
+      <circle cx="128" cy="26" r="10" stroke="#1d1d1d"/>
+      <circle cx="80" cy="74" r="10" stroke="#c0392b"/>
+      <circle cx="32" cy="74" r="10" stroke="#c0392b"/>
+    </g>
+    <text x="80" y="27" fill="#1d1d1d">將</text>
+    <text x="128" y="27" fill="#1d1d1d">馬</text>
+    <text x="80" y="75" fill="#c0392b">帥</text>
+    <text x="32" y="75" fill="#c0392b">俥</text>
+  </g>
+</svg>

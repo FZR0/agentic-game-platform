@@ -1,0 +1,160 @@
+{
+  "gomoku": {
+    "gemma4:31b": {
+      "seconds": 19.1,
+      "max_seconds": 27.1,
+      "cold_seconds": 61.0,
+      "agent_success_rate": 1.0,
+      "agree_with_engine_rate": 1.0,
+      "reason_pass_rate": 1.0,
+      "steps": 6,
+      "runs": 6,
+      "measured_at": "2026-10-14T21:06:49"
+    },
+    "batiai/gemma4-26b:q6": {
+      "seconds": 2.4,
+      "max_seconds": 2.7,
+      "cold_seconds": 13.4,
+      "agent_success_rate": 1.0,
+      "agree_with_engine_rate": 1.0,
+      "reason_pass_rate": 1.0,
+      "steps": 6,
+      "runs": 6,
+      "measured_at": "2026-10-14T21:07:20"
+    },
+    "gemma4:26b": {
+      "seconds": 1.9,
+      "max_seconds": 2.0,
+      "cold_seconds": 13.3,
+      "agent_success_rate": 1.0,
+      "agree_with_engine_rate": 1.0,
+      "reason_pass_rate": 1.0,
+      "steps": 6,
+      "runs": 6,
+      "measured_at": "2026-10-14T21:07:45"
+    },
+    "qwen3:30b-a3b": {
+      "seconds": 29.5,
+      "max_seconds": 30.5,
+      "cold_seconds": 37.3,
+      "agent_success_rate": 0.17,
+      "agree_with_engine_rate": 0.83,
+      "reason_pass_rate": 1.0,
+      "steps": 6,
+      "runs": 6,
+      "measured_at": "2026-10-11T16:10:11"
+    },
+    "gemma4:e2b": {
+      "seconds": 0.9,
+      "max_seconds": 1.0,
+      "cold_seconds": 5.5,
+      "agent_success_rate": 1.0,
+      "agree_with_engine_rate": 1.0,
+      "reason_pass_rate": 1.0,
+      "steps": 6,
+      "runs": 6,
+      "measured_at": "2026-10-15T00:15:34"
+    },
+    "qwen3:8b": {
+      "seconds": 2.6,
+      "max_seconds": 2.7,
+      "cold_seconds": 8.3,
+      "agent_success_rate": 1.0,
+      "agree_with_engine_rate": 1.0,
+      "reason_pass_rate": 1.0,
+      "steps": 6,
+      "runs": 6,
+      "measured_at": "2026-10-15T00:16:00"
+    },
+    "qwen2.5:7b": {
+      "seconds": 3.9,
+      "max_seconds": 6.9,
+      "cold_seconds": 10.6,
+      "agent_success_rate": 0.67,
+      "agree_with_engine_rate": 1.0,
+      "reason_pass_rate": 1.0,
+      "steps": 6,
+      "runs": 6,
+      "measured_at": "2026-10-15T00:16:37"
+    },
+    "qwen2.5:32b": {
+      "seconds": 6.8,
+      "max_seconds": 8.0,
+      "cold_seconds": 18.2,
+      "agent_success_rate": 1.0,
+      "agree_with_engine_rate": 1.0,
+      "reason_pass_rate": 1.0,
+      "steps": 6,
+      "runs": 6,
+      "measured_at": "2026-10-15T00:36:00"
+    }
+  },
+  "chess": {
+    "gemma4:e2b": {
+      "seconds": 1.1,
+      "max_seconds": 1.3,
+      "cold_seconds": 5.3,
+      "agent_success_rate": 0.0,
+      "agree_with_engine_rate": 1.0,
+      "reason_pass_rate": 0,
+      "steps": 4,
+      "runs": 6,
+      "measured_at": "2026-10-15T00:25:25"
+    },
+    "qwen3:8b": {
+      "seconds": 3.5,
+      "max_seconds": 6.4,
+      "cold_seconds": 8.5,
+      "agent_success_rate": 0.67,
+      "agree_with_engine_rate": 1.0,
+      "reason_pass_rate": 1.0,
+      "steps": 4,
+      "runs": 6,
+      "measured_at": "2026-10-15T00:25:59"
+    },
+    "qwen2.5:7b": {
+      "seconds": 6.3,
+      "max_seconds": 10.8,
+      "cold_seconds": 11.6,
+      "agent_success_rate": 0.5,
+      "agree_with_engine_rate": 1.0,
+      "reason_pass_rate": 1.0,
+      "steps": 4,
+      "runs": 6,
+      "measured_at": "2026-10-15T00:26:57"
+    },
+    "gemma4:26b": {
+      "seconds": 2.8,
+      "max_seconds": 3.6,
+      "cold_seconds": 14.0,
+      "agent_success_rate": 1.0,
+      "agree_with_engine_rate": 1.0,
+      "reason_pass_rate": 1.0,
+      "steps": 4,
+      "runs": 6,
+      "measured_at": "2026-10-15T00:27:31"
+    },
+    "qwen2.5:32b": {
+      "seconds": 15.1,
+      "max_seconds": 20.2,
+      "cold_seconds": 32.5,
+      "agent_success_rate": 1.0,
+      "agree_with_engine_rate": 1.0,
+      "reason_pass_rate": 1.0,
+      "steps": 4,
+      "runs": 6,
+      "measured_at": "2026-10-15T00:38:03"
+    },
+    "batiai/gemma4-26b:q6": {
+      "seconds": 3.3,
+      "max_seconds": 3.8,
+      "cold_seconds": 14.0,
+      "agent_success_rate": 1.0,
+      "agree_with_engine_rate": 1.0,
+      "reason_pass_rate": 0.67,
+      "steps": 4,
+      "runs": 6,
+      "measured_at": "2026-10-15T00:38:40"
+    }
+  }
+}

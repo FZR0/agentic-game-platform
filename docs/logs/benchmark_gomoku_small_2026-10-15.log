@@ -1,0 +1,12 @@
+[00:15:22] before gemma4:e2b: /api/ps = []
+gomoku / gemma4:e2b: 每手約 0.9 秒（最慢 1.0），冷啟動 5.5 秒，成功 6/6，與引擎相同 6/6，理由通過檢查 6/6
+已寫入 C:\Users\user\OneDrive\桌面\test1\test1\arena\model_benchmarks_research.json
+[00:15:35] before qwen3:8b: /api/ps = []
+gomoku / qwen3:8b: 每手約 2.6 秒（最慢 2.7），冷啟動 8.3 秒，成功 6/6，與引擎相同 6/6，理由通過檢查 6/6
+已寫入 C:\Users\user\OneDrive\桌面\test1\test1\arena\model_benchmarks_research.json
+[00:16:00] before qwen2.5:7b: /api/ps = []
+gomoku / qwen2.5:7b: 每手約 3.9 秒（最慢 6.9），冷啟動 10.6 秒，成功 4/6，與引擎相同 6/6，理由通過檢查 4/4
+    代下原因：Agent 沒有完成這一手（6 次內沒有決定；已做的步驟：查雙方威脅→看引擎候選→檢查 H10），改由引擎代下。
+    代下原因：Agent 沒有完成這一手（6 次內沒有決定；已做的步驟：查雙方威脅），改由引擎代下。
+已寫入 C:\Users\user\OneDrive\桌面\test1\test1\arena\model_benchmarks_research.json
+[00:16:37] finished

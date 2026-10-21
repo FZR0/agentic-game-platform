@@ -1,0 +1,753 @@
+@charset "UTF-8";
+
+/* 全站樣式：暖色的「棋館」風格（2026-10-19 改版）。顏色一律用這裡的變數，深色模式只換變數。 */
+:root {
+  color-scheme: light;
+  --bg: #f3efe6;
+  --panel: #fffdf9;
+  --panel-2: #f6f2e9;
+  --raised: #ffffff;
+  --text: #22262a;
+  --muted: #696d71;
+  --border: #e4ddcd;
+  --border-strong: #cfc5b0;
+  --accent: #2f6b4f;
+  --accent-strong: #24563f;
+  --on-accent: #ffffff;
+  --accent-soft: #e4eee7;
+  --warn: #b3261e;
+  --warn-soft: #fbe9e7;
+  --minor: #9a5b00;
+  --tag-bg: #efeae0;
+  --active: #fff3d1;
+  --coord: #1a5fb4;
+  --coord-bg: #e3edfb;
+  --wood: #e3b76a;
+  /* 證據種類的標籤顏色 */
+  --ev-rule: #2f6b4f;
+  --ev-rule-bg: #e4eee7;
+  --ev-solved: #0f6e78;
+  --ev-solved-bg: #ddf1f2;
+  --ev-estimate: #8a5300;
+  --ev-estimate-bg: #fbefd6;
+  --ev-cond: #6b3fa0;
+  --ev-cond-bg: #eee6f8;
+  --shadow-sm: 0 1px 2px rgba(70, 50, 20, 0.08), 0 1px 1px rgba(70, 50, 20, 0.04);
+  --shadow: 0 12px 32px rgba(70, 50, 20, 0.16);
+  --radius: 12px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --bg: #141618;
+    --panel: #1d2023;
+    --panel-2: #24282c;
+    --raised: #2b3034;
+    --text: #e9e6e0;
+    --muted: #a3a099;
+    --border: #2f3438;
+    --border-strong: #454b51;
+    --accent: #6fc39a;
+    --accent-strong: #8fd4b0;
+    --on-accent: #0d1a13;
+    --accent-soft: #1d3329;
+    --warn: #f2a39c;
+    --warn-soft: #3a2220;
+    --minor: #f3c766;
+    --tag-bg: #2a2f33;
+    --active: #353022;
+    --coord: #8ab4f8;
+    --coord-bg: #233247;
+    --ev-rule: #82d1a8;
+    --ev-rule-bg: #1d3329;
+    --ev-solved: #7fd3db;
+    --ev-solved-bg: #1a3236;
+    --ev-estimate: #f3c766;
+    --ev-estimate-bg: #3a3020;
+    --ev-cond: #cdaef7;
+    --ev-cond-bg: #2e2540;
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow: 0 14px 36px rgba(0, 0, 0, 0.55);
+  }
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Noto Sans TC", "Microsoft JhengHei UI", "Microsoft JhengHei", "PingFang TC", system-ui, sans-serif;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---- 按鈕與輸入框 ---- */
+
+button, select {
+  font: inherit;
+  font-size: 0.9375rem;
+  padding: 7px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border-strong);
+  background: var(--raised);
+  color: var(--text);
+  transition: background-color 0.15s, border-color 0.15s, color 0.15s;
+}
+
+button { cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: 0.45; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+button.primary:hover:not(:disabled) { background: var(--accent-strong); border-color: var(--accent-strong); }
+
+/* 連結做成按鈕的樣子（「開始對局」「繼續下」「復盤」等會換頁的動作） */
+a.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--raised);
+  color: var(--text);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background-color 0.15s, border-color 0.15s;
+}
+a.button:hover { border-color: var(--accent); }
+a.button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+a.button.primary:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
+
+/* 手機、平板（觸控）時按鈕加高，比較好按 */
+@media (pointer: coarse) {
+  button, select, a.button, .menu-link, .site-nav a, .chips a { min-height: 42px; }
+}
+
+input[type="text"], input[type="number"] {
+  font: inherit;
+  padding: 7px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-strong);
+  background: var(--raised);
+  color: var(--text);
+}
+
+button:focus-visible, select:focus-visible, input:focus-visible, a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.muted, .source { color: var(--muted); font-size: 0.8125rem; }
+
+/* ---- 頂端列：主要動作 ---- */
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  min-height: 60px;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+}
+
+.topbar h1 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 1.125rem; }
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text);
+  font-size: 1.0625rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+.crumbs .brand { color: var(--muted); font-weight: 600; }
+.crumbs .brand:hover { color: var(--text); }
+.crumb-sep { color: var(--muted); font-weight: 400; }
+
+/* 標誌：木紋上一黑一白兩顆子 */
+.brand-mark {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background:
+    radial-gradient(circle at 36% 38%, #1d1d1d 0 5px, transparent 5.5px),
+    radial-gradient(circle at 66% 64%, #f7f5ef 0 4.6px, #8a6d3b 4.6px 5.4px, transparent 5.8px),
+    var(--wood);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
+}
+
+.actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-left: auto; }
+.divider { width: 1px; height: 24px; margin: 0 4px; background: var(--border); }
+
+/* 次要動作（規則、對局紀錄、設定…）用不搶眼的按鈕 */
+.menu > button { border-color: transparent; background: transparent; }
+.menu > button:hover:not(:disabled) { border-color: transparent; background: var(--panel-2); }
+.menu > button[aria-expanded="true"] { background: var(--accent-soft); color: var(--accent); }
+.menu-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 14px;
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 0.9375rem;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.menu-link:hover { background: var(--panel-2); }
+
+/* 首頁、對局紀錄、怎麼玩共用的導覽列 */
+.site-bar { justify-content: space-between; }
+.site-nav { display: flex; gap: 4px; }
+.site-nav a {
+  display: inline-flex;
+  align-items: center;
+  padding: 7px 14px;
+  border-radius: 8px;
+  color: var(--muted);
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.site-nav a:hover { background: var(--panel-2); color: var(--text); }
+.site-nav a[aria-current="page"] { background: var(--accent-soft); color: var(--accent); }
+
+.coach-toggle { font-weight: 600; }
+.coach-toggle[aria-expanded="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+
+.badge {
+  display: inline-block;
+  min-width: 1.5em;
+  margin-left: 4px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--warn);
+  color: var(--panel);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  text-align: center;
+}
+
+/* 模型狀態：小圓點＋文字的膠囊 */
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+.status::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--border-strong); }
+.status.ok { color: var(--text); }
+.status.ok::before { background: var(--accent); }
+.status.warn { border-color: transparent; background: var(--warn-soft); color: var(--warn); }
+.status.warn::before { background: var(--warn); }
+
+.menu { position: relative; }
+
+.popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 40;
+  width: min(340px, calc(100vw - 32px));
+  max-height: 70vh;
+  overflow-y: auto;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.popover.settings h2 { margin: 0 0 12px; font-size: 1.0625rem; }
+.settings label { display: block; margin-bottom: 14px; font-size: 0.875rem; font-weight: 600; }
+.settings label .muted { font-weight: 400; }
+.settings select { display: block; width: 100%; margin-top: 4px; font-weight: 400; }
+.settings input[type="number"] { display: block; width: 100%; margin-top: 4px; font-weight: 400; }
+.settings p { margin: 0; }
+/* 進階設定（AI 模型、查證次數）平常收起來 */
+.settings details.advanced { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); color: var(--text); font-size: 0.875rem; }
+.settings details.advanced summary { margin-bottom: 10px; font-weight: 600; }
+
+/* ---- 首頁、對局紀錄、怎麼玩 ---- */
+
+.page { max-width: 1100px; margin: 0 auto; padding: 28px 20px 56px; }
+.page-title { margin: 0 0 20px; font-size: clamp(1.5rem, 3.5vw, 2rem); line-height: 1.3; }
+
+.section { margin-bottom: 32px; }
+.section-title { margin: 0 0 12px; font-size: 1.125rem; }
+.section-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; margin-bottom: 12px; }
+.section-head .section-title { margin: 0; }
+.more-link { color: var(--accent); font-size: 0.9375rem; font-weight: 600; text-decoration: none; }
+.more-link:hover { text-decoration: underline; }
+
+.empty {
+  margin: 0;
+  padding: 20px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  color: var(--muted);
+  text-align: center;
+}
+.empty a { color: var(--accent); font-weight: 600; }
+
+/* 遊戲卡片：圖＋名稱＋一句介紹，下面是「開始對局」「怎麼玩」 */
+.game-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.game-card {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow 0.15s, border-color 0.15s;
+}
+.game-card:hover { border-color: var(--accent); box-shadow: var(--shadow); }
+.game-card-main { display: flex; flex: 1; flex-direction: column; color: var(--text); text-decoration: none; }
+.game-art { display: block; width: 100%; height: auto; aspect-ratio: 16 / 10; object-fit: cover; }
+.game-body { display: flex; flex: 1; flex-direction: column; gap: 4px; padding: 12px 14px 10px; }
+.game-name { font-size: 1.1875rem; font-weight: 700; }
+.game-tagline { color: var(--muted); font-size: 0.8125rem; line-height: 1.55; }
+.game-card-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 4px 14px 14px; }
+
+/* 對局清單的一列（首頁的繼續／最近對局、對局紀錄頁） */
+.row-list { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.game-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px 14px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+}
+.row-icon { display: block; width: 80px; height: 50px; border-radius: 8px; object-fit: cover; }
+.row-title { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.row-title strong { font-size: 1rem; }
+.row-meta { display: flex; flex-wrap: wrap; gap: 2px 12px; color: var(--muted); font-size: 0.8125rem; font-variant-numeric: tabular-nums; }
+.row-actions { display: flex; gap: 8px; }
+.row-actions form { display: flex; margin: 0; }
+
+/* 「結束（不計勝負）」：不搶眼的按鈕，免得和「繼續下」搞混 */
+.end-button { background: transparent; color: var(--muted); font-weight: 600; }
+.end-button:hover:not(:disabled) { border-color: var(--warn); color: var(--warn); }
+
+/* 對局結果的小標籤 */
+.result { padding: 0 8px; border-radius: 999px; font-size: 0.75rem; font-weight: 700; line-height: 1.75; }
+.result.win { background: var(--accent-soft); color: var(--accent); }
+.result.loss { background: var(--warn-soft); color: var(--warn); }
+.result.draw, .result.ended { background: var(--tag-bg); color: var(--muted); }
+.result.unfinished { background: var(--ev-estimate-bg); color: var(--ev-estimate); }
+
+.home-columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr)); gap: 0 28px; }
+
+/* 戰績：每個遊戲一列，勝負次數＋勝率長條 */
+.stats {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+  list-style: none;
+}
+.stat-row { display: grid; grid-template-columns: 48px auto minmax(0, 1fr) 3.2em; align-items: center; gap: 4px 12px; padding: 8px 10px; }
+.stat-icon { grid-column: 1; grid-row: 1 / 3; display: block; width: 48px; height: 30px; border-radius: 6px; object-fit: cover; }
+.stat-name { grid-column: 2; grid-row: 1; font-weight: 700; }
+.stat-counts { grid-column: 3; grid-row: 1; justify-self: end; font-size: 0.8125rem; }
+.stat-counts b { font-weight: 600; }
+.stat-counts .win { color: var(--accent); }
+.stat-counts .loss { color: var(--warn); }
+.stat-counts .draw { color: var(--muted); }
+.stat-bar { grid-column: 2 / 4; grid-row: 2; height: 6px; overflow: hidden; border-radius: 999px; background: var(--panel-2); }
+.stat-bar span { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
+.stat-rate { grid-column: 4; grid-row: 1 / 3; font-weight: 700; font-variant-numeric: tabular-nums; text-align: right; }
+.stat-empty { grid-column: 3 / 5; grid-row: 1 / 3; justify-self: end; color: var(--muted); font-size: 0.8125rem; }
+
+/* 對局紀錄的篩選與分頁 */
+.filters { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chips a {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--raised);
+  color: var(--text);
+  font-size: 0.875rem;
+  text-decoration: none;
+}
+.chips a:hover { border-color: var(--accent); }
+.chips a[aria-current="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+.list-count { margin: 0 0 10px; color: var(--muted); font-size: 0.875rem; }
+.pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 12px; margin-top: 18px; }
+
+/* 怎麼玩 */
+.guide-nav { margin-bottom: 18px; }
+.guide-section {
+  margin-bottom: 18px;
+  padding: 18px 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+  scroll-margin-top: 80px;
+}
+.guide-head { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; margin-bottom: 6px; }
+.guide-icon { display: block; width: 96px; height: 60px; border-radius: 8px; object-fit: cover; }
+.guide-title { flex: 1; min-width: 12em; }
+.guide-title h2 { margin: 0; font-size: 1.25rem; }
+.guide-title p { margin: 2px 0 0; color: var(--muted); font-size: 0.875rem; }
+.guide-section h3 { margin: 16px 0 4px; color: var(--accent); font-size: 1rem; }
+.guide-section ul { margin: 0; padding-left: 22px; }
+.guide-section li { margin-bottom: 4px; }
+
+/* ---- 對局頁：左側 AI 教練＋棋盤 ---- */
+
+.app {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 28px;
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.app.coach-open { grid-template-columns: 400px minmax(0, 1fr); }
+
+/* 棋盤依視窗高度縮放：棋盤、狀態列和下方的按鈕盡量一起放得進畫面 */
+.board-area { width: 100%; max-width: min(680px, max(340px, calc(100vh - 250px))); justify-self: center; }
+
+.game-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  margin: 0 0 12px;
+  padding: 9px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+  font-weight: 600;
+}
+.game-status::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+.game-status:empty::before { visibility: hidden; }
+
+canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+/* 復盤的 ⏮ ◀ ▶ ⏭：一條分段按鈕 */
+.review-nav {
+  display: flex;
+  gap: 2px;
+  align-items: center;
+  justify-content: center;
+  width: fit-content;
+  margin: 14px auto 0;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+}
+.review-nav button { padding: 6px 12px; border-color: transparent; background: transparent; }
+.review-nav button:hover:not(:disabled) { border-color: transparent; background: var(--panel-2); }
+.review-nav span { min-width: 8em; font-weight: 600; font-variant-numeric: tabular-nums; text-align: center; }
+
+.legend { text-align: center; font-size: 0.875rem; margin: 10px 0 0; }
+
+.dot {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin: 0 4px 0 12px;
+  border-radius: 50%;
+  vertical-align: -1px;
+}
+
+.dot.played { border: 3px solid #d93025; }
+.dot.best { border: 3px dashed #1e8e3e; }
+
+.board-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  align-items: center;
+  margin-top: 10px;
+  font-size: 0.875rem;
+}
+.board-tools label { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+.board-tools input[type="checkbox"] { accent-color: var(--accent); }
+
+.coach {
+  position: sticky;
+  top: 80px;
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 100px);
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+}
+
+.coach-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.coach-head strong { font-size: 1.0625rem; }
+.icon-button { padding: 2px 10px; border-color: transparent; background: transparent; }
+.icon-button:hover:not(:disabled) { border-color: transparent; background: var(--panel-2); }
+
+/* 分頁：一條分段按鈕 */
+.tabs {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+.tabs button {
+  flex: 1;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+}
+.tabs button:hover:not(:disabled) { color: var(--text); }
+.tabs button[aria-selected="true"] { background: var(--raised); color: var(--text); font-weight: 600; box-shadow: var(--shadow-sm); }
+
+.tab-panel, .popover, .ask-panel .answers { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+.tab-panel { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 2px 4px; }
+.ask-panel { display: flex; flex-direction: column; overflow: hidden; }
+.ask-panel .answers { flex: 1; min-height: 0; overflow-y: auto; }
+.ask-box { margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--border); }
+.ask-box p { margin: 0 0 6px; }
+
+.footnote { margin: 10px 0 0; padding-top: 10px; border-top: 1px solid var(--border); font-size: 0.75rem; line-height: 1.55; }
+
+/* ---- 說明清單 ---- */
+
+.entries { display: flex; flex-direction: column; gap: 8px; list-style: none; margin: 0; padding: 0; }
+.entries > li {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  transition: background-color 0.15s, border-color 0.15s;
+}
+.entries .head { font-weight: 600; line-height: 1.5; }
+.entries .text { margin: 6px 0 4px; }
+
+.thoughts.clickable > li, .moments > li, .answers > li { cursor: pointer; }
+.thoughts.clickable > li:hover, .moments > li:hover, .answers > li:hover { background: var(--panel-2); }
+.entries > li.active { border-color: var(--accent); background: var(--active); }
+
+/* 回答的重點：比內文醒目，一眼先看到結論 */
+.entries .key {
+  margin: 8px 0 4px;
+  padding: 7px 10px;
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  background: var(--accent-soft);
+  font-weight: 700;
+}
+
+.tag {
+  display: inline-block;
+  margin: 2px 4px 2px 0;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--tag-bg);
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.7;
+  vertical-align: 1px;
+}
+.tag[data-evidence="規則確認"] { background: var(--ev-rule-bg); color: var(--ev-rule); }
+.tag[data-evidence="求解確認"] { background: var(--ev-solved-bg); color: var(--ev-solved); }
+.tag[data-evidence="引擎估計"] { background: var(--ev-estimate-bg); color: var(--ev-estimate); }
+.tag[data-evidence="條件式計算"] { background: var(--ev-cond-bg); color: var(--ev-cond); }
+
+.coord {
+  display: inline;
+  margin: 0 1px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 4px;
+  background: var(--coord-bg);
+  color: var(--coord);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+.coord:hover, .coord:focus-visible { background: var(--coord); color: var(--panel); }
+
+.narrate-button { margin-top: 6px; padding: 3px 12px; border-radius: 999px; font-size: 0.8125rem; }
+
+.quick-questions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.quick-questions button { padding: 4px 12px; border-radius: 999px; background: var(--panel-2); font-size: 0.8125rem; }
+
+.ask-form { display: flex; gap: 8px; }
+.ask-form input { flex: 1; min-width: 0; }
+
+details { color: var(--muted); font-size: 0.8125rem; margin-top: 6px; }
+details summary { width: fit-content; cursor: pointer; }
+details summary:hover { color: var(--text); }
+details ul { margin: 4px 0 0; padding-left: 18px; }
+
+/* 動作按鈕（圍棋的虛手、撲克的跟注等）固定在畫面下緣：視窗比畫面矮時不用捲動就按得到 */
+#game-actions:not(:empty) {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  padding: 10px 0;
+  background: var(--bg);
+}
+/* 復盤時按鈕都不能按，不必固定在下緣，免得蓋住 ◀ ▶ */
+#game-actions:not(:has(button:enabled)) { position: static; }
+
+/* 撲克：棄牌紅、跟注或過牌藍（使用者要求）；加注金額另起一排 */
+#game-actions button.fold { background: #c5221f; border-color: #c5221f; color: #ffffff; font-weight: 600; }
+#game-actions button.fold:hover:not(:disabled) { background: #a51c19; border-color: #a51c19; }
+#game-actions button.call { background: #1a73e8; border-color: #1a73e8; color: #ffffff; font-weight: 600; }
+#game-actions button.call:hover:not(:disabled) { background: #1559b8; border-color: #1559b8; }
+#game-actions button.leave { margin-left: auto; } /* 撲克的離場放在最右邊，免得誤按 */
+.raise-sizes {
+  display: flex;
+  flex-basis: 100%;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
+.raise-amount {
+  width: 6em;
+}
+
+/* 問題檢查的分類：關鍵時刻、小失誤、建議、做得好；左邊的色條標出級別 */
+.moment-group { margin-top: 16px; }
+.moment-group:first-child { margin-top: 4px; }
+.moment-group h3 { margin: 0; font-size: 0.9375rem; }
+.moment-group > .muted { margin: 0 0 8px; }
+.moment-group.overall h3 { margin-bottom: 8px; color: var(--text); }
+.moment-group.key h3 { color: var(--warn); }
+.moment-group.minor h3 { color: var(--minor); }
+.moment-group.suggest h3 { color: var(--coord); }
+.moment-group.good h3 { color: var(--accent); }
+.moment-group.key .entries > li { border-left: 3px solid var(--warn); }
+.moment-group.minor .entries > li { border-left: 3px solid var(--minor); }
+.moment-group.suggest .entries > li { border-left: 3px solid var(--coord); }
+.moment-group.good .entries > li { border-left: 3px solid var(--accent); }
+.moment-group.overall .entries > li { background: var(--panel-2); }
+
+/* 規則面板：內容比較長，加寬並可捲動 */
+.popover.rules { width: min(460px, calc(100vw - 32px)); font-size: 0.875rem; }
+.popover.rules h2 { margin: 0 0 4px; font-size: 1.0625rem; }
+.popover.rules h3 { margin: 14px 0 4px; font-size: 0.9375rem; color: var(--accent); }
+.popover.rules ul { margin: 0; padding-left: 20px; }
+.popover.rules li { margin-bottom: 4px; }
+
+/* 參考表（撲克的起手牌勝率表） */
+.popover.reference { width: min(380px, calc(100vw - 32px)); font-size: 0.875rem; }
+.popover.reference h2 { margin: 0 0 4px; font-size: 1.0625rem; }
+.popover.reference table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.popover.reference th, .popover.reference td { padding: 3px 8px; text-align: right; border-bottom: 1px solid var(--border); }
+.popover.reference th:first-child, .popover.reference td:first-child { text-align: left; }
+.popover.reference thead th { position: sticky; top: -14px; background: var(--panel); }
+.popover.reference tr.mine td { background: var(--active); font-weight: 700; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; }
+}
+
+/* 平板與手機（880px 以下）：AI 教練排在棋盤下方、跟著頁面捲動，不再蓋住棋盤；
+   app.js 的 NARROW 用同一個斷點，點了一則說明會把棋盤捲回畫面 */
+@media (max-width: 880px) {
+  .app.coach-open { grid-template-columns: minmax(0, 1fr); }
+  .coach { position: static; order: 1; height: auto; }
+  .tab-panel, .ask-panel, .ask-panel .answers { overflow: visible; }
+}
+
+/* 手機（640px 以下） */
+@media (max-width: 640px) {
+  .topbar { padding: 8px 12px; }
+  .app { padding: 12px 12px 20px; }
+  .page { padding: 20px 12px 40px; }
+  button, select { padding: 6px 11px; }
+  .menu { position: static; }
+  .popover, .popover.rules, .popover.reference { left: 12px; right: 12px; width: auto; top: calc(100% + 4px); }
+  .divider { display: none; }
+
+  /* 對局頁的頂端列：第一排是遊戲名稱和 AI 教練，第二排是動作按鈕平均排開。
+     手機上不固定在畫面頂端（兩三排太佔空間），但仍是 position 有值的元素，下拉面板以它定位 */
+  .play-bar { position: relative; }
+  .play-bar .crumbs { order: 1; }
+  .play-bar .coach-toggle { order: 2; margin-left: auto; }
+  .play-bar .actions { order: 3; display: grid; flex-basis: 100%; grid-auto-columns: minmax(0, 1fr); grid-auto-flow: column; gap: 4px; margin-left: 0; }
+  .play-bar .actions > button, .play-bar .menu > button, .play-bar .menu-link { width: 100%; padding: 6px 2px; font-size: 0.875rem; }
+  .play-bar .status { order: 4; }
+  .play-bar .brand-text, .play-bar .crumb-sep { display: none; }
+
+  /* 首頁等頁面的導覽列：只留標誌 */
+  .site-bar .brand-text { display: none; }
+  .site-nav a { padding: 7px 10px; }
+
+  /* 遊戲卡片改成橫的：左邊圖、右邊名稱，按鈕在下面 */
+  .game-list { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .game-card-main { flex-direction: row; align-items: center; }
+  .game-art { width: 112px; flex: none; margin: 12px 0 0 12px; border-radius: 8px; }
+  .game-body { padding: 12px 12px 4px; }
+  .game-card-actions { padding: 10px 12px 12px; }
+
+  /* 對局清單：按鈕排到下一行、平均分寬度 */
+  .game-row { grid-template-columns: 64px minmax(0, 1fr); padding: 10px 12px; }
+  .row-icon { width: 64px; height: 40px; }
+  .row-actions { grid-column: 1 / -1; }
+  .row-actions .button, .row-actions form { flex: 1; }
+  .row-actions form button { width: 100%; }
+
+  .guide-section { padding: 14px; }
+  .guide-head .button { width: 100%; }
+}

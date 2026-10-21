@@ -1,0 +1,158 @@
+{% load static %}<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{ csrf_token }}">
+  <title>{{ module.name }} AI 教練</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="{% static 'arena/style.css' %}?v={{ asset_version }}">
+</head>
+<body>
+  <header class="topbar play-bar">
+    <button id="coach-toggle" class="coach-toggle" aria-expanded="false" aria-controls="coach">
+      ☰ AI 教練 <span id="coach-badge" class="badge" hidden></span>
+    </button>
+    <h1 class="crumbs">
+      <a href="{% url 'arena:home' %}" class="brand" title="回到首頁"><span class="brand-mark" aria-hidden="true"></span><span class="brand-text">首頁</span></a>
+      <span class="crumb-sep" aria-hidden="true">›</span>{{ module.name }}
+    </h1>
+    <nav class="actions">
+      <button id="new-game" class="primary">新對局</button>
+      <button id="start-review" disabled>復盤</button>
+      <span class="divider" aria-hidden="true"></span>
+      <div class="menu">
+        <button id="rules-toggle" aria-expanded="false" aria-controls="rules-panel">規則</button>
+        <div id="rules-panel" class="popover rules" hidden>
+          <h2>{{ module.name }}規則</h2>
+          {% for section in module.rules %}
+          <h3>{{ section.title }}</h3>
+          <ul>{% for item in section.items %}<li>{{ item }}</li>{% endfor %}</ul>
+          {% endfor %}
+          <h3>畫面怎麼用</h3>
+          {% include "arena/_how_to_use.html" %}
+        </div>
+      </div>
+      {% with ref=module.reference %}{% if ref %}
+      <div class="menu">
+        <button id="reference-toggle" aria-expanded="false" aria-controls="reference-panel">{{ ref.label }}</button>
+        <div id="reference-panel" class="popover reference" hidden>
+          <h2>{{ ref.title }}</h2>
+          <p class="muted">{{ ref.note }}</p>
+          <table>
+            <thead><tr>{% for c in ref.columns %}<th>{{ c }}</th>{% endfor %}</tr></thead>
+            <tbody>{% for row in ref.rows %}<tr data-key="{{ row.key }}">{% for cell in row.cells %}<td>{{ cell }}</td>{% endfor %}</tr>{% endfor %}</tbody>
+          </table>
+        </div>
+      </div>
+      {% endif %}{% endwith %}
+      <div class="menu">
+        <a class="menu-link" href="{% url 'arena:history' %}?game={{ module.key }}">對局紀錄</a>
+      </div>
+      <div class="menu">
+        <button id="settings-toggle" aria-expanded="false" aria-controls="settings-panel">設定</button>
+        <div id="settings-panel" class="popover settings" hidden>
+          <h2>設定</h2>
+          <label{% if module.seat_choices|length == 1 %} hidden{% endif %}>我執
+            <select id="human-seat">
+              {% for seat, name in module.seat_choices %}<option value="{{ seat }}">{{ name }}</option>{% endfor %}
+            </select>
+          </label>
+          {% for field in module.settings_fields %}
+          <label>{{ field.label }}
+            <select class="game-setting" data-name="{{ field.name }}">
+              {% for value, text in field.options %}<option value="{{ value }}"{% if value == field.default %} selected{% endif %}>{{ text }}</option>{% endfor %}
+            </select>
+          </label>
+          {% endfor %}
+          <p class="muted">還沒開始下時改了立即生效；對局中改的話，從下一局開始。</p>
+          <details class="advanced">
+            <summary>進階設定</summary>
+            <label>AI 模型
+              <select id="model"></select>
+              <span class="muted">依聰明程度排列；秒數是 AI 每下一步大約要等多久。</span>
+            </label>
+            <label>AI 每一步最多查證幾次
+              <input id="steps" type="number" min="{{ config.minSteps }}" max="{{ config.maxSteps }}" value="{{ config.defaultSteps }}">
+              <span class="muted">次數少比較快，次數多想得比較仔細；預設 {{ config.defaultSteps }} 次。</span>
+            </label>
+            <p class="muted">這兩項從 AI 的下一步開始生效。</p>
+          </details>
+        </div>
+      </div>
+    </nav>
+    <span id="llm-status" class="status warn" hidden></span>
+  </header>
+
+  <div id="app" class="app">
+    <aside id="coach" class="coach" hidden>
+      <div class="coach-head">
+        <strong>AI 教練</strong>
+        <button id="coach-close" class="icon-button" aria-label="收起 AI 教練">✕</button>
+      </div>
+      <div class="tabs" role="tablist">
+        <button role="tab" id="tab-btn-thoughts" data-tab="thoughts" aria-selected="true">對局思路</button>
+        <button role="tab" id="tab-btn-moments" data-tab="moments" aria-selected="false">問題檢查</button>
+        <button role="tab" id="tab-btn-ask" data-tab="ask" aria-selected="false">問 AI</button>
+      </div>
+
+      <section id="tab-thoughts" class="tab-panel" role="tabpanel">
+        <p id="thoughts-empty" class="muted">AI 每下一手，思路會出現在這裡。復盤時點一則思路，棋盤會跳到那一手。</p>
+        <ol id="ai-log" class="entries thoughts"></ol>
+      </section>
+
+      <section id="tab-moments" class="tab-panel" role="tabpanel" hidden>
+        <p id="review-summary" class="muted">對局結束後按上方的「復盤」，會檢查你的每一步，列出關鍵時刻和小失誤。</p>
+        <div id="moments"></div>
+      </section>
+
+      <section id="tab-ask" class="tab-panel ask-panel" role="tabpanel" hidden>
+        <ol id="answers" class="entries answers"></ol>
+        <div class="ask-box">
+          <p id="ask-context" class="muted">復盤時可以針對棋盤上的任何局面提問。</p>
+          <div class="quick-questions">
+            <button type="button">這一手為什麼不好？</button>
+            <button type="button">現在對手最大的威脅是什麼？</button>
+            <button type="button">電腦建議下哪裡？為什麼？</button>
+          </div>
+          <form id="ask-form" class="ask-form">
+            <input id="ask-input" type="text" maxlength="200" autocomplete="off" placeholder="例如：第 9 手為什麼不好？">
+            <button type="submit" class="primary">送出</button>
+          </form>
+        </div>
+      </section>
+
+      <p class="muted footnote">
+        AI 每一步都先用電腦查證再決定，「對局思路」就是它查證的過程。
+        說明旁的小標籤是根據：依規則確認、算到底確認、電腦估計、依假設計算。
+      </p>
+    </aside>
+
+    <main class="board-area">
+      <p id="game-status" class="game-status"></p>
+      <canvas id="board" width="640" height="640" aria-label="{{ module.name }}棋盤"></canvas>
+      <div id="review-nav" class="review-nav" hidden>
+        <button id="nav-first" title="第一手（Home）">⏮</button>
+        <button id="nav-prev" title="上一手（←）">◀</button>
+        <span id="nav-label"></span>
+        <button id="nav-next" title="下一手（→）">▶</button>
+        <button id="nav-last" title="最後一手（End）">⏭</button>
+      </div>
+      <p id="mark-legend" class="legend" hidden>
+        <span class="dot played"></span>你實際下的 <strong id="legend-played"></strong>
+        <span class="dot best"></span>引擎建議 <strong id="legend-best"></strong>
+      </p>
+      <div id="game-actions" class="board-tools"></div>
+      <div class="board-tools">
+        <button id="end-game" type="button" class="end-button" hidden>結束（不計勝負）</button>
+        <label{% if not module.numbered %} hidden{% endif %}><input id="show-numbers" type="checkbox"> 顯示手數</label>
+        <span class="muted">說明中的藍色標籤（座標或牌）可滑過或點選，在畫面上標出位置。</span>
+      </div>
+    </main>
+  </div>
+
+  {{ config|json_script:"game-config" }}
+  <script src="{% static module.board_script %}?v={{ asset_version }}"></script>
+  <script src="{% static 'arena/app.js' %}?v={{ asset_version }}"></script>
+</body>
+</html>

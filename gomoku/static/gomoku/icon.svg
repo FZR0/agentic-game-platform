@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 100">
+  <defs>
+    <linearGradient id="wood" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#eccb84"/>
+      <stop offset="1" stop-color="#d9a957"/>
+    </linearGradient>
+    <radialGradient id="black" cx=".35" cy=".32" r=".75">
+      <stop offset="0" stop-color="#5a5a5a"/>
+      <stop offset="1" stop-color="#111111"/>
+    </radialGradient>
+    <radialGradient id="white" cx=".35" cy=".32" r=".8">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#d8d4c8"/>
+    </radialGradient>
+  </defs>
+  <rect width="160" height="100" fill="url(#wood)"/>
+  <path stroke="#5a4320" stroke-opacity=".5" fill="none"
+        d="M10 0V100M24 0V100M38 0V100M52 0V100M66 0V100M80 0V100M94 0V100M108 0V100M122 0V100M136 0V100M150 0V100
+           M0 8H160M0 22H160M0 36H160M0 50H160M0 64H160M0 78H160M0 92H160"/>
+  <g fill="url(#white)" stroke="#8a7550" stroke-width=".8">
+    <circle cx="52" cy="64" r="6.2"/>
+    <circle cx="66" cy="50" r="6.2"/>
+    <circle cx="94" cy="50" r="6.2"/>
+    <circle cx="80" cy="64" r="6.2"/>
+    <circle cx="108" cy="36" r="6.2"/>
+    <circle cx="122" cy="22" r="6.2"/>
+  </g>
+  <g fill="url(#black)">
+    <circle cx="52" cy="78" r="6.2"/>
+    <circle cx="66" cy="64" r="6.2"/>
+    <circle cx="80" cy="50" r="6.2"/>
+    <circle cx="94" cy="36" r="6.2"/>
+    <circle cx="108" cy="22" r="6.2"/>
+  </g>
+  <path d="M52 78L108 22" stroke="#e8453c" stroke-width="2.4" stroke-linecap="round"/>
+</svg>

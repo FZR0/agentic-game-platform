@@ -1,0 +1,13 @@
+#!/bin/sh
+# 存檔前檢查：公開的儲存庫不能有研究用伺服器的位址或 SECRET_KEY（tools/git_menu.py --check-secrets，2026-10-21）。
+# 版本管理.bat 第一次使用時設定 git config core.hooksPath tools/githooks，所以用 Visual Studio、Claude Code 存檔也會檢查。
+# .venv 只在主要的專案資料夾（git worktree 裡沒有）。
+main="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
+py="$main/.venv/Scripts/python.exe"
+if [ ! -x "$py" ]; then
+  echo "找不到 $py，沒辦法做存檔前的機密檢查。請先執行一次 啟動遊戲平台.bat。" >&2
+  exit 1
+fi
+# Visual Studio、Git Bash 讀 UTF-8；不設的話 Python 寫到管線時用 cp950，訊息會變亂碼
+export PYTHONIOENCODING=utf-8
+exec "$py" "$(git rev-parse --show-toplevel)/tools/git_menu.py" --check-secrets

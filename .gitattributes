@@ -1,0 +1,5 @@
+* text=auto
+# 啟動檔要 CRLF（docs/交接.md 第 7 節）；git hook 由 sh 執行，要 LF
+*.bat text eol=crlf
+tools/githooks/* text eol=lf
+*.sqlite3 binary

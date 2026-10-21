@@ -1,0 +1,14 @@
+[00:35:00] before qwen2.5:32b / gomoku: /api/ps = []
+gomoku / qwen2.5:32b: 每手約 6.8 秒（最慢 8.0），冷啟動 18.2 秒，成功 6/6，與引擎相同 6/6，理由通過檢查 6/6
+已寫入 C:\Users\user\OneDrive\桌面\test1\test1\arena\model_benchmarks_research.json
+[00:36:01] before qwen2.5:32b / chess: /api/ps = []
+chess / qwen2.5:32b: 每手約 15.1 秒（最慢 20.2），冷啟動 32.5 秒，成功 6/6，與引擎相同 6/6，理由通過檢查 6/6
+已寫入 C:\Users\user\OneDrive\桌面\test1\test1\arena\model_benchmarks_research.json
+[00:38:04] before batiai/gemma4-26b:q6 / chess: /api/ps = []
+chess / batiai/gemma4-26b:q6: 每手約 3.3 秒（最慢 3.8），冷啟動 14.0 秒，成功 6/6，與引擎相同 6/6，理由通過檢查 4/6
+已寫入 C:\Users\user\OneDrive\桌面\test1\test1\arena\model_benchmarks_research.json
+[00:38:41] before gemma4-26b-64k:latest / gomoku: /api/ps = []
+已寫入 C:\Users\user\OneDrive\桌面\test1\test1\arena\model_benchmarks_research.json
+[00:38:42] before gemma4-26b-64k:latest / chess: /api/ps = []
+已寫入 C:\Users\user\OneDrive\桌面\test1\test1\arena\model_benchmarks_research.json
+[00:38:44] finished

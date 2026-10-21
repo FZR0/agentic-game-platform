@@ -1,0 +1,76 @@
+{% extends "arena/base.html" %}{% load static %}
+{% block content %}
+  <h1 class="page-title">今天想玩什麼？</h1>
+
+  {% if resume %}
+  <section class="section">
+    <div class="section-head">
+      <h2 class="section-title">繼續上次的對局</h2>
+      {% if more_unfinished %}<a class="more-link" href="{% url 'arena:history' %}?result=unfinished">還有 {{ more_unfinished }} 盤沒下完 →</a>{% endif %}
+    </div>
+    <ul class="row-list">
+      {% for card in resume %}{% include "arena/_game_row.html" %}{% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
+  <section class="section">
+    <h2 class="section-title">選一個遊戲</h2>
+    <ul class="game-list">
+      {% for game in games %}
+      <li class="game-card">
+        <a class="game-card-main" href="{% url 'arena:play' game.key %}">
+          <img class="game-art" src="{% static game.icon %}?v={{ asset_version }}" alt="" width="160" height="100">
+          <span class="game-body">
+            <span class="game-name">{{ game.name }}</span>
+            <span class="game-tagline">{{ game.tagline }}</span>
+          </span>
+        </a>
+        <div class="game-card-actions">
+          <a class="button primary" href="{% url 'arena:play' game.key %}">開始對局</a>
+          <a class="button" href="{% url 'arena:guide' %}#{{ game.key }}">怎麼玩</a>
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+
+  <div class="home-columns">
+    <section class="section">
+      <h2 class="section-title">我的戰績</h2>
+      {% if any_finished %}
+      <ul class="stats">
+        {% for s in stats %}
+        <li class="stat-row">
+          <img class="stat-icon" src="{% static s.module.icon %}?v={{ asset_version }}" alt="" width="48" height="30">
+          <span class="stat-name">{{ s.module.name }}</span>
+          {% if s.finished %}
+          <span class="stat-counts"><b class="win">{{ s.win }} 勝</b> <b class="loss">{{ s.loss }} 負</b>{% if s.draw %} <b class="draw">{{ s.draw }} 和</b>{% endif %}</span>
+          <span class="stat-bar" title="勝率 {{ s.rate }}%"><span style="width: {{ s.rate }}%"></span></span>
+          <span class="stat-rate">{{ s.rate }}%</span>
+          {% else %}
+          <span class="stat-empty">還沒下完過</span>
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="empty">還沒有下完的對局。下完一盤，勝負就會記在這裡。</p>
+      {% endif %}
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <h2 class="section-title">最近對局</h2>
+        <a class="more-link" href="{% url 'arena:history' %}">全部對局紀錄 →</a>
+      </div>
+      {% if recent %}
+      <ul class="row-list">
+        {% for card in recent %}{% include "arena/_game_row.html" %}{% endfor %}
+      </ul>
+      {% else %}
+      <p class="empty">下完的對局會出現在這裡，按「復盤」就能回看每一步、找出關鍵時刻。</p>
+      {% endif %}
+    </section>
+  </div>
+{% endblock %}

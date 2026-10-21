@@ -1,0 +1,22 @@
+{% load static %}<li class="game-row">
+  <img class="row-icon" src="{% static card.module.icon %}?v={{ asset_version }}" alt="" width="80" height="50">
+  <div class="row-main">
+    <div class="row-title"><strong>{{ card.module.name }}</strong><span class="result {{ card.result }}">{{ card.result_text }}</span></div>
+    <div class="row-meta">
+      <time datetime="{{ card.when|date:'c' }}">{{ card.when|date:"Y-m-d H:i" }}</time>
+      {% if card.seat %}<span>執{{ card.seat }}</span>{% endif %}
+      <span>{{ card.steps }} {{ card.module.step_word }}</span>
+      <span>#{{ card.id }}</span>
+    </div>
+  </div>
+  <div class="row-actions">
+    {% if card.resume_url %}<a class="button primary" href="{{ card.resume_url }}">繼續下</a>{% endif %}
+    <a class="button" href="{{ card.review_url }}">復盤</a>
+    {% if card.end_url %}
+    <form method="post" action="{{ card.end_url }}" onsubmit="return confirm('結束這盤、不計勝負？之後不能再接著下，但還可以復盤。')">
+      {% csrf_token %}<input type="hidden" name="next" value="{{ request.get_full_path }}">
+      <button type="submit" class="end-button">結束</button>
+    </form>
+    {% endif %}
+  </div>
+</li>

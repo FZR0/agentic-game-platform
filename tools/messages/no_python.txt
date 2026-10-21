@@ -1,0 +1,2 @@
+找不到 Python 3.10 到 3.13。
+要用 winget 自動安裝 Python 3.11 嗎？
