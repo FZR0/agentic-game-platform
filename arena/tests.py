@@ -825,6 +825,7 @@ class SavePromptTests(SimpleTestCase):
         self.assertEqual(asked["decision"], "block")
         self.assertIn("a.py", asked["reason"])
         self.assertIn("存檔並送審", asked["reason"])
+        self.assertIn("存檔時會先開工作分支", asked["reason"])  # 在主線上改了程式，--save 會先開工作分支
         self.assertIsNone(self.stop())
         (self.root / "a.py").write_text("z", encoding="utf-8")
         self.assertIsNotNone(self.stop())
@@ -859,6 +860,8 @@ class SavePromptTests(SimpleTestCase):
         asked = self.stop()
         self.assertIn("CLAUDE.md", asked["reason"])
         self.assertNotIn("存檔並送審", asked["reason"])
+        # 只有文件時直接存進私人儲存庫、不開工作分支，提示不能說會開（2026-10-21 在新對話實際看到時發現）
+        self.assertNotIn("開工作分支", asked["reason"])
 
     def clone_with_menu(self):
         """有 origin 的暫存專案，裡面放一份 tools/git_menu.py（它只管自己所在的專案，所以不能拿這個專案的來跑）。"""
