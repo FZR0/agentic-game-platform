@@ -181,14 +181,30 @@ def sync_private():
     放在沒有保護的私人儲存庫）；工作紀錄只會往後接，多人同時記錄時由 git 自動把兩邊的新內容都留下
     （private/.gitattributes：merge=union）。"""
     if not fetch_private():
-        return
+        return False
     print("同步私人資料（文件、工作紀錄、伺服器位址）...")
-    if not private_conflicts():
-        save_private()
-        if show(*PRIVATE_GIT, "pull", "--no-rebase", "--no-edit"):
-            show(*PRIVATE_GIT, "push")
-        else:
-            private_conflicts()
+    if private_conflicts():
+        return False
+    save_private()
+    if show(*PRIVATE_GIT, "pull", "--no-rebase", "--no-edit"):
+        return show(*PRIVATE_GIT, "push")
+    private_conflicts()
+    return False
+
+
+def save_documents(message=None):
+    """只有文件改動時的存檔：存進私人儲存庫後直接上傳。文件不經過送審，不上傳的話其他成員一直看不到，
+    而 Claude Code 的存檔提醒只看「還沒存檔」的改動，存了沒上傳的不會再提醒（2026-10-21 審核 #1 時發現）。"""
+    if private_conflicts():
+        return False
+    if not save_private(message):
+        print("沒有需要存檔的改動。")
+        return True
+    if sync_private():
+        print("文件已存進私人儲存庫並上傳，其他成員「取得最新版本」就看得到。")
+        return True
+    print("文件已存在這台電腦，但上傳失敗（原因在上面），下次「取得最新版本」時會再上傳。")
+    return False
 
 
 def private_conflicts():
@@ -297,15 +313,13 @@ def commit_all(message):
 
 
 def commit():
-    """存檔（commit）：只存在這台電腦，送審時才上傳。文件（.md）存進私人儲存庫，不用開工作分支。"""
+    """存檔（commit）：程式只存在這台電腦，送審時才上傳。文件（.md）存進私人儲存庫，不用開工作分支；
+    只有文件改動時存完直接上傳（save_documents）。"""
     if merging() and unresolved(GIT, ROOT):
         conflict()
         return
     if not changes():
-        if not private_conflicts() and save_private():
-            print("文件已存進私人儲存庫（還在這台電腦，「取得最新版本」或「送審」時上傳）。")
-        else:
-            print("沒有需要存檔的改動。")
+        save_documents()
         return
     if current_branch() == MAIN:
         print("主線只放審核過的版本，不能直接存檔。要先開始一項新工作（現在的改動會一起帶過去）。")
@@ -498,11 +512,7 @@ def save_cli(message, name):
         conflict(interactive=False)
         return 1
     if not changes():
-        if save_private(message):
-            print("文件已存進私人儲存庫（還在這台電腦，取得最新版本或送審時上傳）。")
-        else:
-            print("沒有需要存檔的改動。")
-        return 0
+        return 0 if save_documents(message) else 1
     if current_branch() == MAIN and not create_work_branch(name):
         return 1
     return 0 if commit_all(message) else 1

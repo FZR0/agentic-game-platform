@@ -901,3 +901,47 @@ class SavePromptTests(SimpleTestCase):
         result = self.save(work, "改 b", "--name", "fix-b")
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertEqual(git_in(work, "log", "--all", "--format=%s"), "first")
+
+    def test_saving_only_documents_uploads_them_right_away(self):
+        # 文件不經過送審：存了沒上傳，其他成員就一直看不到，存檔提醒也不會再提（它只看還沒存檔的改動）
+        work = self.clone_with_menu()
+        git_in(work, "checkout", "-q", "--", "b.py")  # 只留文件的改動
+        origin, seed = self.root / "private-origin.git", self.root / "seed"
+        git_in(self.root, "init", "-q", "--bare", "-b", "main", str(origin))
+        (seed / "private").mkdir(parents=True)
+        (seed / "private" / "settings.json").write_text("{}", encoding="utf-8")
+        (seed / "CLAUDE.md").write_text("doc", encoding="utf-8")
+        git_in(seed, "init", "-q", "-b", "main")
+        git_in(seed, "add", "-A")
+        git_in(seed, "commit", "-q", "-m", "seed")
+        git_in(seed, "push", "-q", str(origin), "main")
+        # 和 git_menu.fetch_private 一樣：只下載 git 資料，工作範圍設成整個專案資料夾再取出檔案
+        git_in(work, "clone", "-q", "--no-checkout", str(origin), str(work / "private"))
+        git_in(work / "private", "config", "core.worktree", "..")
+        git_in(work, f"--git-dir={work / 'private' / '.git'}", f"--work-tree={work}", "checkout", "-q", "-f", "main")
+        for folder in (work, work / "private"):
+            git_in(folder, "config", "user.name", "test")
+            git_in(folder, "config", "user.email", "test@example.invalid")
+        git_in(work, "config", "core.hooksPath", "tools/githooks")
+        (work / "CLAUDE.md").write_text("doc 2", encoding="utf-8")
+        result = self.save(work, "更新文件")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(git_in(self.root, f"--git-dir={origin}", "log", "-1", "--format=%s"), "更新文件")
+        self.assertEqual(git_in(work, "branch", "--show-current"), "main")  # 文件不用開工作分支
+
+    def test_mute_without_a_conversation_id_explains_itself(self):
+        # Claude 照提示執行時漏了編號：要看得懂哪裡錯，不能掉去讀 stdin、印出看不懂的 JSON 錯誤
+        import os
+        import subprocess
+        import sys
+        result = subprocess.run([sys.executable, str(settings.BASE_DIR / ".claude" / "hooks" / "ask_save.py"), "--mute"],
+                                cwd=self.root, input="", capture_output=True, text=True, encoding="utf-8",
+                                env={**os.environ, "CLAUDE_PROJECT_DIR": str(self.root), "PYTHONIOENCODING": "utf-8"})
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("用法", result.stderr)
+        self.assertNotIn("JSONDecodeError", result.stderr)
+
+    def test_no_mute_option_without_a_conversation_id(self):
+        (self.root / "a.py").write_text("y", encoding="utf-8")
+        asked = self.hook.decide({}, self.root)
+        self.assertNotIn("--mute", asked["reason"])

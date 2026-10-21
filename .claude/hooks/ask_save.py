@@ -75,8 +75,9 @@ def decide(data, project):
     options = ["「存檔」：選項說明寫上你依這次改動擬好的存檔訊息（一句話）"]
     if code:
         options.append("「存檔並送審」：存檔後上傳給負責人審核（會公開在 GitHub，送審前會跑完整測試）")
-    options += ["「先不要」：同樣的改動不會再問",
-                f"「這次對話不要再問」：選了就執行 `.venv/Scripts/python.exe .claude/hooks/ask_save.py --mute {session}`"]
+    options.append("「先不要」：同樣的改動不會再問")
+    if session:  # 沒有對話編號就記不住是哪一次對話，不提供這個選項
+        options.append(f"「這次對話不要再問」：選了就執行 `.venv/Scripts/python.exe .claude/hooks/ask_save.py --mute {session}`")
     parts.append("請用 AskUserQuestion 問成員要怎麼處理，選項：\n" + "\n".join(f"- {o}" for o in options))
     parts.append("照成員的選擇用 save-work 技能（.claude/skills/save-work/SKILL.md）的步驟做。"
                  "這些改動如果不是這次工作造成的（例如別的工作階段改的），問的時候要說明。")
@@ -100,7 +101,13 @@ def mute(project, session):
 
 def main():
     project = Path(os.environ.get("CLAUDE_PROJECT_DIR") or ".")
-    if sys.argv[1:2] == ["--mute"] and len(sys.argv) == 3:
+    if sys.argv[1:2] == ["--mute"]:
+        # 少了編號時清楚說明，不要掉到下面去讀 stdin（會印出看不懂的 JSON 錯誤；2026-10-21 審核 #1 時發現）
+        if len(sys.argv) != 3 or not sys.argv[2].strip():
+            sys.stderr.reconfigure(encoding="utf-8")
+            print("用法：ask_save.py --mute <對話編號>。編號在存檔提醒的「這次對話不要再問」那一行；"
+                  "沒有編號就無法記住是哪一次對話，這次沒有設定。", file=sys.stderr)
+            sys.exit(2)
         mute(project, sys.argv[2])
         return
     data = json.loads(sys.stdin.buffer.read().decode("utf-8"))  # Windows 管線預設是 cp950，Claude Code 送的是 UTF-8
