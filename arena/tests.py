@@ -785,3 +785,163 @@ class PublicRepositoryTests(SimpleTestCase):
         from tools import git_menu
         self.assertEqual(git_menu.private_files(["docs/交接.md", "arena/views.py", "README.MD", "private", "private/x.json"]),
                          ["docs/交接.md", "README.MD", "private", "private/x.json"])
+
+
+def git_in(folder, *args):
+    """測試用：在 folder 執行 git，作者資料固定（測試的電腦不一定有設定）。"""
+    import subprocess
+    return subprocess.run(["git", "-c", "user.name=test", "-c", "user.email=test@example.invalid",
+                           "-c", "core.quotepath=false", *args], cwd=folder, capture_output=True, text=True,
+                          encoding="utf-8", check=True).stdout.strip()
+
+
+class SavePromptTests(SimpleTestCase):
+    # 2026-10-21 使用者要求：Claude Code 的工作結束時，問成員要不要存檔或送審（.claude/hooks/ask_save.py），
+    # 成員也能主動叫 Claude 存檔、送審（tools/git_menu.py --save／--submit，.claude/skills/save-work）。
+
+    def setUp(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("ask_save", settings.BASE_DIR / ".claude" / "hooks" / "ask_save.py")
+        self.hook = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.hook)
+        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.root = Path(self.tmp.name)
+        (self.root / "a.py").write_text("x", encoding="utf-8")
+        git_in(self.root, "init", "-q", "-b", "main")
+        git_in(self.root, "add", "-A")
+        git_in(self.root, "commit", "-q", "-m", "first")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def stop(self, **data):
+        return self.hook.decide({"session_id": "s1", **data}, self.root)
+
+    def test_unsaved_work_is_asked_about_once(self):
+        # 問過「先不要」以後，同樣的改動每次回應完都再問一次會很煩；有新的改動才再問
+        self.assertIsNone(self.stop())  # 沒有改動
+        (self.root / "a.py").write_text("y", encoding="utf-8")
+        asked = self.stop()
+        self.assertEqual(asked["decision"], "block")
+        self.assertIn("a.py", asked["reason"])
+        self.assertIn("存檔並送審", asked["reason"])
+        self.assertIsNone(self.stop())
+        (self.root / "a.py").write_text("z", encoding="utf-8")
+        self.assertIsNotNone(self.stop())
+
+    def test_no_question_while_claude_is_already_asking(self):
+        # Claude 因為這個 hook 繼續回應（去問成員）時再擋一次，就會一直迴圈
+        (self.root / "a.py").write_text("y", encoding="utf-8")
+        self.assertIsNone(self.stop(stop_hook_active=True))
+
+    def test_a_muted_conversation_is_not_asked_again(self):
+        with patch("builtins.print"):
+            self.hook.mute(self.root, "s1")
+        (self.root / "a.py").write_text("y", encoding="utf-8")
+        self.assertIsNone(self.stop())
+        self.assertIsNotNone(self.hook.decide({"session_id": "s2"}, self.root))
+
+    def test_documents_are_asked_about_but_the_work_log_is_not(self):
+        # 工作紀錄每次回應完都會變（Stop hook 寫的），算進去就會每次都問；文件只存進私人儲存庫，不用送審
+        from tools import git_menu
+        (self.root / "private").mkdir()
+        (self.root / "private" / "工作紀錄.md").write_text("log", encoding="utf-8")
+        (self.root / "CLAUDE.md").write_text("doc", encoding="utf-8")
+        git_in(self.root, "init", "-q", "-b", "main", str(self.root / "private"))
+        git_menu.write_exclude(self.root / ".git", git_menu.PUBLIC_EXCLUDE)
+        git_menu.write_exclude(self.root / "private" / ".git", git_menu.PRIVATE_EXCLUDE)
+        private = (f"--git-dir={self.root / 'private' / '.git'}", f"--work-tree={self.root}")
+        git_in(self.root, *private, "add", "-A")
+        git_in(self.root, *private, "commit", "-q", "-m", "docs")
+        (self.root / "private" / "工作紀錄.md").write_text("log 2", encoding="utf-8")
+        self.assertIsNone(self.stop())
+        (self.root / "CLAUDE.md").write_text("doc 2", encoding="utf-8")
+        asked = self.stop()
+        self.assertIn("CLAUDE.md", asked["reason"])
+        self.assertNotIn("存檔並送審", asked["reason"])
+
+    def clone_with_menu(self):
+        """有 origin 的暫存專案，裡面放一份 tools/git_menu.py（它只管自己所在的專案，所以不能拿這個專案的來跑）。"""
+        import shutil
+        origin, work = self.root / "origin.git", self.root / "work"
+        git_in(self.root, "init", "-q", "--bare", "-b", "main", str(origin))
+        git_in(self.root, "clone", "-q", str(origin), str(work))
+        for name in ("tools/git_menu.py", "config/local.py", "config/__init__.py"):
+            (work / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(settings.BASE_DIR / name, work / name)
+        (work / "b.py").write_text("x", encoding="utf-8")
+        git_in(work, "add", "-A")
+        git_in(work, "commit", "-q", "-m", "first")
+        git_in(work, "push", "-q", "origin", "main")
+        (work / "b.py").write_text("y", encoding="utf-8")
+        return work
+
+    def save(self, work, *args):
+        import os
+        import subprocess
+        import sys
+        return subprocess.run([sys.executable, str(work / "tools" / "git_menu.py"), "--save", *args], cwd=work,
+                              capture_output=True, text=True, encoding="utf-8", env={**os.environ, "PYTHONIOENCODING": "utf-8"})
+
+    def test_saving_on_main_starts_a_work_branch(self):
+        # 主線只放審核過的版本：成員在主線上改了程式，Claude 存檔時要先開工作分支，主線不能多出存檔
+        work = self.clone_with_menu()
+        git_in(work, "config", "user.name", "test")
+        git_in(work, "config", "user.email", "test@example.invalid")
+        git_in(work, "config", "core.hooksPath", "tools/githooks")
+        result = self.save(work, "改 b", "--name", "Fix B")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(git_in(work, "branch", "--show-current"), "work/fix-b")
+        self.assertEqual(git_in(work, "rev-parse", "main"), git_in(work, "rev-parse", "origin/main"))
+        self.assertEqual(git_in(work, "log", "-1", "--format=%s"), "改 b")
+
+    def test_saving_refuses_a_machine_that_was_never_set_up(self):
+        # 沒設定隱藏信箱的電腦存檔，真實信箱會公開在 GitHub；也沒有存檔前的機密檢查
+        work = self.clone_with_menu()
+        result = self.save(work, "改 b", "--name", "fix-b")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(git_in(work, "log", "--all", "--format=%s"), "first")
+
+    def test_saving_only_documents_uploads_them_right_away(self):
+        # 文件不經過送審：存了沒上傳，其他成員就一直看不到，存檔提醒也不會再提（它只看還沒存檔的改動）
+        work = self.clone_with_menu()
+        git_in(work, "checkout", "-q", "--", "b.py")  # 只留文件的改動
+        origin, seed = self.root / "private-origin.git", self.root / "seed"
+        git_in(self.root, "init", "-q", "--bare", "-b", "main", str(origin))
+        (seed / "private").mkdir(parents=True)
+        (seed / "private" / "settings.json").write_text("{}", encoding="utf-8")
+        (seed / "CLAUDE.md").write_text("doc", encoding="utf-8")
+        git_in(seed, "init", "-q", "-b", "main")
+        git_in(seed, "add", "-A")
+        git_in(seed, "commit", "-q", "-m", "seed")
+        git_in(seed, "push", "-q", str(origin), "main")
+        # 和 git_menu.fetch_private 一樣：只下載 git 資料，工作範圍設成整個專案資料夾再取出檔案
+        git_in(work, "clone", "-q", "--no-checkout", str(origin), str(work / "private"))
+        git_in(work / "private", "config", "core.worktree", "..")
+        git_in(work, f"--git-dir={work / 'private' / '.git'}", f"--work-tree={work}", "checkout", "-q", "-f", "main")
+        for folder in (work, work / "private"):
+            git_in(folder, "config", "user.name", "test")
+            git_in(folder, "config", "user.email", "test@example.invalid")
+        git_in(work, "config", "core.hooksPath", "tools/githooks")
+        (work / "CLAUDE.md").write_text("doc 2", encoding="utf-8")
+        result = self.save(work, "更新文件")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(git_in(self.root, f"--git-dir={origin}", "log", "-1", "--format=%s"), "更新文件")
+        self.assertEqual(git_in(work, "branch", "--show-current"), "main")  # 文件不用開工作分支
+
+    def test_mute_without_a_conversation_id_explains_itself(self):
+        # Claude 照提示執行時漏了編號：要看得懂哪裡錯，不能掉去讀 stdin、印出看不懂的 JSON 錯誤
+        import os
+        import subprocess
+        import sys
+        result = subprocess.run([sys.executable, str(settings.BASE_DIR / ".claude" / "hooks" / "ask_save.py"), "--mute"],
+                                cwd=self.root, input="", capture_output=True, text=True, encoding="utf-8",
+                                env={**os.environ, "CLAUDE_PROJECT_DIR": str(self.root), "PYTHONIOENCODING": "utf-8"})
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("用法", result.stderr)
+        self.assertNotIn("JSONDecodeError", result.stderr)
+
+    def test_no_mute_option_without_a_conversation_id(self):
+        (self.root / "a.py").write_text("y", encoding="utf-8")
+        asked = self.hook.decide({}, self.root)
+        self.assertNotIn("--mute", asked["reason"])

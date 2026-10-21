@@ -8,7 +8,9 @@
 選單只是把常用的 git／gh 指令包起來：每個指令執行前都印出來，出錯時照樣顯示 git 的訊息，不自己猜原因。
 
 --check-secrets 給 tools/githooks/pre-commit 用：存檔前擋下寫進公開檔案的機密與 .md。
+--status、--save、--submit、--update 不問問題，給 Claude Code 用（工作結束時由它先問成員；.claude/skills/save-work）。
 """
+import argparse
 import json
 import os
 import re
@@ -47,6 +49,7 @@ PUBLIC_EXCLUDE = """# tools/git_menu.py 產生，不要手動改：文件（.md�
 *.md
 /private/
 """
+WORK_LOG = "private/工作紀錄.md"
 LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
 DECISIONS = {"APPROVED": "已核准", "CHANGES_REQUESTED": "已退回修改"}
 
@@ -104,11 +107,13 @@ def changes():
     return out(*GIT, "status", "--porcelain").splitlines()
 
 
-def private_changes():
-    """還沒存進私人儲存庫的文件改動（沒有私人儲存庫時是空的）。"""
+def private_changes(include_log=False):
+    """還沒存進私人儲存庫的文件改動（沒有私人儲存庫時是空的）。工作紀錄每次 Claude 回應完都會變，
+    平常不算進「改動」，否則每次都會被當成有東西要存；存檔時才一起存（include_log）。"""
     if not (PRIVATE_DIR / ".git").exists():
         return []
-    return out(*PRIVATE_GIT, "status", "--porcelain").splitlines()
+    lines = out(*PRIVATE_GIT, "status", "--porcelain").splitlines()
+    return lines if include_log else [line for line in lines if not line.endswith(WORK_LOG)]
 
 
 def merging():
@@ -163,11 +168,11 @@ def fetch_private():
     return show(*PRIVATE_GIT, "checkout", "-f", MAIN)
 
 
-def save_private():
+def save_private(message=None):
     """把文件與工作紀錄的改動存進私人儲存庫（只在這台電腦，同步時才上傳）。"""
-    if private_changes():
+    if private_changes(include_log=True):
         run(*PRIVATE_GIT, "add", "-A")
-        return ok(*PRIVATE_GIT, "commit", "-m", f"文件與工作紀錄（{os.environ.get('COMPUTERNAME', '')}）")
+        return ok(*PRIVATE_GIT, "commit", "-m", message or f"文件與工作紀錄（{os.environ.get('COMPUTERNAME', '')}）")
     return False
 
 
@@ -176,14 +181,30 @@ def sync_private():
     放在沒有保護的私人儲存庫）；工作紀錄只會往後接，多人同時記錄時由 git 自動把兩邊的新內容都留下
     （private/.gitattributes：merge=union）。"""
     if not fetch_private():
-        return
+        return False
     print("同步私人資料（文件、工作紀錄、伺服器位址）...")
-    if not private_conflicts():
-        save_private()
-        if show(*PRIVATE_GIT, "pull", "--no-rebase", "--no-edit"):
-            show(*PRIVATE_GIT, "push")
-        else:
-            private_conflicts()
+    if private_conflicts():
+        return False
+    save_private()
+    if show(*PRIVATE_GIT, "pull", "--no-rebase", "--no-edit"):
+        return show(*PRIVATE_GIT, "push")
+    private_conflicts()
+    return False
+
+
+def save_documents(message=None):
+    """只有文件改動時的存檔：存進私人儲存庫後直接上傳。文件不經過送審，不上傳的話其他成員一直看不到，
+    而 Claude Code 的存檔提醒只看「還沒存檔」的改動，存了沒上傳的不會再提醒（2026-10-21 審核 #1 時發現）。"""
+    if private_conflicts():
+        return False
+    if not save_private(message):
+        print("沒有需要存檔的改動。")
+        return True
+    if sync_private():
+        print("文件已存進私人儲存庫並上傳，其他成員「取得最新版本」就看得到。")
+        return True
+    print("文件已存在這台電腦，但上傳失敗（原因在上面），下次「取得最新版本」時會再上傳。")
+    return False
 
 
 def private_conflicts():
@@ -227,11 +248,11 @@ def setup():
 
 # ---- 選單的五個動作 ----
 
-def update():
-    """取得最新版本：在主線就直接更新；在工作分支就把主線的新內容合併進來。私人資料一起同步。"""
+def update(interactive=True):
+    """取得最新版本：在主線就直接更新；在工作分支就把主線的新內容合併進來。私人資料一起同步。回傳是否成功。"""
     sync_private()
     if not show(*GIT, "fetch", "origin"):
-        return
+        return False
     before = out(*GIT, "rev-parse", "HEAD")
     if current_branch() == MAIN:
         done = show(*GIT, "merge", "--ff-only", f"origin/{MAIN}")
@@ -239,23 +260,35 @@ def update():
         done = show(*GIT, "merge", "--no-edit", f"origin/{MAIN}")
     if not done:
         if merging():
-            conflict()
+            conflict(interactive)
         else:
             print("沒有更新（原因在上面）。常見原因：你改過的檔案別人也改了，先「存檔」再取得最新版本。")
-        return
+        return False
     if "requirements.txt" in out(*GIT, "diff", "--name-only", before, "HEAD").splitlines():
         print("套件清單有更新，正在安裝...")
         show(sys.executable, "-m", "pip", "install", "-r", "requirements.txt")
     print("已經是最新版本。網站伺服器正在執行的話，關掉它的視窗再用 啟動遊戲平台.bat 重開（會一併更新資料庫）。")
+    return True
 
 
-def conflict():
-    files = out(*GIT, "diff", "--name-only", "--diff-filter=U")
+def conflict(interactive=True):
     print("主線的新內容和你的改動在同一個地方衝突，這些檔案要決定留哪一邊：")
-    print("\n".join(f"  {f}" for f in files.splitlines()))
+    print("\n".join(f"  {f}" for f in out(*GIT, "diff", "--name-only", "--diff-filter=U").splitlines()))
     print("可以請 Claude Code 幫忙（對它說「幫我解決合併衝突」），處理完再選「存檔」。")
-    if yes("先放棄這次合併，回到合併前的樣子？"):
+    if interactive and yes("先放棄這次合併，回到合併前的樣子？"):
         show(*GIT, "merge", "--abort")
+
+
+def create_work_branch(name):
+    """從最新的主線開 work/<名稱>（名稱只留英文、數字、-；空的就用日期）；沒存檔的改動會一起帶過去。"""
+    name = re.sub(r"[^A-Za-z0-9-]+", "-", name or "").strip("-").lower() or datetime.now().strftime("%Y%m%d-%H%M")
+    if not show(*GIT, "fetch", "origin"):
+        return None
+    # --no-track：上傳時才不會被設成推到 main
+    if not show(*GIT, "switch", "--no-track", "-c", f"work/{name}", f"origin/{MAIN}"):
+        return None
+    print(f"已開始新工作 work/{name}（從最新的主線開始）。")
+    return f"work/{name}"
 
 
 def start_work():
@@ -264,25 +297,29 @@ def start_work():
         print("目前這項工作還有沒存檔的改動，會一起帶到新工作。")
         if not yes("確定要帶過去？（不要的話選 N，先「存檔」）"):
             return
-    name = ask("這項工作的簡短名稱（英文、數字或 -，例如 xiangqi-flip；直接按 Enter 用日期）：")
-    name = re.sub(r"[^A-Za-z0-9-]+", "-", name).strip("-").lower() or datetime.now().strftime("%Y%m%d-%H%M")
-    if not show(*GIT, "fetch", "origin"):
-        return
-    # --no-track：上傳時才不會被設成推到 main
-    if show(*GIT, "switch", "--no-track", "-c", f"work/{name}", f"origin/{MAIN}"):
-        print(f"已開始新工作 work/{name}（從最新的主線開始）。改到一個段落就選「存檔」，做完選「送審」。")
+    if create_work_branch(ask("這項工作的簡短名稱（英文、數字或 -，例如 xiangqi-flip；直接按 Enter 用日期）：")):
+        print("改到一個段落就選「存檔」，做完選「送審」。")
+
+
+def commit_all(message):
+    """程式改動存進目前的分支、文件改動存進私人儲存庫（都只在這台電腦）。回傳是否成功。"""
+    if not (show(*GIT, "add", "-A") and show(*GIT, "commit", "-m", message)):
+        print("沒有存檔，原因在上面。")
+        return False
+    if not private_conflicts() and save_private(message):
+        print("文件的改動也存進私人儲存庫了。")
+    print("已存檔（還在這台電腦）。做完要給負責人審核時「送審」。")
+    return True
 
 
 def commit():
-    """存檔（commit）：只存在這台電腦，送審時才上傳。文件（.md）存進私人儲存庫，不用開工作分支。"""
+    """存檔（commit）：程式只存在這台電腦，送審時才上傳。文件（.md）存進私人儲存庫，不用開工作分支；
+    只有文件改動時存完直接上傳（save_documents）。"""
     if merging() and unresolved(GIT, ROOT):
         conflict()
         return
     if not changes():
-        if not private_conflicts() and save_private():
-            print("文件已存進私人儲存庫（還在這台電腦，「取得最新版本」或「送審」時上傳）。")
-        else:
-            print("沒有需要存檔的改動。")
+        save_documents()
         return
     if current_branch() == MAIN:
         print("主線只放審核過的版本，不能直接存檔。要先開始一項新工作（現在的改動會一起帶過去）。")
@@ -293,20 +330,16 @@ def commit():
             return
     show(*GIT, "status", "--short")
     message = ask("這次改了什麼（一句話，會顯示在紀錄裡；直接按 Enter 取消）：")
-    if not message:
-        return
-    if show(*GIT, "add", "-A") and show(*GIT, "commit", "-m", message):
-        if not private_conflicts() and save_private():
-            print("文件的改動也存進私人儲存庫了。")
-        print("已存檔（還在這台電腦）。做完要給負責人審核時選「送審」。")
-    else:
-        print("沒有存檔，原因在上面。")
+    if message:
+        commit_all(message)
+
+
+NO_TESTS = "送審前沒有跑測試"
 
 
 def submit():
     """送審：上傳這項工作並開一個 Pull Request，負責人會收到通知。已經送審過就更新同一個。"""
-    branch = current_branch()
-    if branch == MAIN:
+    if current_branch() == MAIN:
         print("主線沒有要送審的工作。先「開始新工作」，改完存檔再送審。")
         return
     if changes():
@@ -316,37 +349,52 @@ def submit():
         if changes():
             print("還有沒存檔的改動，先處理再送審。")
             return
-    if not show(*GIT, "fetch", "origin"):
-        return
-    commits = out(*GIT, "log", "--reverse", "--format=- %s", f"origin/{MAIN}..HEAD")
+    commits = work_commits()
     if not commits:
-        print("這項工作還沒有任何存檔。")
         return
-    sync_private()  # 文件不在送審裡，先上傳到私人儲存庫，審核的人才看得到
-    files = out(*GIT, "diff", "--name-only", f"origin/{MAIN}...HEAD").splitlines()
     if not handover_updated():
         print("提醒：這項工作沒有更新 docs/交接.md（CLAUDE.md 規定每個里程碑都要更新，下一個人才接得下去）。")
         if not yes("仍然要送審？"):
             return
-    tests = "送審前沒有跑測試"
+    tests = NO_TESTS
     if yes("送審前先跑一次完整測試？（約 2 分鐘，建議）"):
         tests = run_tests()
         if not tests.startswith("通過") and not yes("測試沒有全部通過，仍然要送審？（審核的人會看到結果）"):
             return
+    first = commits.splitlines()[0][2:]
+    open_review(commits, tests, lambda: ask(f"送審的標題（直接按 Enter 用「{first}」）：") or first, "版本管理.bat")
+
+
+def work_commits():
+    """送審前的共同步驟：取得最新的主線、上傳私人資料（文件不在送審裡，先上傳審核的人才看得到），
+    回傳這項工作的存檔清單（每行「- 說明」）；沒有存檔時回傳空字串。"""
+    if not show(*GIT, "fetch", "origin"):
+        return ""
+    commits = out(*GIT, "log", "--reverse", "--format=- %s", f"origin/{MAIN}..HEAD")
+    if not commits:
+        print("這項工作還沒有任何存檔。")
+        return ""
+    sync_private()
+    return commits
+
+
+def open_review(commits, tests, title, via):
+    """上傳工作分支並開送審；已經有開著的送審就只更新。title 是函式：真的要開新送審時才問標題。回傳是否成功。"""
     if not show(*GIT, "push", "-u", "origin", "HEAD"):
-        return
+        return False
     existing = out("gh", "pr", "view", "--json", "url,state", "--jq", 'select(.state == "OPEN") | .url')
     if existing:
-        if tests != "送審前沒有跑測試":
+        if tests != NO_TESTS:
             run("gh", "pr", "comment", "--body", f"更新送審。測試：{tests}")
         print(f"已更新送審：{existing}")
-        return
-    first = commits.splitlines()[0][2:]
-    title = ask(f"送審的標題（直接按 Enter 用「{first}」）：") or first
+        return True
+    files = out(*GIT, "diff", "--name-only", f"origin/{MAIN}...HEAD").splitlines()
     body = (f"## 這次的改動\n\n{commits}\n\n改到 {len(files)} 個檔案。\n\n"
-            f"## 測試\n\n{tests}\n\n（由 版本管理.bat 送出）")
-    if show("gh", "pr", "create", "--base", MAIN, "--head", branch, "--title", title, "--body", body):
-        print("已送審，負責人會收到通知。審核完成前可以繼續改、存檔，再選「送審」更新同一個送審。")
+            f"## 測試\n\n{tests}\n\n（由 {via} 送出）")
+    if not show("gh", "pr", "create", "--base", MAIN, "--head", current_branch(), "--title", title(), "--body", body):
+        return False
+    print("已送審，負責人會收到通知。審核完成前可以繼續改、存檔，再送審更新同一個送審。")
+    return True
 
 
 def handover_updated():
@@ -430,6 +478,68 @@ def invite():
     print("已寄出邀請。對方在 GitHub 的通知或信箱按「接受」後，照 README.md 下載專案。")
 
 
+# ---- 給 Claude Code 用的指令：不問問題，由 Claude Code 先問成員（2026-10-21 使用者要求；.claude/skills/save-work）----
+
+def status_cli():
+    """目前的分支、改動、存檔與送審，讓 Claude Code 決定要問成員什麼。"""
+    branch = current_branch()
+    code, docs = changes(), private_changes()
+    print(f"分支：{branch}" + ("（主線：存檔時會先開工作分支）" if branch == MAIN else ""))
+    print(f"程式改動（公開儲存庫，要送審）：{len(code)} 個" + "".join(f"\n  {line}" for line in code))
+    print(f"文件改動（私人儲存庫，不用送審）：{len(docs)} 個" + "".join(f"\n  {line}" for line in docs))
+    if branch != MAIN:
+        commits = out(*GIT, "log", "--reverse", "--format=- %s", f"origin/{MAIN}..HEAD")
+        print("這項工作的存檔：" + (f"\n{commits}" if commits else "還沒有"))
+        pr = out("gh", "pr", "view", "--json", "url,state", "--jq", 'select(.state == "OPEN") | .url')
+        print(f"送審：{pr or '還沒送審'}")
+        print("docs/交接.md：這項工作開始後" + ("有更新" if handover_updated() else "還沒更新"))
+    return 0
+
+
+def ready_to_commit():
+    """公開的儲存庫會顯示作者信箱，存檔前也要做機密檢查；這台還沒設定好（沒執行過 版本管理.bat）就不存檔。"""
+    if not out(*GIT, "config", "--local", "user.email") or out(*GIT, "config", "core.hooksPath") != "tools/githooks":
+        print("這台電腦還沒設定好版本管理（GitHub 隱藏信箱、存檔前的機密檢查），請先執行一次 版本管理.bat。")
+        return False
+    return True
+
+
+def save_cli(message, name):
+    """存檔：在主線上有程式改動時先開 work/<name>（主線只放審核過的版本）。"""
+    if not ready_to_commit() or private_conflicts():
+        return 1
+    if merging() and unresolved(GIT, ROOT):
+        conflict(interactive=False)
+        return 1
+    if not changes():
+        return 0 if save_documents(message) else 1
+    if current_branch() == MAIN and not create_work_branch(name):
+        return 1
+    return 0 if commit_all(message) else 1
+
+
+def submit_cli(title, with_tests):
+    """送審：要先存檔；測試沒有全部通過就不送（硬要送請成員用 版本管理.bat）。"""
+    if current_branch() == MAIN:
+        print("主線沒有要送審的工作：先用 --save 存檔（會開工作分支）。")
+        return 1
+    if changes():
+        print("還有沒存檔的改動，先用 --save 存檔。")
+        return 1
+    commits = work_commits()
+    if not commits:
+        return 1
+    if not handover_updated():
+        print("提醒：這項工作開始後還沒更新 docs/交接.md。")
+    tests = NO_TESTS
+    if with_tests:
+        tests = run_tests()
+        if not tests.startswith("通過"):
+            print("測試沒有全部通過，沒有送審。先修好；確定要送的話請成員用 版本管理.bat 的「送審」。")
+            return 1
+    return 0 if open_review(commits, tests, lambda: title or commits.splitlines()[0][2:], "Claude Code") else 1
+
+
 # ---- 存檔前的機密檢查 ----
 
 def secret_values():
@@ -476,8 +586,27 @@ def check_secrets():
 # ---- 選單 ----
 
 def main():
-    if sys.argv[1:] == ["--check-secrets"]:
+    parser = argparse.ArgumentParser(description="版本管理選單。加參數時不問問題，給 Claude Code 用（.claude/skills/save-work）。")
+    parser.add_argument("--check-secrets", action="store_true", help="存檔前的檢查（tools/githooks/pre-commit 用）")
+    parser.add_argument("--status", action="store_true", help="目前的分支、改動、存檔與送審")
+    parser.add_argument("--update", action="store_true", help="取得最新版本")
+    parser.add_argument("--save", metavar="訊息", help="存檔；在主線上有程式改動時先開 work/<--name>")
+    parser.add_argument("--name", help="--save 在主線上時，新工作分支的名稱（英文、數字、-）")
+    parser.add_argument("--submit", action="store_true", help="送審（先跑完整測試，沒有全部通過就不送）")
+    parser.add_argument("--title", help="--submit 的標題（預設是第一筆存檔的說明）")
+    parser.add_argument("--no-tests", action="store_true", help="--submit 時不跑測試")
+    args = parser.parse_args()
+    if args.check_secrets:
         return check_secrets()
+    if args.status or args.update or args.save or args.submit:
+        fetch_private()
+        if args.status:
+            return status_cli()
+        if args.update:
+            return 0 if update(interactive=False) else 1
+        if args.save:
+            return save_cli(args.save, args.name)
+        return submit_cli(args.title, not args.no_tests)
     if not setup():
         return 1
     admin = out("gh", "api", f"repos/{repo_of(ROOT)}", "--jq", ".permissions.admin") == "true"
