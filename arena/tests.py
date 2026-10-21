@@ -948,3 +948,9 @@ class SavePromptTests(SimpleTestCase):
         (self.root / "a.py").write_text("y", encoding="utf-8")
         asked = self.hook.decide({}, self.root)
         self.assertNotIn("--mute", asked["reason"])
+
+    def test_member_list_flags_people_in_only_one_repository(self):
+        # 只在公開儲存庫的成員拿不到文件與伺服器位址，只在私人的不能上傳程式，兩邊都要有才算加入完成
+        from tools import git_menu
+        joined = {"FZR0": {"公開", "私人"}, "alice": {"公開"}, "bob": {"私人"}}
+        self.assertEqual(git_menu.incomplete(joined), ["alice（只在公開儲存庫）", "bob（只在私人儲存庫）"])
