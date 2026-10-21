@@ -66,7 +66,8 @@ def decide(data, project):
     state["fingerprint"] = fingerprint
     state_file.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
 
-    on_main = "（主線，存檔時會先開工作分支）" if branch == "main" else ""
+    # 只有文件改動時直接存進私人儲存庫、不開工作分支（git_menu.save_documents），提示要和實際做法一致
+    on_main = "（主線，存檔時會先開工作分支）" if branch == "main" and code else ""
     parts = [f"工作結束前：專案還有沒存檔的改動（目前分支 {branch}{on_main}）。"]
     if code:
         parts.append(f"程式（公開儲存庫，要經過送審）：\n{listing(code)}")
