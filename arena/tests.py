@@ -755,14 +755,16 @@ class PublicRepositoryTests(SimpleTestCase):
 
     def test_documents_go_only_to_the_private_repository(self):
         # .md 只給成員看（2026-10-21 使用者決定）：兩個儲存庫共用同一個資料夾，公開的看不到 .md 與 private/，
-        # 私人儲存庫只管這些，不能把程式、套件或引擎裡的說明檔收進去
+        # 私人儲存庫只管這些，不能把程式、套件或引擎裡的說明檔收進去。
+        # 根目錄的 README.md 是公開頁面的說明，歸公開的儲存庫（2026-10-23 使用者決定）；其他資料夾的 README.md 仍是文件
         import shutil
         import subprocess
         from tools import git_menu
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            for name in ("CLAUDE.md", "docs/交接.md", ".claude/skills/x/SKILL.md", "private/settings.json",
-                         "arena/views.py", ".venv/Lib/site-packages/pkg/README.md", "tools/stockfish/README.md"):
+            for name in ("CLAUDE.md", "README.md", "docs/README.md", "docs/交接.md", ".claude/skills/x/SKILL.md",
+                         "private/settings.json", "arena/views.py", ".venv/Lib/site-packages/pkg/README.md",
+                         "tools/stockfish/README.md"):
                 (root / name).parent.mkdir(parents=True, exist_ok=True)
                 (root / name).write_text("x", encoding="utf-8")
             shutil.copy(settings.BASE_DIR / ".gitignore", root / ".gitignore")
@@ -776,15 +778,17 @@ class PublicRepositoryTests(SimpleTestCase):
                                         cwd=root, capture_output=True, text=True, encoding="utf-8", check=True)
                 return sorted(line[3:] for line in result.stdout.splitlines())
 
-            self.assertEqual(untracked(), [".gitignore", "arena/views.py"])
+            self.assertEqual(untracked(), [".gitignore", "README.md", "arena/views.py"])
             self.assertEqual(untracked(f"--git-dir={root / 'private' / '.git'}", f"--work-tree={root}"),
-                             [".claude/skills/x/SKILL.md", "CLAUDE.md", "docs/交接.md", "private/settings.json"])
+                             [".claude/skills/x/SKILL.md", "CLAUDE.md", "docs/README.md", "docs/交接.md",
+                              "private/settings.json"])
 
     def test_a_commit_that_adds_documents_to_the_public_repository_is_refused(self):
-        # 排除清單還沒寫好的電腦、或用 git add -f 硬加的，存檔前也要擋下
+        # 排除清單還沒寫好的電腦、或用 git add -f 硬加的，存檔前也要擋下；只放行公開頁面的說明（根目錄的 README.md）
         from tools import git_menu
-        self.assertEqual(git_menu.private_files(["docs/交接.md", "arena/views.py", "README.MD", "private", "private/x.json"]),
-                         ["docs/交接.md", "README.MD", "private", "private/x.json"])
+        self.assertEqual(git_menu.private_files(["docs/交接.md", "arena/views.py", "README.md", "docs/README.MD",
+                                                 "private", "private/x.json"]),
+                         ["docs/交接.md", "docs/README.MD", "private", "private/x.json"])
 
 
 def git_in(folder, *args):
