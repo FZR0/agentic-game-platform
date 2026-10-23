@@ -728,7 +728,6 @@ details ul { margin: 4px 0 0; padding-left: 18px; }
   .play-bar .actions { order: 3; display: grid; flex-basis: 100%; grid-auto-columns: minmax(0, 1fr); grid-auto-flow: column; gap: 4px; margin-left: 0; }
   .play-bar .actions > button, .play-bar .menu > button, .play-bar .menu-link { width: 100%; padding: 6px 2px; font-size: 0.875rem; }
   .play-bar .status { order: 4; }
-  .play-bar .brand-text, .play-bar .crumb-sep { display: none; }
 
   /* 首頁等頁面的導覽列：只留標誌 */
   .site-bar .brand-text { display: none; }

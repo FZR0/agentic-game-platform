@@ -443,9 +443,12 @@ function showResult(li, result, llmSource) {
   key.hidden = !result.key;
   if (result.key) renderRichText(key, result.key);
   renderRichText(li.querySelector(".text"), plainFacts(result.text));
-  let source = ["hidden", "plain"].includes(result.source) ? result.note : `${plainNote(result.note)}，先顯示電腦分析原文`;
+  // 模型成功時（llm、agent）結果沒有 note，只有其他情況才拿 note 來顯示
+  let source;
   if (result.source === "llm") source = llmSource;
-  if (result.source === "agent") source = `AI 查證後決定，花了 ${result.seconds} 秒`;
+  else if (result.source === "agent") source = `AI 查證後決定，花了 ${result.seconds} 秒`;
+  else if (["hidden", "plain"].includes(result.source)) source = result.note;
+  else source = `${plainNote(result.note)}，先顯示電腦分析原文`;
   li.querySelector(".source").textContent = source;
 }
 
