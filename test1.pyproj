@@ -129,6 +129,7 @@
     <Content Include="chessgame\static\chessgame\board.js" />
     <Content Include="chessgame\static\chessgame\icon.svg" />
     <Content Include="CLAUDE.md" />
+    <Content Include="docs\README.md" />
     <Content Include="docs\交接.md" />
     <Content Include="docs\四種遊戲設計規劃.md" />
     <Content Include="gomoku\static\gomoku\board.js" />

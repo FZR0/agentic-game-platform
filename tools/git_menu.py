@@ -2,7 +2,7 @@
 
 專案放在兩個 GitHub 儲存庫（docs/交接.md 4.8）：
 - 公開的 <擁有者>/<名稱>：程式。主線 main 只能合併負責人核准過的送審（Pull Request）。
-- 私人的 <擁有者>/<名稱>-private：所有 .md（CLAUDE.md、docs、技能說明）、工作紀錄與研究用伺服器的位址，
+- 私人的 <擁有者>/<名稱>-private：根目錄 README.md 以外的所有 .md（CLAUDE.md、docs、技能說明）、工作紀錄與研究用伺服器的位址，
   只有受邀成員拿得到（2026-10-21 使用者決定 .md 只給成員看）。git 資料在 private/.git，但工作範圍是整個
   專案資料夾（core.worktree = ..），所以 .md 留在原本的位置，Claude Code 照樣讀得到；文件的改動不經過送審。
 選單只是把常用的 git／gh 指令包起來：每個指令執行前都印出來，出錯時照樣顯示 git 的訊息，不自己猜原因。
@@ -30,10 +30,12 @@ MAIN = "main"
 GIT = ("git", "-c", "core.quotepath=false")  # 中文檔名照原樣顯示，不變成 \346\270... 這種跳脫碼
 PRIVATE_GIT = (*GIT, f"--git-dir={PRIVATE_DIR / '.git'}", f"--work-tree={local.MAIN_DIR}")
 # 私人儲存庫只管 .md 與 private/，其餘檔案歸公開的儲存庫；寫進 private/.git/info/exclude（不在任何儲存庫裡，每次使用時重寫）
+# 例外：根目錄的 README.md 是公開頁面的說明，歸公開的儲存庫（2026-10-23 使用者決定）
 PRIVATE_EXCLUDE = """# tools/git_menu.py 產生，不要手動改：私人儲存庫只管 .md 與 private/（docs/交接.md 4.8）
 *
 !*/
 !*.md
+/README.md
 !/private/**
 /.venv/
 /tools/katago/
@@ -45,8 +47,9 @@ PRIVATE_EXCLUDE = """# tools/git_menu.py 產生，不要手動改：私人儲存
 """
 # 公開的儲存庫不管 .md 與 private/；寫進它的 .git/info/exclude，不能寫在 .gitignore：
 # 根目錄的 .gitignore 兩個儲存庫都會讀，而且比 info/exclude 優先，寫在那裡私人儲存庫就看不到這些檔案了
-PUBLIC_EXCLUDE = """# tools/git_menu.py 產生，不要手動改：文件（.md）與 private/ 歸私人儲存庫（docs/交接.md 4.8）
+PUBLIC_EXCLUDE = """# tools/git_menu.py 產生，不要手動改：文件（.md）與 private/ 歸私人儲存庫，根目錄的 README.md 除外（docs/交接.md 4.8）
 *.md
+!/README.md
 /private/
 """
 WORK_LOG = "private/工作紀錄.md"
@@ -475,7 +478,7 @@ def invite():
         return
     for repo in (repo_of(ROOT), private_repo()):
         show("gh", "api", "-X", "PUT", f"repos/{repo}/collaborators/{name}", "-f", "permission=push", "--silent")
-    print("已寄出邀請。對方在 GitHub 的通知或信箱按「接受」後，照 README.md 下載專案。")
+    print("已寄出邀請。對方在 GitHub 的通知或信箱按「接受」後，照私人儲存庫首頁的說明（docs/README.md）下載專案。")
 
 
 ROLES = {"admin": "管理者", "maintain": "維護者", "write": "可上傳", "triage": "可分類", "read": "只能看"}
@@ -594,9 +597,10 @@ def files_with_secrets(diff, values):
 
 
 def private_files(names):
-    """不能進公開儲存庫的檔名：.md（只給成員看）與 private/（私人儲存庫本身）。平常由 .git/info/exclude 排除，
-    這裡再擋還沒寫好排除清單的電腦，或用 git add -f 硬加進來的。"""
-    return [n for n in names if n.lower().endswith(".md") or n == "private" or n.startswith("private/")]
+    """不能進公開儲存庫的檔名：.md（只給成員看；根目錄的 README.md 是公開頁面的說明，除外）與 private/（私人儲存庫本身）。
+    平常由 .git/info/exclude 排除，這裡再擋還沒寫好排除清單的電腦，或用 git add -f 硬加進來的。"""
+    return [n for n in names if (n.lower().endswith(".md") and n.lower() != "readme.md")
+            or n == "private" or n.startswith("private/")]
 
 
 def check_secrets():
