@@ -258,6 +258,7 @@ button:focus-visible, select:focus-visible, input:focus-visible, a:focus-visible
 .status.ok::before { background: var(--accent); }
 .status.warn { border-color: transparent; background: var(--warn-soft); color: var(--warn); }
 .status.warn::before { background: var(--warn); }
+.page-notice { margin: 0 0 16px; }
 
 .menu { position: relative; }
 

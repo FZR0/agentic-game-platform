@@ -63,7 +63,13 @@ class ModelRun(models.Model):
     """
 
     KINDS = {"agent": "Agent 下棋", "benchmark": "測速", "ai_move": "AI 思路說明", "review": "問題說明",
-             "overall": "整體評論", "ask": "提問"}
+             "overall": "整體評論", "ask": "提問",
+             # AI 助理處理的使用者請求（arena/orchestrator.py，2026-10-28）
+             "req_home": "請求：首頁", "req_history": "請求：對局紀錄", "req_guide": "請求：怎麼玩",
+             "req_play_page": "請求：對局頁", "req_end_form": "請求：清單結束對局", "req_models": "請求：模型清單",
+             "req_list_games": "請求：對局清單", "req_detail": "請求：打開對局", "req_end": "請求：結束對局",
+             "req_review": "請求：復盤", "req_note": "請求：AI 思路說明", "req_narrate": "請求：說明",
+             "req_new_game": "請求：新對局", "req_move": "請求：下棋", "req_ask": "請求：提問"}
     # ok：模型完成了（Agent 自己決定、說明通過檢查）；fallback：模型有回應但沒完成（次數內沒決定、說明沒通過檢查）；
     # error：呼叫不到模型（連不上、逾時、伺服器暫停呼叫、HTTP 錯誤）。error 反映的是伺服器，不算進模型的成功率與秒數。
     OUTCOMES = {"ok": "成功", "fallback": "沒完成", "error": "呼叫失敗"}

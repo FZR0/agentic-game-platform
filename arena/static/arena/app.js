@@ -76,7 +76,20 @@ async function api(path, body) {
     throw new Error(`伺服器發生錯誤（${res.status}），這一步沒有存檔`);
   }
   if (!res.ok) throw new Error(data.error || res.statusText);
+  showNotice(data.handled?.notice);
   return data;
+}
+
+// AI 助理沒完成、改用一般方式處理時，伺服器回傳給玩家看的提示（2026-10-28）
+let noticeTimer = null;
+
+function showNotice(text) {
+  if (!text) return;
+  const el = $("assistant-notice");
+  el.textContent = text;
+  el.hidden = false;
+  clearTimeout(noticeTimer);
+  noticeTimer = setTimeout(() => { el.hidden = true; }, 10000);
 }
 
 // ---- 棋盤 ----

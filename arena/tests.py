@@ -21,7 +21,7 @@ from django.test import SimpleTestCase, TestCase, override_settings
 
 from gomoku.module import MODULE as GOMOKU
 
-from . import agent, narrator
+from . import agent, narrator, operations, orchestrator
 from .base import ESTIMATE
 from .management.commands.model_report import summarize
 from .models import AiNote, Game, ModelRun
@@ -176,6 +176,12 @@ class NumCtxTests(SimpleTestCase):
     @override_settings(OLLAMA_NUM_CTX=4096)
     def test_agent_request_carries_num_ctx(self):
         sent = self.sent_bodies(lambda: agent._chat([], narrator.model_config(), []))
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["options"]["num_ctx"], 4096)
+
+    @override_settings(OLLAMA_NUM_CTX=4096)
+    def test_request_agent_carries_num_ctx(self):
+        sent = self.sent_bodies(lambda: orchestrator._chat([], []))
         self.assertEqual(len(sent), 1)
         self.assertEqual(sent[0]["options"]["num_ctx"], 4096)
 
@@ -342,6 +348,11 @@ class ModelRunTests(TestCase):
     def post(self, url, body):
         return self.client.post(url, json.dumps(body), content_type="application/json")
 
+    @staticmethod
+    def uses():
+        """模型用在下棋、說明、提問的紀錄；不含 AI 助理處理請求的 req_* 紀錄（2026-10-28 起每個請求都有一筆）。"""
+        return ModelRun.objects.exclude(kind__startswith="req_").order_by("id")
+
     def agent_run(self, *replies):
         with patch("arena.agent._chat", side_effect=fake_chat(*replies)):
             return agent.agent_move(GOMOKU, GOMOKU.replay({}, self.OPEN_THREE), self.OPEN_THREE, "qwen3:8b", 4)["run"]
@@ -373,7 +384,7 @@ class ModelRunTests(TestCase):
         game_id = self.post("/api/gomoku/games/", {"seat": 1}).json()["game"]["id"]
         with patch("arena.agent._chat", side_effect=fake_chat([("play_move", {"coord": "H9", "reason": "跟著下"})])):
             self.post(f"/api/gomoku/games/{game_id}/move/", {"action": "H8", "model": "qwen3:8b"})
-        run = ModelRun.objects.get()
+        run = self.uses().get()
         self.assertEqual((run.kind, run.game_id, run.index, run.model, run.outcome),
                          ("agent", game_id, 1, "qwen3:8b", "ok"))
         # 同名模型在不同伺服器、不同電腦上速度不同，比較時要分得開
@@ -382,14 +393,14 @@ class ModelRunTests(TestCase):
     def test_moves_that_need_no_model_are_not_recorded(self):
         # AI 執黑的第一手由程式直接下；記進去會把模型的秒數拉低
         self.post("/api/gomoku/games/", {"seat": 2})
-        self.assertFalse(ModelRun.objects.exists())
+        self.assertFalse(self.uses().exists())
 
     def test_explanation_failures_are_told_apart(self):
         # 說明沒通過檢查是模型寫錯；呼叫不到是伺服器的問題，要分開算
         for reply in ("重點：擋住。\n說明：先擋。", "重點：下 N2。\n說明：N2 比較好。", OSError("timed out")):
             with patch("arena.narrator._ask_ollama", side_effect=[reply]):
                 self.post("/api/gomoku/narrate/", {"facts": self.FACTS, "model": "qwen3:8b"})
-        self.assertEqual([(r.kind, r.model, r.outcome) for r in ModelRun.objects.order_by("id")],
+        self.assertEqual([(r.kind, r.model, r.outcome) for r in self.uses()],
                          [("review", "qwen3:8b", "ok"), ("review", "qwen3:8b", "fallback"),
                           ("review", "qwen3:8b", "error")])
 
@@ -401,7 +412,7 @@ class ModelRunTests(TestCase):
                 self.post(f"/api/gomoku/games/{game.id}/notes/1/narrate/", {"model": "qwen3:8b"})
             self.post(f"/api/gomoku/games/{game.id}/ask/", {"question": "這手好嗎？", "at": 1, "model": "qwen3:8b"})
         # 第二次直接回傳存好的說明，沒有用到模型
-        self.assertEqual([(r.kind, r.game, r.index) for r in ModelRun.objects.order_by("id")],
+        self.assertEqual([(r.kind, r.game, r.index) for r in self.uses()],
                          [("ai_move", game, 1), ("ask", game, 1)])
 
     def test_every_benchmark_move_is_kept_across_reruns(self):
@@ -471,6 +482,183 @@ class ModelRunTests(TestCase):
         rows = list(csv.reader(io.StringIO(raw.decode("utf-8-sig"))))
         self.assertEqual(rows[0][:3], ["用途", "遊戲", "模型"])
         self.assertEqual(rows[1][:3], ["Agent 下棋", "五子棋", "qwen3:8b"])
+
+
+def obedient(seen=None, values=None):
+    """假的 AI 助理模型：依序呼叫提供的每個工具一次，參數從 values 取（可以是函式，例如剛建立的棋局編號）。
+    seen 收集它看到的所有訊息。每個新請求（訊息只有系統提示與任務）重新開始。"""
+    values = values or {}
+    called = []
+
+    def chat(messages, tools):
+        if len(messages) == 2:
+            called.clear()
+        if seen is not None:
+            seen.extend(str(m.get("content", "")) for m in messages)
+        for t in tools:
+            name = t["function"]["name"]
+            if name not in called:
+                called.append(name)
+                args = {k: (v() if callable(v) else v) for k, v in values.get(name, {}).items()}
+                return {"content": "", "tool_calls": [{"function": {"name": name, "arguments": args}}]}
+        return {"content": "完成", "tool_calls": []}
+    return chat
+
+
+def scripted(*replies):
+    """假的 AI 助理模型：每次依序回傳一組工具呼叫，用完就回覆完成；None 代表呼叫不到模型。"""
+    replies = list(replies)
+
+    def chat(messages, tools):
+        reply = replies.pop(0) if replies else []
+        if reply is None:
+            raise OSError("timed out")
+        return {"content": "完成", "tool_calls": [{"function": {"name": n, "arguments": a}} for n, a in reply]}
+    return chat
+
+
+class RequestAgentTests(TestCase):
+    # 使用者決定（2026-10-28）：每個請求都交給 AI 助理處理，為了證明 Agentic 系統可行。
+    # 這些測試守的是：功能和原本完全一樣、Agent 不能改變使用者要求的事、沒完成時一定有人補完並告訴玩家。
+    def setUp(self):
+        # AI 棋手呼叫不到模型時由引擎代下，結果固定，兩條路才比得出是否相同
+        patcher = patch("arena.agent._chat", side_effect=OSError("測試不連 Ollama"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def post(self, url, body):
+        return self.client.post(url, json.dumps(body), content_type="application/json")
+
+    def move(self, game, action, model_chat):
+        with patch("arena.orchestrator._chat", side_effect=model_chat):
+            return self.post(f"/api/gomoku/games/{game.id}/move/", {"action": action})
+
+    def new_game(self):
+        return Game.objects.create(game_type="gomoku", human_seat=1, actions=[])
+
+    def runs(self, kind):
+        return list(ModelRun.objects.filter(kind=f"req_{kind}"))
+
+    def test_agent_gives_exactly_what_the_old_code_gave(self):
+        # 換成 Agent 處理不能改變任何功能：同一步棋，Agent 完成的回應和原本程式的回應一模一樣
+        by_agent, by_code = self.new_game(), self.new_game()
+        a = self.move(by_agent, "H8", obedient(values={"play_human_move": {"game_id": by_agent.id, "action": "H8"},
+                                                       "run_ai_turns": {"game_id": by_agent.id}})).json()
+        b = self.move(by_code, "H8", OSError("timed out")).json()
+        self.assertEqual((a["handled"]["by"], b["handled"]["by"]), ("agent", "fallback"))
+        for key in ("action", "frame", "winner", "draw"):
+            self.assertEqual(a[key], b[key], key)
+        self.assertEqual([m["action"] for m in a["ai_moves"]], [m["action"] for m in b["ai_moves"]])
+        by_agent.refresh_from_db()
+        by_code.refresh_from_db()
+        self.assertEqual(by_agent.actions, by_code.actions)
+        self.assertEqual(self.runs("move")[0].outcome, "ok")
+
+    def test_unreachable_model_still_completes_and_tells_the_player(self):
+        # 研究用伺服器當過三次；當掉時網站照樣能用，而且玩家知道這次不是 AI 助理完成的
+        game = self.new_game()
+        r = self.move(game, "H8", OSError("timed out")).json()
+        self.assertEqual(r["handled"]["by"], "fallback")
+        self.assertEqual(r["handled"]["notice"], orchestrator.NOTICES["error"])
+        game.refresh_from_db()
+        self.assertEqual(len(game.actions), 2)  # 玩家一步、AI 一步
+        run = self.runs("move")[0]
+        self.assertEqual(run.outcome, "error")  # 伺服器的問題，不算進模型的成功率
+        self.assertIn(agent.UNREACHABLE, run.problem)
+
+    def test_agent_cannot_change_the_players_move(self):
+        # 按鈕帶來的參數是鎖定的：Agent 想替玩家換一步棋時退回、不執行，最後照玩家下的存檔
+        game = self.new_game()
+        r = self.move(game, "H8", scripted([("play_human_move", {"game_id": game.id, "action": "I9"})])).json()
+        game.refresh_from_db()
+        self.assertEqual(game.actions[0], "H8")
+        self.assertEqual(r["handled"]["by"], "fallback")
+        run = self.runs("move")[0]
+        self.assertEqual((run.outcome, run.rejected), ("fallback", 1))
+
+    def test_stopping_halfway_never_saves_a_move_twice(self):
+        # Agent 存了玩家的一步就停下：補完時只讓 AI 行動，玩家的那一步不會再存一次
+        game = self.new_game()
+        r = self.move(game, "H8", scripted([("play_human_move", {"game_id": game.id, "action": "H8"})])).json()
+        game.refresh_from_db()
+        self.assertEqual(len(game.actions), 2)
+        self.assertEqual(game.actions.count("H8"), 1)
+        self.assertEqual(r["handled"]["by"], "fallback")
+
+    def test_ai_cannot_act_before_the_players_move_is_saved(self):
+        # 先讓 AI 行動的話，輪到的是玩家、AI 什麼都不會做，玩家的那一步之後就沒有人回應
+        game = self.new_game()
+        r = self.move(game, "H8", scripted([("run_ai_turns", {"game_id": game.id})],
+                                           [("play_human_move", {"game_id": game.id, "action": "H8"}),
+                                            ("run_ai_turns", {"game_id": game.id})])).json()
+        self.assertEqual(r["handled"]["by"], "agent")
+        self.assertEqual(len(r["ai_moves"]), 1)
+
+    def test_illegal_move_is_refused_like_before(self):
+        game = Game.objects.create(game_type="gomoku", human_seat=1, actions=["H8", "H9"])
+        r = self.move(game, "H8", obedient(values={"play_human_move": {"game_id": game.id, "action": "H8"}}))
+        self.assertEqual(r.status_code, 400)
+        game.refresh_from_db()
+        self.assertEqual(game.actions, ["H8", "H9"])
+        run = self.runs("move")[0]
+        self.assertEqual(run.outcome, "ok")  # Agent 照請求做了，是請求本身不成立
+        self.assertIn("請求不成立", run.problem)
+
+    def test_tools_outside_the_request_are_refused(self):
+        # 復盤時 Agent 不能順手結束對局：每種請求只能用自己的工具
+        game = Game.objects.create(game_type="gomoku", human_seat=1, actions=["H8", "H9"])
+        with patch("arena.orchestrator._chat", side_effect=scripted([("end_game", {"game_id": game.id}),
+                                                                     ("review_game", {"game_id": game.id})])):
+            r = self.client.get(f"/api/gomoku/games/{game.id}/review/").json()
+        game.refresh_from_db()
+        self.assertFalse(game.ended)
+        self.assertEqual(r["handled"]["by"], "agent")
+        self.assertIn("moments", r)
+        self.assertEqual(self.runs("review")[0].rejected, 1)
+
+    def test_agent_chooses_what_to_look_up_for_a_question(self):
+        # 提問由 Agent 決定查什麼：「一開始那手」沒寫成「第 1 手」，正規表示式抓不到，Agent 可以查
+        game = Game.objects.create(game_type="gomoku", human_seat=1, actions=["H8", "H9", "I8"])
+        expected = operations.action_points(GOMOKU, game, 1)
+        with patch("arena.orchestrator._chat", side_effect=scripted([("explain_action", {"n": 1})])), \
+                patch("arena.narrator._ask_ollama", return_value="重點：還可以。\n說明：開局常見。"):
+            r = self.post(f"/api/gomoku/games/{game.id}/ask/", {"question": "我一開始那手好嗎？", "at": 3}).json()
+        self.assertEqual(r["handled"]["by"], "agent")
+        self.assertEqual(r["facts"]["points"], expected)
+        self.assertNotEqual(operations.ask_points_by_rules(GOMOKU, game, "我一開始那手好嗎？", 3), expected)
+
+    def test_answers_from_agent_chosen_facts_are_still_checked(self):
+        # Agent 只決定查什麼；回答照樣要通過 check_text，提到事實裡沒有的座標就改顯示事實原文
+        game = Game.objects.create(game_type="gomoku", human_seat=1, actions=["H8", "H9", "I8"])
+        with patch("arena.orchestrator._chat", side_effect=scripted([("explain_action", {"n": 1})])), \
+                patch("arena.narrator._ask_ollama", return_value="重點：應該下 A1。\n說明：A1 比較好。"):
+            r = self.post(f"/api/gomoku/games/{game.id}/ask/", {"question": "第 1 手好嗎？", "at": 3}).json()
+        self.assertEqual(r["source"], "template")
+
+    def test_question_falls_back_to_the_old_lookup(self):
+        game = Game.objects.create(game_type="gomoku", human_seat=1, actions=["H8", "H9", "I8"])
+        with patch("arena.orchestrator._chat", side_effect=OSError("timed out")), \
+                patch("arena.narrator._ask_ollama", side_effect=OSError("timed out")):
+            r = self.post(f"/api/gomoku/games/{game.id}/ask/", {"question": "第 1 手好嗎？", "at": 3}).json()
+        self.assertEqual(r["handled"]["by"], "fallback")
+        self.assertEqual(r["facts"]["points"], operations.ask_points_by_rules(GOMOKU, game, "第 1 手好嗎？", 3))
+
+    def test_pages_go_through_the_agent_and_show_when_it_failed(self):
+        with patch("arena.orchestrator._chat", side_effect=obedient()):
+            html = self.client.get("/").content.decode()
+        self.assertNotIn(orchestrator.NOTICES["error"], html)
+        self.assertEqual(self.runs("home")[0].outcome, "ok")
+        with patch("arena.orchestrator._chat", side_effect=OSError("timed out")):
+            html = self.client.get("/").content.decode()
+        self.assertIn(orchestrator.NOTICES["error"], html)
+
+    def test_games_not_converted_yet_skip_the_agent(self):
+        # 圍棋、象棋、國際象棋還沒改（docs/交接.md 待辦）：照原本的程式處理，也不記請求紀錄
+        with patch("arena.orchestrator._chat") as chat:
+            r = self.client.get("/api/weiqi/games/").json()
+        chat.assert_not_called()
+        self.assertEqual(r["handled"], {"by": "direct"})
+        self.assertFalse(ModelRun.objects.exists())
 
 
 class RulesPanelTests(TestCase):

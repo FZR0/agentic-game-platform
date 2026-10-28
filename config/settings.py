@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
 import os
+import sys
 from pathlib import Path
 
 from config import local, sqlserver
@@ -80,6 +81,10 @@ OLLAMA_TIMEOUT = 120  # 秒；模型第一次載入約需 40 秒
 # 共用伺服器的記憶體會被吃光而當掉（gemma4:31b 曾載入後佔約 100 GB）。所以每個請求都要明確帶這個值。
 OLLAMA_NUM_CTX = int(os.environ.get('OLLAMA_NUM_CTX', '8192'))
 OLLAMA_RETRY_AFTER = 180  # 秒；呼叫 Ollama 連不上或逾時後，這段時間內直接由引擎代下，不再每一步都等到逾時
+if sys.argv[1:2] == ['test']:
+    # 測試絕不能連到共用的研究用伺服器：所有請求（包括頁面，2026-10-28 起每個請求都會呼叫 AI 助理）都改送到
+    # 不存在的位址，立刻失敗而走原本的程式；要測模型的回應時，測試自己 patch。
+    OLLAMA_URL, OLLAMA_TIMEOUT = 'http://127.0.0.1:9', 2
 # 模型閒置多久後由 Ollama 卸載；啟動本機測試.bat 設成 2m，讓本機的顯示卡記憶體盡快釋放
 OLLAMA_KEEP_ALIVE = os.environ.get('OLLAMA_KEEP_ALIVE', '30m')
 # 使用者可選的 AI 模型（Agent 下棋與說明），依智慧程度由高到低排列（依參數量與世代估計，不是實測）。

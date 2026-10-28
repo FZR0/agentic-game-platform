@@ -33,6 +33,9 @@ class GameModule:
     benchmark_samples = []  # 測速用的固定局面（行動序列）
     human_seats = None  # 玩家可以選的座位；None 代表 seat_names 全部（撲克固定是 1 號位）
     numbered = True     # 棋盤能不能「顯示手數」
+    # 這個遊戲的對局請求（開局、下棋、復盤、提問…）是否交給 AI 助理（arena/orchestrator.py）處理；
+    # False 時直接由原本的程式處理（2026-10-28 先做五子棋與撲克，其他遊戲列在 docs/交接.md 待辦）
+    agentic_requests = False
     step_word = "手"    # 「第幾手」的單位；撲克用「步」，因為「第 3 手」是第 3 手牌
     # 「規則」面板的內容，寫給玩家看（使用者要求每個遊戲都要有規則說明，2026-10-11）：[{"title", "items": [文字, ...]}]
     rules = []
