@@ -39,7 +39,9 @@ def main():
     args = parser.parse_args()
     ctypes.windll.kernel32.SetConsoleTitleW("益智遊戲 AI 教練")
     # 用 127.0.0.1 檢查：localhost 會先試 IPv6，開發伺服器只聽 IPv4，每次要多等約 2 秒
-    site_check = f"http://127.0.0.1:{args.port}/"
+    # 檢查用 CSS 檔：每個頁面都交給 AI 助理（2026-10-28），首頁第一次要等模型十幾秒，
+    # 檢查會逾時、誤以為伺服器沒開，而且每試一次就多叫一次模型
+    site_check = f"http://127.0.0.1:{args.port}/static/arena/style.css"
     site_url = f"http://localhost:{args.port}/"
 
     if responds(site_check):  # 伺服器已經在執行時，直接打開網頁
