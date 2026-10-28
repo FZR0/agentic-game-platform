@@ -5,6 +5,7 @@ from unittest.mock import patch
 from django.test import SimpleTestCase, TestCase, override_settings
 
 from arena import agent
+from arena import tests as arena_tests
 from arena.base import CONDITIONAL
 from arena.models import AiNote, Game
 
@@ -437,6 +438,30 @@ class GameApiTests(TestCase):
                 for c in hole:
                     self.assertNotIn(f'"{c}"', body, (seat, c))
                     self.assertNotIn(cards.show(c), body, (seat, c))
+
+    def test_ai_hole_cards_never_reach_the_request_agent(self):
+        # 每個請求都交給 AI 助理（2026-10-28）：它看到的工具摘要不能含 AI 的底牌，否則可能寫進回覆或紀錄
+        seen = []
+        latest = lambda: Game.objects.latest("id").id  # noqa: E731
+        values = {"start_game": {"game": "holdem", "seat": 1}, "run_ai_turns": {"game_id": latest},
+                  "play_human_move": {"game_id": latest, "action": "call"}, "load_game": {"game_id": latest}}
+        with patch("arena.orchestrator._chat", side_effect=arena_tests.obedient(seen, values)):
+            r, game = self.start()
+            self.assertEqual(r.json()["handled"]["by"], "agent")
+            frame = r.json()["ai_moves"][-1]["frame"] if r.json()["ai_moves"] else r.json()["frame"]
+            action = "check" if frame["legal"]["check"] else "call"
+            values["play_human_move"]["action"] = action
+            self.post(f"/api/holdem/games/{game.id}/move/", {"action": action})
+            self.client.get(f"/api/holdem/games/{game.id}/")
+        game.refresh_from_db()
+        state = MODULE.replay({**game.settings, "secret": game.secret}, game.actions)
+        text = "\n".join(seen)
+        self.assertNotIn("seed", text)
+        for seat, hole in state.hole.items():
+            if seat != HUMAN:
+                for c in hole:
+                    self.assertNotIn(cards.show(c), text, (seat, c))
+                    self.assertNotRegex(text, rf"\b{c}\b", (seat, c))
 
     def test_ai_hole_cards_never_reach_the_page_during_the_hand(self):
         r, game = self.start()

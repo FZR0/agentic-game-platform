@@ -77,6 +77,7 @@ def fits(kind, hole, board):
 
 class HoldemModule(GameModule):
     key = "holdem"
+    agentic_requests = True
     name = "德州撲克"
     seat_names = {s: f"{s} 號位" for s in range(1, MAX_PLAYERS + 1)}
     human_seats = [HUMAN]

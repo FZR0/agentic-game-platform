@@ -60,6 +60,8 @@
     <Compile Include="arena\migrations\__init__.py" />
     <Compile Include="arena\models.py" />
     <Compile Include="arena\narrator.py" />
+    <Compile Include="arena\operations.py" />
+    <Compile Include="arena\orchestrator.py" />
     <Compile Include="arena\tests.py" />
     <Compile Include="arena\urls.py" />
     <Compile Include="arena\views.py" />

@@ -76,7 +76,20 @@ async function api(path, body) {
     throw new Error(`伺服器發生錯誤（${res.status}），這一步沒有存檔`);
   }
   if (!res.ok) throw new Error(data.error || res.statusText);
+  showNotice(data.handled?.notice);
   return data;
+}
+
+// AI 助理沒完成、改用一般方式處理時，伺服器回傳給玩家看的提示（2026-10-28）
+let noticeTimer = null;
+
+function showNotice(text) {
+  if (!text) return;
+  const el = $("assistant-notice");
+  el.textContent = text;
+  el.hidden = false;
+  clearTimeout(noticeTimer);
+  noticeTimer = setTimeout(() => { el.hidden = true; }, 10000);
 }
 
 // ---- 棋盤 ----
@@ -443,9 +456,12 @@ function showResult(li, result, llmSource) {
   key.hidden = !result.key;
   if (result.key) renderRichText(key, result.key);
   renderRichText(li.querySelector(".text"), plainFacts(result.text));
-  let source = ["hidden", "plain"].includes(result.source) ? result.note : `${plainNote(result.note)}，先顯示電腦分析原文`;
+  // 模型成功時（llm、agent）結果沒有 note，只有其他情況才拿 note 來顯示
+  let source;
   if (result.source === "llm") source = llmSource;
-  if (result.source === "agent") source = `AI 查證後決定，花了 ${result.seconds} 秒`;
+  else if (result.source === "agent") source = `AI 查證後決定，花了 ${result.seconds} 秒`;
+  else if (["hidden", "plain"].includes(result.source)) source = result.note;
+  else source = `${plainNote(result.note)}，先顯示電腦分析原文`;
   li.querySelector(".source").textContent = source;
 }
 

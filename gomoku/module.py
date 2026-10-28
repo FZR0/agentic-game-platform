@@ -30,6 +30,7 @@ def cell(action):
 
 class GomokuModule(GameModule):
     key = "gomoku"
+    agentic_requests = True
     name = "五子棋"
     seat_names = engine.COLOR_NAMES
     coord_pattern = r"(?<![A-Za-z0-9])([A-O](?:1[0-5]|[1-9]))(?![0-9])"

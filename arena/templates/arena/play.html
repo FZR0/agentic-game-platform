@@ -82,6 +82,7 @@
       </div>
     </nav>
     <span id="llm-status" class="status warn" hidden></span>
+    <span id="assistant-notice" class="status warn" role="status"{% if not handled.notice %} hidden{% endif %}>{{ handled.notice }}</span>
   </header>
 
   <div id="app" class="app">
