@@ -193,3 +193,29 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# 運行紀錄（使用者要求，2026-10-28：啟動遊戲平台.bat 沒有紀錄，出問題時分不出是 AI 伺服器、AI 助理還是程式）。
+# 每次呼叫 Ollama、每筆模型使用紀錄、AI 助理的每次工具呼叫、伺服器錯誤，同時顯示在網站伺服器視窗與寫進
+# logs/網站紀錄.log（主要的專案資料夾，git 不管）。研究用伺服器只寫代稱（narrator.server_label），不寫位址
+LOG_FILE = LOCAL_DIR / 'logs' / '網站紀錄.log'
+LOG_HANDLERS = ['console', 'file']
+if sys.argv[1:2] == ['test']:
+    LOG_HANDLERS = ['null']  # 測試不寫檔也不印（沒有 handler 時會印出 WARNING）；檢查紀錄用 assertLogs
+else:
+    LOG_FILE.parent.mkdir(exist_ok=True)
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {'plain': {'format': '%(asctime)s [%(levelname)s] %(message)s', 'datefmt': '%m-%d %H:%M:%S'}},
+    'handlers': {
+        'null': {'class': 'logging.NullHandler'},
+        'console': {'class': 'logging.StreamHandler', 'formatter': 'plain'},
+        # delay：runserver 的自動重新載入有兩個程序，只有處理請求的那個打開檔案，換檔時才不會被另一個鎖住
+        'file': {'class': 'logging.handlers.RotatingFileHandler', 'filename': LOG_FILE, 'maxBytes': 2_000_000,
+                 'backupCount': 5, 'encoding': 'utf-8', 'delay': True, 'formatter': 'plain'},
+    },
+    'loggers': {
+        'arena': {'handlers': LOG_HANDLERS, 'level': 'INFO', 'propagate': False},
+        'django.request': {'handlers': LOG_HANDLERS[-1:], 'level': 'ERROR'},  # 伺服器錯誤的完整訊息也寫進檔案
+    },
+}

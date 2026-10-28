@@ -91,6 +91,7 @@ def main():
     if not responds(f"{settings.OLLAMA_URL}/api/tags", timeout=5):
         print(f"連不上 Ollama 伺服器 {settings.OLLAMA_URL}，AI 會改由引擎代下、說明改顯示引擎原文。")
 
+    print(f"運行紀錄（AI 伺服器、AI 助理、錯誤）會顯示在「遊戲平台伺服器」視窗，也存在 {settings.LOG_FILE}")
     print("伺服器啟動中...")
     startup = subprocess.STARTUPINFO()
     startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
