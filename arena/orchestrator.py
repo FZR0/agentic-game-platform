@@ -9,12 +9,15 @@ Agent 只看得到工具回傳的摘要，摘要只含玩家本來就看得到�
 請求本身不成立（例如不合法的一步）時，操作丟出的 ValueError 直接傳回 views，照原本的方式回覆錯誤。
 """
 import json
+import logging
 import time
 
 from django.conf import settings
 
 from . import agent, narrator, operations
 from .models import ModelRun
+
+log = logging.getLogger(__name__)
 
 REQUEST_STEPS = 4  # 每個請求最多呼叫模型幾次
 SYSTEM_PROMPT = """你是益智遊戲平台的 AI 助理。使用者在網頁上的每個操作都交給你處理。
@@ -320,6 +323,7 @@ def handle(kind, ctx):
     spec = REQUESTS[kind]
     module = ctx.get("module")
     if spec.game_scoped and not module.agentic_requests:
+        log.info("請求 %s（%s）：這個遊戲還沒交給 AI 助理，直接用原本的程式處理", kind, module.key)
         spec.fallback(ctx)
         return spec.respond(ctx), {"by": "direct"}
     start = time.perf_counter()
@@ -332,6 +336,7 @@ def handle(kind, ctx):
         _record(kind, module, ctx, run, start, "ok", f"請求不成立：{exc}")
         raise
     if outcome != "ok":
+        log.warning("請求 %s：AI 助理沒有完成（%s），改用原本的程式補完", kind, problem)
         try:
             spec.fallback(ctx)
         except ValueError:
@@ -368,6 +373,7 @@ def _run_agent(spec, ctx, run):
         calls = message.get("tool_calls") or []
         messages.append({"role": "assistant", "content": message.get("content", ""), "tool_calls": calls})
         if not calls:
+            log.info("AI 助理（%s）說完成了：%s", spec.kind, (message.get("content") or "")[:200])
             break  # Agent 認為完成了
         for call in calls:
             name = call.get("function", {}).get("name", "")
@@ -379,7 +385,12 @@ def _run_agent(spec, ctx, run):
                     args = {}
             if not isinstance(args, dict):
                 args = {}
-            messages.append({"role": "tool", "tool_name": name, "content": spec.execute(ctx, name, args, run)})
+            rejected = run["rejected"]
+            result = spec.execute(ctx, name, args, run)
+            # 工具摘要只有玩家看得到的內容（撲克沒有底牌），可以照寫
+            log.log(logging.WARNING if run["rejected"] > rejected else logging.INFO, "AI 助理（%s）呼叫 %s %s → %s",
+                    spec.kind, name, json.dumps(args, ensure_ascii=False), result)
+            messages.append({"role": "tool", "tool_name": name, "content": result})
         if spec.auto_finish and spec.done(ctx):
             break
     if spec.done(ctx):

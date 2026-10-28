@@ -1146,3 +1146,47 @@ class SavePromptTests(SimpleTestCase):
         from tools import git_menu
         joined = {"FZR0": {"公開", "私人"}, "alice": {"公開"}, "bob": {"私人"}}
         self.assertEqual(git_menu.incomplete(joined), ["alice（只在公開儲存庫）", "bob（只在私人儲存庫）"])
+
+class RunLogTests(TestCase):
+    # 使用者 2026-10-28：啟動遊戲平台.bat 沒有運行紀錄，出了問題分不出是 AI 伺服器、AI 助理還是程式。
+    # 紀錄要讓人一眼看出是哪一邊：伺服器連不上、AI 助理被擋下、改用原本的程式補完，各自有一行。
+    def setUp(self):
+        narrator._retry_at = 0.0
+        self.addCleanup(setattr, narrator, "_retry_at", 0.0)
+        self.game = Game.objects.create(game_type="gomoku", human_seat=1, actions=[])
+
+    def move(self, action="H8"):
+        return self.client.post(f"/api/gomoku/games/{self.game.id}/move/", json.dumps({"action": action}),
+                                content_type="application/json")
+
+    def test_a_server_problem_is_logged_as_the_servers(self):
+        with patch("urllib.request.urlopen", side_effect=TimeoutError("timed out")), \
+                self.assertLogs("arena", "WARNING") as logs:
+            self.assertEqual(self.move().json()["handled"]["by"], "fallback")
+        text = "\n".join(logs.output)
+        self.assertIn("呼叫本機的 gemma4:26b 失敗（連不上或逾時", text)
+        self.assertIn("改用原本的程式補完", text)
+
+    @override_settings(OLLAMA_URL="http://10.20.30.40:11434", OLLAMA_SERVER_NAMES={"10.20.30.40": "research"})
+    def test_the_research_servers_address_never_reaches_the_log(self):
+        # 紀錄檔可能被複製給別人看；位址不能公開（2026-10-21），只寫代稱
+        with patch("urllib.request.urlopen", side_effect=TimeoutError("timed out")), \
+                self.assertLogs("arena", "INFO") as logs:
+            self.move()
+        text = "\n".join(logs.output)
+        self.assertIn("research 伺服器", text)
+        self.assertNotIn("10.20.30.40", text)
+
+    def test_every_step_of_the_assistant_is_logged_and_refusals_stand_out(self):
+        # 看得出 AI 助理做了什麼；它想替玩家換一步棋被擋下時是 WARNING，不會淹沒在一般紀錄裡
+        cheat = scripted([("play_human_move", {"game_id": self.game.id, "action": "I9"})])
+        with patch("arena.orchestrator._chat", side_effect=cheat), \
+                patch("arena.agent._chat", side_effect=OSError("測試不連 Ollama")), \
+                self.assertLogs("arena", "INFO") as logs:
+            self.move()
+        refused = [r for r in logs.records if "play_human_move" in r.getMessage()]
+        self.assertEqual(len(refused), 1)
+        self.assertEqual(refused[0].levelname, "WARNING")
+        self.assertIn("I9", refused[0].getMessage())
+        self.assertIn("action 必須是 H8", refused[0].getMessage())
+        self.assertTrue(any("請求：下棋" in r.getMessage() and r.levelname == "WARNING" for r in logs.records))

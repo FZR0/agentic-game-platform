@@ -1,3 +1,4 @@
+import logging
 import platform
 import urllib.parse
 
@@ -92,7 +93,14 @@ class ModelRun(models.Model):
 
     @classmethod
     def record(cls, kind, game_type, run, game=None, index=None):
-        """存一筆紀錄。run 是 agent.agent_move 回傳的 run，或欄位相同的 dict（model、seconds、outcome…）。"""
+        """存一筆紀錄。run 是 agent.agent_move 回傳的 run，或欄位相同的 dict（model、seconds、outcome…）。
+        同時寫進運行紀錄（config/settings.py 的 LOGGING），沒成功的用 WARNING。"""
+        where = f"{game_type}" + (f" 第 {game.pk} 盤" if game else "") + (f" 第 {index + 1} 步" if index is not None else "")
+        logging.getLogger(__name__).log(
+            logging.INFO if run["outcome"] == "ok" else logging.WARNING,
+            "%s（%s）：%s，%.1f 秒，模型 %s，呼叫 %s 次，被退回 %s 次%s", cls.KINDS.get(kind, kind), where,
+            cls.OUTCOMES.get(run["outcome"], run["outcome"]), run["seconds"], run["model"], run.get("calls"),
+            run.get("rejected"), f"；原因：{run['problem']}" if run.get("problem") else "")
         return cls.objects.create(kind=kind, game_type=game_type, game=game, index=index,
                                   server=urllib.parse.urlsplit(settings.OLLAMA_URL).hostname or "",
                                   machine=platform.node(), **run)

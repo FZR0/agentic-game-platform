@@ -4,6 +4,7 @@
 使用確定的用語，就改用事實原文（範本說明）。Ollama 無法使用時也是如此。
 """
 import json
+import logging
 import math
 import re
 import time
@@ -15,6 +16,8 @@ from pathlib import Path
 from django.conf import settings
 
 from .base import CONDITIONAL, ESTIMATE
+
+log = logging.getLogger(__name__)
 
 CERTAIN_WORDS = ("必勝", "一定", "必然", "絕對")
 LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
@@ -118,19 +121,36 @@ def chat(body):
     """送出 /api/chat 並回傳結果（Agent 與說明共用）。連不上或逾時後的 OLLAMA_RETRY_AFTER 秒內直接丟出 OSError，
     讓呼叫端立刻改用引擎：伺服器卡住時只有第一次要等到逾時，不會每一步都等 OLLAMA_TIMEOUT 秒。"""
     global _retry_at
+    where = f"{server_label()}的 {body.get('model')}"
     wait = _retry_at - time.monotonic()
     if wait > 0:
+        log.warning("沒有呼叫%s：AI 伺服器剛才沒有回應，暫停呼叫，約 %d 秒後再試", where, math.ceil(wait))
         raise OSError(f"AI 伺服器剛才沒有回應，約 {math.ceil(wait / 60)} 分鐘後再試")
     req = urllib.request.Request(f"{settings.OLLAMA_URL}/api/chat", data=json.dumps(body).encode("utf-8"),
                                  headers={"Content-Type": "application/json"})
+    started = time.monotonic()
     try:
         with urllib.request.urlopen(req, timeout=settings.OLLAMA_TIMEOUT) as resp:
-            return json.load(resp)
-    except urllib.error.HTTPError:
-        raise  # 伺服器有回應（例如模型不存在），不是卡住，不必暫停
-    except OSError:
-        _retry_at = time.monotonic() + settings.OLLAMA_RETRY_AFTER
+            data = json.load(resp)
+    except urllib.error.HTTPError as exc:
+        # 伺服器有回應（例如模型不存在），不是卡住，不必暫停
+        log.warning("呼叫%s 失敗（伺服器回覆錯誤，%.1f 秒）：%s", where, time.monotonic() - started, exc)
         raise
+    except OSError as exc:
+        _retry_at = time.monotonic() + settings.OLLAMA_RETRY_AFTER
+        log.warning("呼叫%s 失敗（連不上或逾時，%.1f 秒）：%s；之後 %d 秒內不再呼叫", where,
+                    time.monotonic() - started, exc, settings.OLLAMA_RETRY_AFTER)
+        raise
+    log.info("呼叫%s：%.1f 秒", where, time.monotonic() - started)
+    return data
+
+
+def server_label():
+    """紀錄裡寫的 Ollama 伺服器：本機、或 OLLAMA_SERVER_NAMES 的代稱（研究用伺服器的位址不能寫出來）。"""
+    host = urllib.parse.urlsplit(settings.OLLAMA_URL).hostname
+    if host in LOCAL_HOSTS:
+        return "本機"
+    return f"{settings.OLLAMA_SERVER_NAMES.get(host, '未命名的')} 伺服器"
 
 
 def _ask_ollama(facts, config, game_name):

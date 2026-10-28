@@ -445,7 +445,8 @@ class GameApiTests(TestCase):
         latest = lambda: Game.objects.latest("id").id  # noqa: E731
         values = {"start_game": {"game": "holdem", "seat": 1}, "run_ai_turns": {"game_id": latest},
                   "play_human_move": {"game_id": latest, "action": "call"}, "load_game": {"game_id": latest}}
-        with patch("arena.orchestrator._chat", side_effect=arena_tests.obedient(seen, values)):
+        with patch("arena.orchestrator._chat", side_effect=arena_tests.obedient(seen, values)), \
+                self.assertLogs("arena", "INFO") as logs:  # 運行紀錄寫的是同樣的工具摘要，也不能有底牌
             r, game = self.start()
             self.assertEqual(r.json()["handled"]["by"], "agent")
             frame = r.json()["ai_moves"][-1]["frame"] if r.json()["ai_moves"] else r.json()["frame"]
@@ -455,7 +456,7 @@ class GameApiTests(TestCase):
             self.client.get(f"/api/holdem/games/{game.id}/")
         game.refresh_from_db()
         state = MODULE.replay({**game.settings, "secret": game.secret}, game.actions)
-        text = "\n".join(seen)
+        text = "\n".join(seen + logs.output)
         self.assertNotIn("seed", text)
         for seat, hole in state.hole.items():
             if seat != HUMAN:
