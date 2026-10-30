@@ -89,9 +89,14 @@ def main():
     from tools import setup_engines
     setup_engines.main()
 
+    # 檢查 AI 伺服器：有問題時印出原因與排除步驟（查不出原因時印可能原因），並存一份故障報告（arena/health.py）
+    import django
+    django.setup()
     from django.conf import settings
-    if not responds(f"{settings.OLLAMA_URL}/api/tags", timeout=5):
-        print(f"連不上 Ollama 伺服器 {settings.OLLAMA_URL}，AI 會改由引擎代下、說明改顯示引擎原文。")
+    from arena import health
+    problem = health.check()
+    if problem:
+        print(health.as_text(problem))
 
     print(f"運行紀錄（AI 伺服器、AI 助理、錯誤）會顯示在「遊戲平台伺服器」視窗，也存在 {settings.LOG_FILE}")
     print("伺服器啟動中...")

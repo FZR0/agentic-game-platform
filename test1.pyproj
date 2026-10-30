@@ -47,6 +47,7 @@
     <Compile Include="arena\apps.py" />
     <Compile Include="arena\base.py" />
     <Compile Include="arena\games.py" />
+    <Compile Include="arena\health.py" />
     <Compile Include="arena\management\__init__.py" />
     <Compile Include="arena\management\commands\__init__.py" />
     <Compile Include="arena\management\commands\benchmark_models.py" />
@@ -121,6 +122,7 @@
     <Content Include="arena\model_benchmarks_research.json" />
     <Content Include="arena\static\arena\app.js" />
     <Content Include="arena\static\arena\style.css" />
+    <Content Include="arena\templates\arena\_ai_problem.html" />
     <Content Include="arena\templates\arena\_game_row.html" />
     <Content Include="arena\templates\arena\_how_to_use.html" />
     <Content Include="arena\templates\arena\base.html" />
@@ -139,6 +141,8 @@
     <Content Include="holdem\preflop_equity.json" />
     <Content Include="holdem\static\holdem\board.js" />
     <Content Include="holdem\static\holdem\icon.svg" />
+    <Content Include="logs\故障報告\20261030-194417.txt" />
+    <Content Include="logs\故障報告\20261030-194459.txt" />
     <Content Include="README.md" />
     <Content Include="requirements.txt" />
     <Content Include="weiqi\static\weiqi\board.js" />
@@ -175,6 +179,8 @@
     <Folder Include="holdem\migrations\" />
     <Folder Include="holdem\static\" />
     <Folder Include="holdem\static\holdem\" />
+    <Folder Include="logs\" />
+    <Folder Include="logs\故障報告\" />
     <Folder Include="weiqi\" />
     <Folder Include="weiqi\migrations\" />
     <Folder Include="weiqi\static\" />

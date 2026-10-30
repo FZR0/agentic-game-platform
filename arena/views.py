@@ -12,7 +12,7 @@ from django.urls import reverse
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
-from . import agent, games, narrator, orchestrator
+from . import agent, games, health, narrator, orchestrator
 from .base import EVIDENCE_TYPES
 from .models import AiNote, Game
 from .operations import RESULTS
@@ -58,12 +58,13 @@ def _json(kind, ctx):
         data, handled = orchestrator.handle(kind, ctx)
     except ValueError as exc:
         return _error(exc)
-    return JsonResponse({**data, "handled": handled})
+    # ai_problem：AI 伺服器目前的問題（health，2026-10-30），沒有問題時是 None，畫面據此顯示或收起說明
+    return JsonResponse({**data, "handled": handled, "ai_problem": health.current()})
 
 
 def _page(request, template, kind, ctx):
     data, handled = orchestrator.handle(kind, ctx)
-    return render(request, template, {**data, "handled": handled})
+    return render(request, template, {**data, "handled": handled, "ai_problem": health.current()})
 
 
 # ---- 頁面 ----
