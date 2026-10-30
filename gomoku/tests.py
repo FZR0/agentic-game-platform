@@ -334,6 +334,8 @@ class GameApiTests(TestCase):
             first = self.post(f"/api/gomoku/games/{game_id}/notes/1/narrate/", {}).json()
             second = self.post(f"/api/gomoku/games/{game_id}/notes/1/narrate/", {}).json()
         self.assertEqual(narrate.call_count, 1)
+        # handled 是這次請求花的秒數等處理資訊，每次不同；要比的是說明本身
+        first.pop("handled"), second.pop("handled")
         self.assertEqual(first, second)
 
     def test_fallback_narration_is_not_saved(self):

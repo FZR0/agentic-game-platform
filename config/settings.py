@@ -203,6 +203,8 @@ if sys.argv[1:2] == ['test']:
     LOG_HANDLERS = ['null']  # 測試不寫檔也不印（沒有 handler 時會印出 WARNING）；檢查紀錄用 assertLogs
 else:
     LOG_FILE.parent.mkdir(exist_ok=True)
+# AI 伺服器出問題時的故障報告（arena/health.py，2026-10-30）；測試時不寫
+FAULT_REPORT_DIR = None if sys.argv[1:2] == ['test'] else LOG_FILE.parent / '故障報告'
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,

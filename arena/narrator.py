@@ -15,6 +15,7 @@ from pathlib import Path
 
 from django.conf import settings
 
+from . import health
 from .base import CONDITIONAL, ESTIMATE
 
 log = logging.getLogger(__name__)
@@ -135,13 +136,16 @@ def chat(body):
     except urllib.error.HTTPError as exc:
         # 伺服器有回應（例如模型不存在），不是卡住，不必暫停
         log.warning("呼叫%s 失敗（伺服器回覆錯誤，%.1f 秒）：%s", where, time.monotonic() - started, exc)
+        health.report_failure(exc, body.get("model"))
         raise
     except OSError as exc:
         _retry_at = time.monotonic() + settings.OLLAMA_RETRY_AFTER
         log.warning("呼叫%s 失敗（連不上或逾時，%.1f 秒）：%s；之後 %d 秒內不再呼叫", where,
                     time.monotonic() - started, exc, settings.OLLAMA_RETRY_AFTER)
+        health.report_failure(exc, body.get("model"))  # 只在失敗時檢查一次原因，暫停期間沿用
         raise
     log.info("呼叫%s：%.1f 秒", where, time.monotonic() - started)
+    health.clear()
     return data
 
 
@@ -163,11 +167,25 @@ def _ask_ollama(facts, config, game_name):
 
 
 def installed_models():
-    """Ollama 已安裝的模型名稱；Ollama 沒開時回傳 None。"""
+    """Ollama 已安裝的模型名稱；連不上（或剛才連不上、還在暫停呼叫）時回傳 None。
+    每次打開設定都會查，所以也遵守暫停：伺服器有問題時不再每次都等連線失敗（2026-10-30）。"""
+    global _retry_at
+    if _retry_at > time.monotonic():
+        return None
     try:
         with urllib.request.urlopen(f"{settings.OLLAMA_URL}/api/tags", timeout=3) as resp:
             return {m["name"] for m in json.load(resp)["models"]}
-    except (OSError, ValueError, KeyError):
+    except urllib.error.HTTPError as exc:
+        health.report_failure(exc, settings.OLLAMA_MODEL)
+        return None
+    except OSError as exc:
+        _retry_at = time.monotonic() + settings.OLLAMA_RETRY_AFTER
+        log.warning("查詢%s的模型清單失敗（連不上或逾時）：%s；之後 %d 秒內不再呼叫", server_label(), exc,
+                    settings.OLLAMA_RETRY_AFTER)
+        health.report_failure(exc, settings.OLLAMA_MODEL)
+        return None
+    except (ValueError, KeyError) as exc:
+        health.report_failure(exc, settings.OLLAMA_MODEL)
         return None
 
 

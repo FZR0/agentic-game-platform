@@ -76,8 +76,37 @@ async function api(path, body) {
     throw new Error(`伺服器發生錯誤（${res.status}），這一步沒有存檔`);
   }
   if (!res.ok) throw new Error(data.error || res.statusText);
-  showNotice(data.handled?.notice);
+  showProblem(data.ai_problem);
+  // 查得出 AI 伺服器的問題時，說明已經講了，不再重複一般的提示
+  if (!data.ai_problem) showNotice(data.handled?.notice);
   return data;
+}
+
+// AI 伺服器出問題時的說明（2026-10-30）：查得出原因寫排除步驟，查不出寫可能原因並附故障報告。
+// 結構和 templates/arena/_ai_problem.html 相同；問題解決時伺服器回傳 null，就收起來
+function showProblem(p) {
+  const el = $("ai-problem");
+  el.hidden = !p;
+  if (!p || el.dataset.report === p.report) return;
+  el.dataset.report = p.report;
+  const para = (text, className = "") => Object.assign(document.createElement("p"), { textContent: text, className });
+  const list = (tag, items) => {
+    const l = document.createElement(tag);
+    l.append(...items.map((text) => Object.assign(document.createElement("li"), { textContent: text })));
+    return l;
+  };
+  const summary = Object.assign(document.createElement("summary"), { textContent: `AI 暫時無法使用：${p.title}` });
+  const body = Object.assign(document.createElement("div"), { className: "ai-problem-body" });
+  if (p.detail) body.append(para(p.detail));
+  if (p.known) {
+    body.append(para("排除步驟："), list("ol", p.steps));
+  } else {
+    const where = p.report_file ? `（也存在 ${p.report_file}）` : "";
+    body.append(para("可能原因："), list("ul", p.causes), para(`故障報告${where}：`),
+      Object.assign(document.createElement("pre"), { className: "ai-report", textContent: p.report }));
+  }
+  body.append(para(`這段期間電腦照常下棋，說明改顯示分析原文。修好後不用重新啟動網站，約 ${p.retry_minutes} 分鐘內會自動恢復。`, "muted"));
+  el.replaceChildren(summary, body);
 }
 
 // AI 助理沒完成、改用一般方式處理時，伺服器回傳給玩家看的提示（2026-10-28）
@@ -759,7 +788,8 @@ function modelOptionText(m) {
 function updateModelStatus() {
   const el = $("llm-status");
   const m = modelInfo.models.find((x) => x.name === $("model").value);
-  el.hidden = Boolean(modelInfo.online && m && usableModel(m));
+  // 連不上時，上方的 AI 伺服器說明已經講了原因，這裡不再重複
+  el.hidden = Boolean(modelInfo.online ? m && usableModel(m) : !$("ai-problem").hidden);
   el.textContent = modelInfo.online ? "選的 AI 模型不能用：電腦照常下棋，說明會比較簡短"
     : "AI 說明暫時連不上：電腦照常下棋，說明會比較簡短";
   el.title = modelInfo.online ? "可以在「設定 › 進階設定」換一個模型" : "連不上 AI 模型的伺服器，恢復後會自動改回來";

@@ -260,6 +260,15 @@ button:focus-visible, select:focus-visible, input:focus-visible, a:focus-visible
 .status.warn::before { background: var(--warn); }
 .page-notice { margin: 0 0 16px; }
 
+/* AI 伺服器出問題時的說明（arena/health.py）：平常收起，只顯示一行原因 */
+.ai-problem { margin: 0 0 16px; padding: 8px 14px; border-radius: 10px; background: var(--warn-soft); color: var(--text); font-size: 0.875rem; }
+.play-bar + .ai-problem { margin: 8px 16px 0; }
+.ai-problem summary { color: var(--warn); font-weight: 600; cursor: pointer; }
+.ai-problem-body p { margin: 8px 0 4px; }
+.ai-problem-body ol, .ai-problem-body ul { margin: 0; padding-left: 1.5em; }
+.ai-report { max-height: 16em; overflow: auto; padding: 8px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--panel); white-space: pre-wrap; font-size: 0.8125rem; }
+
 .menu { position: relative; }
 
 .popover {

@@ -17,7 +17,9 @@
     </nav>
   </header>
   <main class="page">
-    {% if handled.notice %}<p class="status warn page-notice" role="status">{{ handled.notice }}</p>{% endif %}
+    {% include "arena/_ai_problem.html" %}
+    {# 查得出 AI 伺服器的問題時，上面的說明已經講了，不再重複一般的提示 #}
+    {% if handled.notice and not ai_problem %}<p class="status warn page-notice" role="status">{{ handled.notice }}</p>{% endif %}
     {% for message in messages %}<p class="status warn page-notice" role="status">{{ message }}</p>{% endfor %}
     {% block content %}{% endblock %}
   </main>

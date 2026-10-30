@@ -1,0 +1,17 @@
+{# AI 伺服器出問題時的說明（arena/health.py，2026-10-30）。對局頁的 app.js::showProblem 用同樣的結構更新它 #}
+<details id="ai-problem" class="ai-problem"{% if not ai_problem %} hidden{% endif %}>{% if ai_problem %}
+  <summary>AI 暫時無法使用：{{ ai_problem.title }}</summary>
+  <div class="ai-problem-body">
+    {% if ai_problem.detail %}<p>{{ ai_problem.detail }}</p>{% endif %}
+    {% if ai_problem.known %}
+    <p>排除步驟：</p>
+    <ol>{% for s in ai_problem.steps %}<li>{{ s }}</li>{% endfor %}</ol>
+    {% else %}
+    <p>可能原因：</p>
+    <ul>{% for c in ai_problem.causes %}<li>{{ c }}</li>{% endfor %}</ul>
+    <p>故障報告{% if ai_problem.report_file %}（也存在 {{ ai_problem.report_file }}）{% endif %}：</p>
+    <pre class="ai-report">{{ ai_problem.report }}</pre>
+    {% endif %}
+    <p class="muted">這段期間電腦照常下棋，說明改顯示分析原文。修好後不用重新啟動網站，約 {{ ai_problem.retry_minutes }} 分鐘內會自動恢復。</p>
+  </div>
+{% endif %}</details>

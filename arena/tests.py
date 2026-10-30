@@ -4,6 +4,7 @@ import importlib
 import io
 import json
 import platform
+import socket
 import tempfile
 import urllib.error
 import zipfile
@@ -21,7 +22,7 @@ from django.test import SimpleTestCase, TestCase, override_settings
 
 from gomoku.module import MODULE as GOMOKU
 
-from . import agent, narrator, operations, orchestrator
+from . import agent, health, narrator, operations, orchestrator
 from .base import ESTIMATE
 from .management.commands.model_report import summarize
 from .models import AiNote, Game, ModelRun
@@ -92,6 +93,10 @@ class OllamaRetryTests(SimpleTestCase):
     def setUp(self):
         narrator._retry_at = 0.0  # 其他測試連 127.0.0.1:9 被拒絕時也會觸發暫停
         self.addCleanup(setattr, narrator, "_retry_at", 0.0)
+        # 逾時後的原因檢查（health）會再連一次埠；這裡只測暫停，不讓它真的連線
+        connect = patch("arena.health._connect", return_value=("failed", "連不上（timed out）"))
+        connect.start()
+        self.addCleanup(connect.stop)
 
     def test_hung_server_makes_only_the_first_agent_move_wait(self):
         actions = GOMOKU.benchmark_samples[0]
@@ -525,6 +530,9 @@ class RequestAgentTests(TestCase):
         patcher = patch("arena.agent._chat", side_effect=OSError("測試不連 Ollama"))
         patcher.start()
         self.addCleanup(patcher.stop)
+        # 其他測試連 127.0.0.1:9 失敗時留下的 AI 伺服器問題，畫面會改顯示那個說明、不顯示一般的提示
+        health._current = None
+        self.addCleanup(setattr, health, "_current", None)
 
     def post(self, url, body):
         return self.client.post(url, json.dumps(body), content_type="application/json")
@@ -1153,6 +1161,10 @@ class RunLogTests(TestCase):
     def setUp(self):
         narrator._retry_at = 0.0
         self.addCleanup(setattr, narrator, "_retry_at", 0.0)
+        # 逾時後的原因檢查（health）會再連一次埠；測試不能真的連到任何位址
+        connect = patch("arena.health._connect", return_value=("failed", "連不上（timed out）"))
+        connect.start()
+        self.addCleanup(connect.stop)
         self.game = Game.objects.create(game_type="gomoku", human_seat=1, actions=[])
 
     def move(self, action="H8"):
@@ -1190,3 +1202,134 @@ class RunLogTests(TestCase):
         self.assertIn("I9", refused[0].getMessage())
         self.assertIn("action 必須是 H8", refused[0].getMessage())
         self.assertTrue(any("請求：下棋" in r.getMessage() and r.levelname == "WARNING" for r in logs.records))
+
+
+REMOTE = override_settings(OLLAMA_URL="http://192.0.2.10:11434", OLLAMA_SERVER_NAMES={"192.0.2.10": "research"})
+
+
+class AiHealthTests(TestCase):
+    # 使用者 2026-10-30：與其每個請求都去連、都失敗，不如出問題時檢查一次，告訴使用者原因與排除步驟；
+    # 查不出原因時列出可能原因並附故障報告。原因判斷錯了，使用者就會照錯的步驟去修。
+    BODY = {"model": "gemma4:26b", "messages": []}
+    TIMEOUT = TimeoutError("timed out")
+
+    def setUp(self):
+        narrator._retry_at = 0.0
+        health._current = None
+        self.addCleanup(setattr, narrator, "_retry_at", 0.0)
+        self.addCleanup(setattr, health, "_current", None)
+
+    def chat_failing(self, error, connect=("failed", "連不上（timed out）"), installed=TimeoutError("timed out")):
+        """narrator.chat 失敗一次，回傳檢測到的問題；檢測時的連線（埠、模型清單）都是假的。"""
+        tags = (patch("arena.health._installed", side_effect=installed) if isinstance(installed, Exception)
+                else patch("arena.health._installed", return_value=installed))
+        with patch("urllib.request.urlopen", side_effect=error), \
+                patch("arena.health._connect", return_value=connect), tags, self.assertRaises(OSError):
+            narrator.chat(self.BODY)
+        return health.current()
+
+    def refused(self):
+        return urllib.error.URLError(ConnectionRefusedError(10061, "目標電腦拒絕連線"))
+
+    def test_local_ollama_that_is_installed_but_not_running_says_how_to_start_it(self):
+        with patch("arena.health.OLLAMA_EXE", Path(__file__)):
+            p = self.chat_failing(self.refused())
+        self.assertEqual(p["title"], "這台電腦的 Ollama 沒有啟動")
+        self.assertTrue(p["known"])
+        self.assertTrue(any("ollama serve" in s for s in p["steps"]))
+
+    def test_local_ollama_that_is_not_installed_says_so(self):
+        # 啟動遊戲平台.bat 本來該用研究用伺服器：先提醒確認位址，而不是叫人去裝 Ollama
+        with patch("arena.health.OLLAMA_EXE", Path("C:/不存在/ollama.exe")), patch("shutil.which", return_value=None):
+            p = self.chat_failing(self.refused())
+        self.assertEqual(p["title"], "這台電腦沒有安裝 Ollama")
+        self.assertIn("不是本機", p["steps"][0])
+
+    @REMOTE
+    def test_remote_server_that_refuses_means_ollama_is_not_running_there(self):
+        p = self.chat_failing(self.refused())
+        self.assertEqual(p["title"], "research 伺服器有開機，但 Ollama 沒有在接收連線")
+        self.assertTrue(any("OLLAMA_HOST=0.0.0.0" in s for s in p["steps"]))
+
+    @REMOTE
+    def test_unknown_server_name_is_a_known_cause_and_the_address_never_shows(self):
+        p = self.chat_failing(urllib.error.URLError(socket.gaierror(11001, "getaddrinfo failed: 192.0.2.10")))
+        self.assertEqual(p["title"], "找不到 research 伺服器（伺服器名稱查不到）")
+        self.assertTrue(p["known"])
+        # 畫面與故障報告可能被轉給別人；研究用伺服器的位址不能公開（2026-10-21）
+        self.assertNotIn("192.0.2.10", json.dumps(p, ensure_ascii=False))
+
+    @REMOTE
+    def test_timeout_without_any_connection_lists_possible_causes_and_a_report(self):
+        p = self.chat_failing(self.TIMEOUT)
+        self.assertEqual(p["title"], "連不到 research 伺服器（沒有回應）")
+        self.assertFalse(p["known"])
+        self.assertTrue(any("VPN" in c for c in p["causes"]))
+        self.assertIn("連線到埠 11434：連不上", p["report"])
+        self.assertNotIn("192.0.2.10", p["report"])
+
+    @REMOTE
+    def test_timeout_when_the_port_answers_but_ollama_does_not_means_it_is_hung(self):
+        # 研究用伺服器卡住過三次，都是重新啟動 Ollama 才恢復
+        p = self.chat_failing(self.TIMEOUT, connect=("ok", "連得上"))
+        self.assertEqual(p["title"], "research 伺服器的 Ollama 沒有回應（可能卡住了）")
+        self.assertIn("重新啟動", p["steps"][0])
+
+    @REMOTE
+    def test_timeout_with_a_healthy_server_tells_missing_model_from_slow_model(self):
+        p = self.chat_failing(self.TIMEOUT, connect=("ok", "連得上"), installed={"qwen3:8b"})
+        self.assertEqual(p["title"], "research 伺服器上沒有模型 gemma4:26b")
+        health._current = None
+        narrator._retry_at = 0.0
+        p = self.chat_failing(self.TIMEOUT, connect=("ok", "連得上"), installed={"gemma4:26b"})
+        self.assertTrue(p["title"].endswith(f"沒有在 {settings.OLLAMA_TIMEOUT} 秒內回答"))
+        self.assertFalse(p["known"])  # 冷啟動、太忙、卡住都有可能，只能列可能原因
+
+    def test_model_not_found_reply_says_which_model_to_pull(self):
+        body = json.dumps({"error": "model 'gemma4:26b' not found"}).encode()
+        error = urllib.error.HTTPError(f"{settings.OLLAMA_URL}/api/chat", 404, "Not Found", None, io.BytesIO(body))
+        p = self.chat_failing(error)
+        self.assertEqual(p["title"], "本機上沒有模型 gemma4:26b")
+        self.assertIn("ollama pull gemma4:26b", p["steps"][0])
+
+    def test_the_check_runs_once_and_nothing_connects_until_the_pause_ends(self):
+        # 這就是使用者要的：出問題時查一次，暫停期間的請求（含設定頁的模型清單）都不再連線
+        clock = [1000.0]
+        with patch("time.monotonic", side_effect=lambda: clock[0]), \
+                patch("urllib.request.urlopen", side_effect=self.TIMEOUT) as urlopen, \
+                patch("arena.health._connect", return_value=("failed", "連不上")) as connect:
+            with self.assertRaises(OSError):
+                narrator.chat(self.BODY)
+            first = health.current()
+            with self.assertRaises(OSError):
+                narrator.chat(self.BODY)
+            self.assertIsNone(narrator.installed_models())
+            self.assertEqual((urlopen.call_count, connect.call_count), (1, 1))
+            self.assertIs(health.current(), first)
+        clock[0] += settings.OLLAMA_RETRY_AFTER + 1
+        reply = io.BytesIO(json.dumps({"message": {"content": "好"}}).encode())
+        with patch("time.monotonic", side_effect=lambda: clock[0]), patch("urllib.request.urlopen", return_value=reply):
+            narrator.chat(self.BODY)
+        self.assertIsNone(health.current())  # 修好後自動恢復，畫面的說明跟著收起來
+
+    def test_a_lasting_problem_is_reported_once(self):
+        # 伺服器整天連不上時，每 3 分鐘一份報告會塞滿資料夾；同一個問題只存第一次
+        with tempfile.TemporaryDirectory() as folder, override_settings(FAULT_REPORT_DIR=Path(folder) / "故障報告"):
+            for _ in range(2):
+                narrator._retry_at = 0.0
+                self.chat_failing(self.TIMEOUT)
+            files = list((Path(folder) / "故障報告").iterdir())
+            self.assertEqual(len(files), 1)
+            self.assertIn("判斷：連不到", files[0].read_text(encoding="utf-8"))
+
+    def test_pages_and_responses_show_the_problem_and_drop_it_when_fixed(self):
+        with patch("arena.health.OLLAMA_EXE", Path(__file__)):
+            health.report_failure(self.refused(), "gemma4:26b")
+        narrator._retry_at = 1e12  # 暫停中：請求不連線，沿用檢測結果
+        page = self.client.get("/").content.decode()
+        self.assertIn("AI 暫時無法使用：這台電腦的 Ollama 沒有啟動", page)
+        self.assertNotIn("AI 助理目前連不上 AI 伺服器", page)  # 已經說明原因，不再重複一般的提示
+        data = self.client.get("/api/gomoku/models/").json()
+        self.assertEqual(data["ai_problem"]["title"], "這台電腦的 Ollama 沒有啟動")
+        health._current = None
+        self.assertIsNone(self.client.get("/api/gomoku/models/").json()["ai_problem"])
