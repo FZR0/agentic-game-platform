@@ -9,6 +9,7 @@ from django.conf import settings
 from django.test import SimpleTestCase, TestCase, override_settings
 
 from arena import agent, narrator
+from arena import tests as arena_tests
 from arena.base import ESTIMATE, RULE, SOLVED
 from arena.models import Game
 
@@ -479,6 +480,15 @@ class GameApiTests(TestCase):
     def test_play_page_loads_the_chess_board(self):
         html = self.client.get("/chess/").content.decode()
         self.assertIn("chessgame/board.js", html)
+
+    def test_agent_gives_exactly_what_the_old_code_gave(self):
+        # 國際象棋的請求改交給 AI 助理（2026-11-02）：結果要和原本的程式一樣
+        arena_tests.assert_agent_gives_what_the_old_code_gave(
+            self, MODULE, lambda: Game.objects.create(game_type="chess", human_seat=WHITE, settings={}, actions=[]), "e2e4")
+
+    def test_question_focus_reaches_the_position(self):
+        game = Game.objects.create(game_type="chess", human_seat=WHITE, settings={}, actions=["e2e4", "e7e5"])
+        arena_tests.assert_question_focus_reaches_the_position(self, MODULE, game, 2, "f7")
 
 
 @skipUnless(Path(settings.STOCKFISH["exe"]).exists(), "沒有安裝 Stockfish（tools/stockfish/）")

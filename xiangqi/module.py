@@ -41,6 +41,7 @@ def piece_text(board, sq):
 
 class XiangqiModule(GameModule):
     key = "xiangqi"
+    agentic_requests = True
     name = "象棋"
     seat_names = COLOR_NAMES
     coord_pattern = r"(?<![A-Za-z0-9])([a-i][0-9](?:[a-i][0-9])?)(?![A-Za-z0-9])"

@@ -7,6 +7,7 @@ from django.conf import settings
 from django.test import SimpleTestCase, TestCase, override_settings
 
 from arena import agent
+from arena import tests as arena_tests
 from arena.base import ESTIMATE, RULE
 from arena.models import Game
 
@@ -268,6 +269,15 @@ class GameApiTests(TestCase):
         self.assertEqual(r["winner"], WHITE)  # 各 1 子、沒有地，貼目讓白勝
         self.assertIn("白棋勝 7.5 目", r["ai_moves"][0]["frame"]["result"])
         self.assertTrue(Game.objects.get(pk=game.id).finished)
+
+    def test_agent_gives_exactly_what_the_old_code_gave(self):
+        # 圍棋的請求改交給 AI 助理（2026-11-02）：結果要和原本的程式一樣
+        arena_tests.assert_agent_gives_what_the_old_code_gave(
+            self, MODULE, lambda: Game.objects.create(game_type="weiqi", human_seat=BLACK, settings=SMALL, actions=[]), "E5")
+
+    def test_question_focus_reaches_the_position(self):
+        game = Game.objects.create(game_type="weiqi", human_seat=BLACK, settings=SMALL, actions=["E5", "C7"])
+        arena_tests.assert_question_focus_reaches_the_position(self, MODULE, game, 2, "D4")
 
 
 @skipUnless(Path(settings.KATAGO["exe"]).exists(), "沒有安裝 KataGo（tools/katago/katago.exe）")

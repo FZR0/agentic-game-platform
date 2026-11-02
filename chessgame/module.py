@@ -41,6 +41,7 @@ def mate_text(n):
 
 class ChessModule(GameModule):
     key = "chess"
+    agentic_requests = True
     name = "國際象棋"
     seat_names = COLOR_NAMES
     # x 不擋：吃子寫成 Nxd5、exd5 時 d5 也要抓得到；前面緊接一個格子時也要抓：UCI 寫成 g1f3 時 f3 也要檢查

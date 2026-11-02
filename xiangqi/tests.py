@@ -8,6 +8,7 @@ from django.conf import settings
 from django.test import SimpleTestCase, TestCase, override_settings
 
 from arena import agent
+from arena import tests as arena_tests
 from arena.base import ESTIMATE, RULE, SOLVED
 from arena.models import Game
 
@@ -305,6 +306,17 @@ class GameApiTests(TestCase):
     def test_the_game_is_listed_with_the_others(self):
         self.assertContains(self.client.get("/"), "象棋")
         self.assertEqual(self.client.get("/xiangqi/").status_code, 200)
+
+    def test_agent_gives_exactly_what_the_old_code_gave(self):
+        # 象棋的請求改交給 AI 助理（2026-11-02）：結果要和原本的程式一樣
+        arena_tests.assert_agent_gives_what_the_old_code_gave(
+            self, MODULE, lambda: Game.objects.create(game_type="xiangqi", human_seat=RED, settings={}, actions=[]), "h2e2")
+
+    def test_question_focus_reaches_the_position(self):
+        # 中文記法要看局面才換算得出是哪一步，Agent 照玩家的說法填也要查得到
+        game = Game.objects.create(game_type="xiangqi", human_seat=RED, settings={}, actions=[])
+        for focus in ("炮二平五", "h2e2"):
+            arena_tests.assert_question_focus_reaches_the_position(self, MODULE, game, 0, focus)
 
 
 @skipUnless(Path(settings.PIKAFISH_EXE).exists(), "沒有安裝 Pikafish（tools/pikafish/pikafish.exe）")

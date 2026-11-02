@@ -21,6 +21,7 @@ from django.db import connection
 from django.test import SimpleTestCase, TestCase, override_settings
 
 from gomoku.module import MODULE as GOMOKU
+from weiqi.module import MODULE as WEIQI
 
 from . import agent, health, narrator, operations, orchestrator
 from .base import ESTIMATE
@@ -522,6 +523,43 @@ def scripted(*replies):
     return chat
 
 
+def assert_agent_gives_what_the_old_code_gave(test, module, make_game, action):
+    """每個交給 AI 助理的遊戲都要過（使用者決定，2026-10-28：換成 Agent 處理不能改變任何功能）：
+    同一步棋，Agent 完成的回應與存下的棋譜，和原本的程式（模型呼叫不到時的補完）一模一樣。
+    make_game() 建一盤新棋。AI 棋手呼叫不到模型時由（假的）引擎代下，結果固定，兩條路才比得出是否相同。"""
+    by_agent, by_code = make_game(), make_game()
+
+    def move(game, model_chat):
+        with patch("arena.orchestrator._chat", side_effect=model_chat), \
+                patch("arena.agent._chat", side_effect=OSError("測試不連 Ollama")):
+            return test.client.post(f"/api/{module.key}/games/{game.id}/move/", json.dumps({"action": action}),
+                                    content_type="application/json").json()
+    a = move(by_agent, obedient(values={"play_human_move": {"game_id": by_agent.id, "action": action},
+                                        "run_ai_turns": {"game_id": by_agent.id}}))
+    b = move(by_code, OSError("timed out"))
+    test.assertEqual((a["handled"]["by"], b["handled"]["by"]), ("agent", "fallback"))
+    for key in ("action", "frame", "winner", "draw"):
+        test.assertEqual(a[key], b[key], key)
+    test.assertEqual([m["action"] for m in a["ai_moves"]], [m["action"] for m in b["ai_moves"]])
+    by_agent.refresh_from_db()
+    by_code.refresh_from_db()
+    test.assertEqual(by_agent.actions, by_code.actions)
+    test.assertGreater(len(by_agent.actions), 1)  # 玩家的一步加上 AI 的回應都存了
+
+
+def assert_question_focus_reaches_the_position(test, module, game, at, focus):
+    """提問時 Agent 在 explain_position 填的 focus 文字要能被這個遊戲的 question_focus 解析：
+    查到的是那個位置的分析，而不是沒有 focus 時的一般分析，否則 Agent 指名的位置就白填了。"""
+    test.assertTrue(module.question_focus(focus), focus)
+    with patch("arena.orchestrator._chat", side_effect=scripted([("explain_position", {"focus": focus})])), \
+            patch("arena.narrator._ask_ollama", return_value="重點：還可以。\n說明：這是常見的下法。"):
+        r = test.client.post(f"/api/{module.key}/games/{game.id}/ask/",
+                             json.dumps({"question": f"{focus} 好不好？", "at": at}), content_type="application/json").json()
+    test.assertEqual(r["handled"]["by"], "agent")
+    test.assertEqual(r["facts"]["points"], operations.position_points(module, game, at, module.question_focus(focus)))
+    test.assertNotEqual(r["facts"]["points"], operations.position_points(module, game, at, []))
+
+
 class RequestAgentTests(TestCase):
     # 使用者決定（2026-10-28）：每個請求都交給 AI 助理處理，為了證明 Agentic 系統可行。
     # 這些測試守的是：功能和原本完全一樣、Agent 不能改變使用者要求的事、沒完成時一定有人補完並告訴玩家。
@@ -661,8 +699,9 @@ class RequestAgentTests(TestCase):
         self.assertIn(orchestrator.NOTICES["error"], html)
 
     def test_games_not_converted_yet_skip_the_agent(self):
-        # 圍棋、象棋、國際象棋還沒改（docs/交接.md 待辦）：照原本的程式處理，也不記請求紀錄
-        with patch("arena.orchestrator._chat") as chat:
+        # 還沒改的遊戲（agentic_requests = False，新遊戲的預設）照原本的程式處理，也不記請求紀錄。
+        # 現有的遊戲都改了（2026-11-02），所以這裡暫時把圍棋設回 False 來測
+        with patch.object(WEIQI, "agentic_requests", False), patch("arena.orchestrator._chat") as chat:
             r = self.client.get("/api/weiqi/games/").json()
         chat.assert_not_called()
         self.assertEqual(r["handled"], {"by": "direct"})
