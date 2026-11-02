@@ -1108,7 +1108,9 @@ class SavePromptTests(SimpleTestCase):
         origin, work = self.root / "origin.git", self.root / "work"
         git_in(self.root, "init", "-q", "--bare", "-b", "main", str(origin))
         git_in(self.root, "clone", "-q", str(origin), str(work))
-        for name in ("tools/git_menu.py", "config/local.py", "config/__init__.py"):
+        # .gitignore 也要帶：git_menu 匯入 config/local.py 時會產生 __pycache__，沒忽略就被當成程式改動
+        # （2026-11-02 在 LAPTOP-R80UAAH6 發現：只改文件的存檔因此開了工作分支，文件沒上傳）
+        for name in ("tools/git_menu.py", "config/local.py", "config/__init__.py", ".gitignore"):
             (work / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(settings.BASE_DIR / name, work / name)
         (work / "b.py").write_text("x", encoding="utf-8")
