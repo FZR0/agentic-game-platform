@@ -41,6 +41,7 @@ def stones_text(stones):
 
 class WeiqiModule(GameModule):
     key = "weiqi"
+    agentic_requests = True
     name = "圍棋"
     seat_names = COLOR_NAMES
     coord_pattern = r"(?<![A-Za-z0-9])([A-HJ-T](?:1[0-9]|[1-9]))(?![0-9])"
