@@ -228,13 +228,13 @@ def join_game(code, user):
         return game, seat
     if game.finished:
         raise ValueError("這盤已經結束了")
-    empty = game.players.filter(user__isnull=True).order_by("seat").first()
-    if empty is None:
-        raise ValueError("這盤的座位已經坐滿了")
-    empty.user, empty.joined_at = user, timezone.now()
-    empty.save(update_fields=["user", "joined_at"])
-    game.save(update_fields=["updated_at"])
-    return game, empty.seat
+    # 只有座位還空著時才寫入（條件式更新）：兩個人同時按「加入」時，先讀再存的話後存的會蓋掉先存的，
+    # 被蓋掉的人以為加入了其實沒有座位（2026-11-05 審核 #10 時發現）。沒搶到就換下一個空位
+    for empty in game.players.filter(user__isnull=True).order_by("seat"):
+        if GamePlayer.objects.filter(pk=empty.pk, user__isnull=True).update(user=user, joined_at=timezone.now()):
+            game.save(update_fields=["updated_at"])
+            return game, empty.seat
+    raise ValueError("這盤的座位已經坐滿了")
 
 
 def play_human_move(module, game, action, seat):

@@ -27,7 +27,7 @@ from weiqi.module import MODULE as WEIQI
 from . import agent, health, narrator, operations, orchestrator
 from .base import ESTIMATE
 from .management.commands.model_report import summarize
-from .models import AiNote, Game, LoginRecord, ModelRun, Presence
+from .models import AiNote, Game, GamePlayer, LoginRecord, ModelRun, Presence
 
 
 class AdminClient(Client):
@@ -1711,3 +1711,32 @@ class OpponentObservationTests(TestCase):
     def test_the_language_model_is_told_to_add_nothing_beyond_the_facts(self):
         self.assertIn("opponent", narrator.INTROS)
         self.assertIn("不要加上事實裡沒有的應對方法", narrator.INTROS["opponent"])
+
+
+class JoinRaceTests(TestCase):
+    """兩個人同時用房間密碼加入時，同一個座位只能給一個人（2026-11-05 審核 #10 時發現）：
+    先讀到空位、再存檔的話，後存的會蓋掉先存的，被蓋掉的人以為加入了其實沒有座位。"""
+
+    def test_a_seat_taken_in_between_is_not_overwritten(self):
+        alice = User.objects.create_user("alice")
+        bob = User.objects.create_user("bob")
+        carol = User.objects.create_user("carol")
+        game, _ = operations.start_game(GOMOKU, 1, {}, alice, "pvp")
+        seat = game.players.get(user__isnull=True)
+        real_filter = game.players.filter
+
+        class ReadThenBobSits:
+            """carol 讀到空位之後、寫入之前，bob 先坐下了。"""
+            def __init__(self, *args, **kwargs):
+                self.qs = real_filter(*args, **kwargs)
+
+            def order_by(self, *fields):
+                rows = list(self.qs.order_by(*fields))
+                GamePlayer.objects.filter(pk=seat.pk).update(user=bob)
+                return rows
+
+        with patch.object(type(game.players), "filter", side_effect=ReadThenBobSits):
+            with self.assertRaisesMessage(ValueError, "坐滿"):
+                operations.join_game(game.room_code, carol)
+        seat.refresh_from_db()
+        self.assertEqual(seat.user, bob)
