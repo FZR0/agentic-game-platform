@@ -229,6 +229,7 @@ class ReviewTests(SimpleTestCase):
 @override_settings(OLLAMA_URL="http://127.0.0.1:9", OLLAMA_TIMEOUT=2)
 class GameApiTests(TestCase):
     client_class = AdminClient
+
     def setUp(self):
         self.kata = FakeKataGo()
         patcher = patch.object(MODULE, "analyzer", self.kata)

@@ -41,6 +41,8 @@ const state = {
   hoverHighlight: null, // 滑過說明中的座標時暫時標示的點
   unread: 0, // AI 教練收起時累積的新思路數
   hiddenNotes: false, // 有被遮住的 AI 思路（撲克的底牌），復盤時要重新載入
+  pvp: false, // 真人對戰（2026-11-05）：對手也是真人，對局中不能用 AI 教練
+  players: {}, // 真人對戰的 {座位: 帳號名稱}；null 是還在等人加入
 };
 // 說明一次只送一個請求給 Ollama，依序產生
 let narrationQueue = Promise.resolve();
@@ -68,6 +70,11 @@ async function api(path, body) {
     body: JSON.stringify(body),
   };
   const res = await fetch(`/api/${CONFIG.key}/${path}`, options);
+  // 登入過期時伺服器把請求轉到登入頁（2026-11-05 起要登入），直接帶玩家去登入
+  if (res.redirected && new URL(res.url).pathname.startsWith("/accounts/login/")) {
+    window.location.href = `/accounts/login/?next=${encodeURIComponent(window.location.pathname)}`;
+    throw new Error("請先登入");
+  }
   let data;
   try {
     data = await res.json();
@@ -202,14 +209,21 @@ function setThinkingStatus() {
   }, 1000);
 }
 
-const humanTurn = () => !state.over && !state.reviewing && currentFrame()?.to_move === state.human;
+const humanTurn = () => !state.over && !state.reviewing && !waitingForPlayers()
+  && currentFrame()?.to_move === state.human;
+const waitingForPlayers = () => state.pvp && Object.values(state.players).some((name) => name === null);
+// 真人對戰還沒結束時不能用 AI 教練（伺服器也會拒絕），否則就是幫其中一方作弊（使用者決定，2026-11-05）
+const coachLocked = () => state.pvp && !state.over;
 
 function updateButtons() {
   $("new-game").disabled = state.busy;
-  $("start-review").disabled = state.busy || state.reviewing || state.gameId === null;
+  $("start-review").disabled = state.busy || state.reviewing || state.gameId === null || coachLocked();
+  $("coach-toggle").disabled = coachLocked();
+  $("coach-toggle").title = coachLocked() ? "真人對戰中不能使用 AI 教練，對局結束後就可以復盤" : "";
   document.querySelectorAll("#game-actions button").forEach((b) => { b.disabled = state.busy || !humanTurn(); });
-  // 「結束（不計勝負）」只在有存檔、還沒結束的對局顯示；玩家先下而還沒下第一步時沒有存檔，不必結束
-  $("end-game").hidden = state.gameId === null || state.over || state.reviewing;
+  // 「結束（不計勝負）」只在有存檔、還沒結束的對局顯示；玩家先下而還沒下第一步時沒有存檔，不必結束。
+  // 真人對戰不能不計勝負（快輸的一方按了就能讓輸棋不算），要結束請認輸
+  $("end-game").hidden = state.gameId === null || state.over || state.reviewing || state.pvp;
   $("end-game").disabled = state.busy;
   GameBoard.renderControls?.(currentFrame(), $("game-actions"), !state.busy && humanTurn(), playAction);
   updateAskAvailability();
@@ -224,15 +238,43 @@ function readSettings() {
   document.querySelectorAll(".game-setting").forEach((el) => {
     settings[el.dataset.name] = Number.isNaN(Number(el.value)) ? el.value : Number(el.value);
   });
+  if (pvpChosen() && CONFIG.pickHumanSeats) {
+    settings.humans = [1, ...[...document.querySelectorAll("#human-seat-boxes input:checked")].map((b) => Number(b.value))];
+  }
   return settings;
 }
 
-function resetView(human, settings, actions, frames) {
+const pvpChosen = () => $("opponent").value === "pvp";
+
+// 撲克的真人對戰：依人數列出 2 號位以後的座位，勾選的給朋友坐（預設勾 2 號位）
+function renderHumanSeatBoxes() {
+  const box = $("human-seat-boxes");
+  const players = Number(document.querySelector('.game-setting[data-name="players"]')?.value) || 2;
+  const checked = new Set([...box.querySelectorAll("input:checked")].map((b) => Number(b.value)));
+  if (!checked.size) checked.add(2);
+  box.replaceChildren(...Array.from({ length: players - 1 }, (_, i) => {
+    const seat = i + 2;
+    const label = document.createElement("label");
+    const input = Object.assign(document.createElement("input"), { type: "checkbox", value: String(seat), checked: checked.has(seat) });
+    label.append(input, ` ${seat} 號位`);
+    return label;
+  }));
+}
+
+function updateOpponentFields() {
+  $("human-seats").hidden = !(pvpChosen() && CONFIG.pickHumanSeats);
+  if (!$("human-seats").hidden) renderHumanSeatBoxes();
+}
+
+function resetView(human, settings, actions, frames, pvp = false, players = {}) {
   state.round += 1;
+  closeSocket();
   Object.assign(state, {
     human, settings, actions, frames, over: false, reviewing: false, viewAt: 0, marks: null,
-    hover: null, highlight: null, hoverHighlight: null, hiddenNotes: false,
+    hover: null, highlight: null, hoverHighlight: null, hiddenNotes: false, pvp, players,
   });
+  $("invite").hidden = true;
+  if (pvp) setCoachOpen(false);
   setUnread(0);
   $("ai-log").replaceChildren();
   $("ai-log").classList.remove("clickable");
@@ -267,7 +309,8 @@ async function applyAiMoves(moves) {
 
 function finishGame(winner, draw) {
   state.over = true;
-  const result = draw ? "和局。" : winner === state.human ? "你贏了！" : `${seatName(winner)}（AI）獲勝。`;
+  const who = state.pvp && state.players[winner] ? state.players[winner] : "AI";
+  const result = draw ? "和局。" : winner === state.human ? "你贏了！" : `${seatName(winner)}（${who}）獲勝。`;
   const detail = currentFrame()?.result ? `（${currentFrame().result}）` : "";
   setStatus(`${result}${detail}可以按上方的「復盤」檢討。`);
 }
@@ -278,17 +321,111 @@ function yourTurnStatus() {
 }
 
 function statusAfterMove(data) {
-  if (data.winner || data.draw) finishGame(data.winner, data.draw);
-  else yourTurnStatus();
+  if (data.winner || data.draw || data.ended) finishGame(data.winner, data.draw);
+  else if (waitingForPlayers()) setStatus("等朋友加入中…對方加入後就可以開始。");
+  else if (currentFrame()?.to_move !== state.human) {
+    const name = state.players[currentFrame()?.to_move];
+    setStatus(name ? `等 ${name}（${seatName(currentFrame().to_move)}）下…` : "其他玩家行動中…");
+  } else yourTurnStatus();
+}
+
+// ---- 真人對戰（2026-11-05）：邀請朋友、WebSocket 即時同步 ----
+
+function showInvite(code) {
+  $("invite").hidden = !code;
+  if (!code) return;
+  $("room-code").textContent = code;
+  $("invite-link").value = `${window.location.origin}/join/${code}/`;
+}
+
+let socket = null;
+let socketRetry = null;
+let pendingUpdate = null; // 自己的請求還沒回來時收到的推送，等請求回來再套用（否則同一步會加兩次）
+
+function closeSocket() {
+  clearTimeout(socketRetry);
+  if (socket) {
+    socket.onclose = null;
+    socket.close();
+  }
+  socket = null;
+}
+
+// 連到 ws/games/<編號>/：有人下了一步或加入時，伺服器送來這個座位看到的整盤棋；斷線時每 3 秒重連一次
+function openSocket(gameId) {
+  closeSocket();
+  const round = state.round;
+  const scheme = window.location.protocol === "https:" ? "wss" : "ws";
+  socket = new WebSocket(`${scheme}://${window.location.host}/ws/games/${gameId}/`);
+  socket.onmessage = (event) => {
+    if (round !== state.round) return;
+    const data = JSON.parse(event.data);
+    if (data.type !== "update") return;
+    if (state.busy) pendingUpdate = data;
+    else applyUpdate(data);
+  };
+  socket.onclose = () => {
+    if (round === state.round && !state.over) socketRetry = setTimeout(() => openSocket(gameId), 3000);
+  };
+}
+
+// 伺服器推送的整盤棋（operations.game_detail）：只加上這裡還沒有的步數，所以重複收到也沒關係
+async function applyUpdate(data) {
+  state.players = data.game.players || {};
+  showInvite(data.game.room_code);
+  // 每一步都重新看目前有幾步：前一次推送還在一步一步播時又收到新的推送，兩邊都不會重複加同一步
+  while (state.actions.length < data.actions.length) {
+    const i = state.actions.length;
+    state.actions.push(data.actions[i]);
+    state.frames.push(data.frames[i + 1]);
+    const note = data.notes.find((n) => n.index === i);
+    if (note) addNote(note, true);
+    draw();
+    if (i + 1 < data.actions.length) await new Promise((resolve) => setTimeout(resolve, AI_STEP_MS));
+  }
+  statusAfterMove(data.game);
+  updateButtons();
+}
+
+async function flushPendingUpdate() {
+  const data = pendingUpdate;
+  pendingUpdate = null;
+  if (data) await applyUpdate(data);
+}
+
+// 真人對戰一開房間就要存檔（要有房間密碼給朋友），不像和 AI 下時等第一步才建立
+async function newPvpGame(settings) {
+  state.busy = true;
+  updateButtons();
+  setStatus("開房間中…");
+  try {
+    const data = await api("games/", { seat: state.human, settings, mode: "pvp", ...agentOptions() });
+    state.gameId = data.game.id;
+    state.players = data.game.players;
+    state.frames = [data.frame];
+    showInvite(data.game.room_code);
+    openSocket(data.game.id);
+    draw();
+    statusAfterMove(data.game);
+  } catch (err) {
+    setStatus(`無法開房間：${err.message}`);
+  } finally {
+    state.busy = false;
+    updateButtons();
+  }
 }
 
 // 玩家先下時等第一步才建立存檔，避免重新整理頁面就多出空的對局
 async function newGame() {
   closePopovers();
   const settings = readSettings();
-  resetView(Number($("human-seat").value), settings, [], [GameBoard.emptyFrame(settings)]);
+  resetView(Number($("human-seat").value), settings, [], [GameBoard.emptyFrame(settings)], pvpChosen());
   state.gameId = null;
   updateButtons();
+  if (state.pvp) {
+    await newPvpGame(settings);
+    return;
+  }
   if (humanTurn()) {
     yourTurnStatus();
     return;
@@ -316,7 +453,8 @@ async function playAction(action) {
   state.pending = action; // 伺服器回應前先畫出玩家這一手，不必等 Agent 想完才看到
   draw();
   updateButtons();
-  setThinkingStatus();
+  if (state.pvp) setStatus("送出中…");
+  else setThinkingStatus();
   try {
     if (state.gameId === null) {
       state.gameId = (await api("games/", { seat: state.human, settings: state.settings, ...agentOptions() })).game.id;
@@ -338,6 +476,7 @@ async function playAction(action) {
     state.busy = false;
     updateButtons();
   }
+  await flushPendingUpdate();
 }
 
 // 「結束（不計勝負）」：對局停在這裡、不算輸贏、不進戰績，之後仍可復盤（使用者要求，2026-10-21）
@@ -552,6 +691,7 @@ function addNote(note, live) {
 // ---- 復盤 ----
 
 async function startReview() {
+  if (coachLocked()) return;
   if (!state.over && !window.confirm("對局還沒結束，要先復盤嗎？之後可以從首頁接著下。")) return;
   closePopovers();
   Object.assign(state, { over: true, reviewing: true, busy: true, viewAt: state.actions.length, marks: null });
@@ -569,6 +709,7 @@ async function startReview() {
     if (state.hiddenNotes) await reloadNotes();
     const data = await api(`games/${state.gameId}/review/`);
     renderMoments(data.moments, data.overall);
+    renderOpponents(data.opponents || []);
     setStatus("復盤中：用 ◀ ▶ 一步一步回看；AI 教練裡有思路、問題檢查，也可以發問。");
   } catch (err) {
     $("review-summary").textContent = "";
@@ -653,6 +794,45 @@ function renderMoments(moments, overall) {
       }
     }
   }
+}
+
+// 對手觀察（真人對戰結束後，2026-11-05）：對手的傾向、出現跡象的步數、應對建議；放在整體評論下面。
+// 每位對手一則（AI 依事實改寫），下面列出電腦在他身上找到的每一步，點了跳到那一步並標出他下的和電腦建議的
+function renderOpponents(rivals) {
+  if (!rivals.length) return;
+  const section = document.createElement("section");
+  section.className = "moment-group opponent";
+  const heading = document.createElement("h3");
+  heading.textContent = "對手觀察";
+  const hint = document.createElement("p");
+  hint.className = "muted";
+  hint.textContent = "電腦用同樣的方法檢查了對手的每一步：他有什麼習慣、在哪幾步出現過，以及下次可以怎麼應對。";
+  const list = document.createElement("ol");
+  list.className = "entries";
+  section.append(heading, hint, list);
+  for (const r of rivals) {
+    const li = entry(`對手 ${r.name || seatName(r.seat)}（${seatName(r.seat)}）`, r.facts);
+    list.append(li);
+    queueNarration(li, "narrate/", { facts: r.facts }, r.facts, "AI 依電腦的檢查整理");
+    if (r.signs.length) {
+      const signs = document.createElement("ol");
+      signs.className = "entries moments opponent-signs";
+      for (const sign of r.signs) {
+        const item = document.createElement("li");
+        item.textContent = `第 ${sign.index + 1} ${STEP} ${actionText(sign.played)}：${sign.title}`;
+        item.addEventListener("click", (event) => {
+          event.stopPropagation();
+          showMoment(sign, item);
+        });
+        signs.append(item);
+      }
+      li.append(signs);
+    }
+  }
+  // 整體評論後面（沒有整體評論時放最前面）
+  const overall = $("moments").querySelector(".moment-group.overall");
+  if (overall) overall.after(section);
+  else $("moments").prepend(section);
 }
 
 // 窄螢幕（和 style.css 的 880px 斷點相同）AI 教練排在棋盤下方：點了一則說明，把棋盤捲回畫面
@@ -751,13 +931,22 @@ function markReferenceRow() {
 async function openGame(id, mode) {
   try {
     const g = await api(`games/${id}/`);
-    resetView(g.game.human_seat, g.game.settings, g.actions, g.frames);
+    resetView(g.my_seat ?? g.game.human_seat, g.game.settings, g.actions, g.frames, g.game.mode === "pvp",
+      g.game.players || {});
     state.gameId = g.game.id;
     for (const note of g.notes) addNote(note, false);
     if (!g.notes.length && g.actions.length) {
       $("thoughts-empty").textContent = "這盤棋沒有保存 AI 思路（可能是加入這個功能之前下的）。";
     }
     const finished = Boolean(g.game.winner || g.game.draw || g.game.ended);
+    // 真人對戰沒下完時一律接著下（可能在等對手），並連上即時同步；不能先復盤
+    if (state.pvp && !finished) {
+      showInvite(g.game.room_code);
+      openSocket(g.game.id);
+      updateButtons();
+      statusAfterMove(g.game);
+      return;
+    }
     if (mode === "resume" && !finished && currentFrame().to_move === state.human) {
       updateButtons();
       yourTurnStatus();
@@ -830,13 +1019,24 @@ $("steps").addEventListener("change", () => {
   storageSet(STEPS_KEY, String(n));
 });
 
-// 還沒下棋時改「我執」或開局設定立即生效；已經開始下了就等下一局
-document.querySelectorAll("#human-seat, .game-setting").forEach((el) => {
+// 還沒下棋時改「我執」或開局設定立即生效；已經開始下了就等下一局。
+// 真人對戰要按「新對局」才開房間（不然每改一次設定就多開一個房間）
+document.querySelectorAll("#opponent, #human-seat, .game-setting").forEach((el) => {
   el.addEventListener("change", () => {
+    updateOpponentFields();
     if (state.busy) return;
-    if (state.actions.length === 0) newGame();
+    if (pvpChosen()) setStatus("真人對戰：設定好之後按「新對局」開房間，再把房間密碼傳給朋友。");
+    else if (state.actions.length === 0 && !state.pvp) newGame();
     else setStatus("新的設定會在按「新對局」後生效。");
   });
+});
+$("copy-invite").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText($("invite-link").value);
+    $("copy-invite").textContent = "已複製";
+  } catch (err) {
+    $("invite-link").select(); // 不能用剪貼簿時（例如非 https）選起來讓玩家自己複製
+  }
 });
 
 for (const { action, label, confirm } of GameBoard.extraActions || []) {

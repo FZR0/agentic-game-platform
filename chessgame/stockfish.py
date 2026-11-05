@@ -3,6 +3,9 @@
 分析一律回傳「輪到的一方」的觀點。每一條候選線是
 {"move": UCI, "mate": 正數＝輪到的一方 N 步內將死、負數＝被將死、沒有就是 None, "cp": 兵值百分之一, "winrate": 0–1, "pv": [UCI, ...]}。
 """
+import asyncio
+import contextlib
+import sys
 import threading
 from pathlib import Path
 
@@ -22,6 +25,24 @@ def winrate_from_cp(cp):
     return 1 / (1 + 10 ** (-cp / 400))
 
 
+@contextlib.contextmanager
+def _loop_that_can_start_processes():
+    """daphne（真人對戰的 WebSocket，2026-11-05）一載入就把 Windows 的 asyncio 改成 selector 事件迴圈（Twisted 要用），
+    selector 迴圈不能開子程序，python-chess 啟動 Stockfish 會丟 NotImplementedError（網站上國際象棋的分析整個不能用）。
+    啟動的那一刻暫時換回 Proactor：python-chess 在自己的背景執行緒建立事件迴圈，之後一直用那一個；
+    popen_uci 會等引擎啟動完才回來，所以換回原本的設定時迴圈已經建好。這段時間別的執行緒新建的迴圈也會是 Proactor，
+    Proactor 能做的事比 selector 多（Twisted 自己的迴圈在伺服器啟動時就建好了，不受影響）。"""
+    old = asyncio.get_event_loop_policy()
+    if sys.platform != "win32" or not isinstance(old, asyncio.WindowsSelectorEventLoopPolicy):
+        yield
+        return
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    try:
+        yield
+    finally:
+        asyncio.set_event_loop_policy(old)
+
+
 class Stockfish:
     def __init__(self):
         self.engine = None
@@ -32,7 +53,8 @@ class Stockfish:
         if not exe.exists():
             raise StockfishUnavailable(f"找不到 {exe}")
         try:
-            self.engine = chess.engine.SimpleEngine.popen_uci(str(exe), cwd=exe.parent)
+            with _loop_that_can_start_processes():
+                self.engine = chess.engine.SimpleEngine.popen_uci(str(exe), cwd=exe.parent)
             # 單執行緒＋每次查詢前清空雜湊表（見 analyse 的 game 參數）：同一個局面每次算出同樣的結果，
             # 復盤才會和 AI 當時的選擇一致
             self.engine.configure({"Threads": 1, "Hash": settings.STOCKFISH["hash_mb"], "UCI_ShowWDL": True})

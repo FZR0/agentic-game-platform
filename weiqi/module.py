@@ -106,6 +106,12 @@ class WeiqiModule(GameModule):
             raise ValueError("棋盤大小必須是 9、13 或 19 路")
         return {"size": size, "komi": 7.5}
 
+    # 對手觀察的應對建議（2026-11-05）：key 是復盤的 pattern
+    opponent_tips = {
+        "目數損失": "對手在這幾手損失比較多：看看那幾手是在戰鬥、死活還是收官；他容易出錯的那類局面，你可以多製造一些，"
+                  "例如他戰鬥時常吃虧，就保持局面複雜，不要急著簡化。",
+    }
+
     def new_state(self, settings):
         s = settings or self.clean_settings({})
         return rules.GoState(s["size"], s["komi"])

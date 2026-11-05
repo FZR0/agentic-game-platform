@@ -9,6 +9,8 @@ urlpatterns = [
     # 要放在 <slug:game_key>/ 前面，否則會被當成遊戲名稱
     path("history/", views.history, name="history"),
     path("guide/", views.guide, name="guide"),
+    path("join/", views.join, name="join"),
+    path("join/<str:code>/", views.join, name="join_code"),
     path("games/<int:game_id>/end/", views.end_game, name="end_game"),
     path("api/<slug:game_key>/models/", views.api_models, name="models"),
     path("api/<slug:game_key>/games/", views.api_games, name="games"),

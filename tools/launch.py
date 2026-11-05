@@ -52,7 +52,7 @@ def main():
     # 上次安裝到一半失敗時，環境在但套件不完整，所以檢查套件能不能載入，不能就重新安裝。
     # requirements.txt 加了套件時這裡也要加：舊電腦的環境裡有 Django、沒有新套件（例如國際象棋的 chess），
     # 只檢查 Django 的話不會補裝，整個網站會啟動失敗
-    if not python("-c", "import django, chess, mssql, pyodbc", capture_output=True):
+    if not python("-c", "import django, chess, mssql, pyodbc, channels, daphne", capture_output=True):
         print("正在安裝套件...")
         if not python("-m", "pip", "install", "-r", "requirements.txt"):
             print("安裝套件失敗，請查看上面的錯誤訊息（需要能連上網路）。")

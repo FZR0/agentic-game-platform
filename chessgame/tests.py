@@ -430,6 +430,7 @@ class BoardScriptTests(SimpleTestCase):
 @override_settings(OLLAMA_URL="http://127.0.0.1:9", OLLAMA_TIMEOUT=2)
 class GameApiTests(TestCase):
     client_class = AdminClient
+
     def setUp(self):
         patchers = [patch.object(MODULE, "analyzer", FakeStockfish()),
                     # 不連 Ollama：直接讓呼叫模型失敗，由（假的）引擎代下，測試才不會每一手都等連線被拒

@@ -771,3 +771,16 @@ details ul { margin: 4px 0 0; padding-left: 18px; }
   .guide-section { padding: 14px; }
   .guide-head .button { width: 100%; }
 }
+
+/* 真人對戰（2026-11-05）：邀請朋友的房間密碼與連結、撲克的真人座位選擇 */
+.invite { margin: 0 0 12px; padding: 12px 14px; border: 1px solid var(--accent); border-radius: var(--radius);
+  background: var(--accent-soft); }
+.invite p { margin: 0 0 8px; }
+.room-code { font-size: 1.3rem; letter-spacing: 0.15em; color: var(--accent); }
+.invite-link { display: flex; gap: 8px; }
+.invite-link input { flex: 1; min-width: 0; }
+.human-seats { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin: 0; }
+.human-seats legend { font-weight: 600; padding: 0 4px; }
+#human-seat-boxes { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.opponent-signs { margin-top: 8px; font-size: 0.92rem; }
+.opponent-signs > li { cursor: pointer; }

@@ -14,6 +14,7 @@
       <a href="{% url 'arena:home' %}"{% if nav == "home" %} aria-current="page"{% endif %}>首頁</a>
       <a href="{% url 'arena:history' %}"{% if nav == "history" %} aria-current="page"{% endif %}>對局紀錄</a>
       <a href="{% url 'arena:guide' %}"{% if nav == "guide" %} aria-current="page"{% endif %}>怎麼玩</a>
+      <a href="{% url 'arena:join' %}"{% if nav == "join" %} aria-current="page"{% endif %}>加入對戰</a>
     </nav>
     <div class="account-bar">
       {% if user.is_authenticated %}

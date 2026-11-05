@@ -10,6 +10,17 @@
         "8000"
       ],
       "port": 8000
+    },
+    {
+      "name": "django-8002",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "manage.py",
+        "runserver",
+        "8002"
+      ],
+      "port": 8002,
+      "autoPort": false
     }
   ]
 }
