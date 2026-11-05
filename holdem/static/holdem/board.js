@@ -340,6 +340,8 @@ window.GameBoard = (() => {
         : "確定要離場嗎？這手牌會直接棄牌，已經下的注不會退回。";
       if (window.confirm(ask)) playAction("leave");
     }, enabled, "leave");
+    // 真人對戰只有開桌的人（1 號位）能離場（frame.can_leave）；其他人沒有這個按鈕
+    if (frame.can_leave === false) leave.hidden = true;
     if (frame.hand_over) {
       if (frame.to_move === 1) container.append(button("下一手", () => playAction("deal"), enabled, "primary"), leave);
       return;

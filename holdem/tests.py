@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from django.test import SimpleTestCase, TestCase, override_settings
 
+from arena.tests import AdminClient
 from arena import agent
 from arena import tests as arena_tests
 from arena.base import CONDITIONAL
@@ -188,6 +189,8 @@ class RuleTests(SimpleTestCase):
 
 
 class EquityTableTests(TestCase):
+    client_class = AdminClient
+
     def test_table_covers_every_starting_hand_and_ranks_them_sensibly(self):
         # 使用者要求的起手牌勝率表：169 種起手牌都要有，數字要和牌型判斷一致（AA 最強、不同花的小牌最弱）
         ref = MODULE.reference
@@ -413,6 +416,8 @@ class AgentTests(SimpleTestCase):
 
 @override_settings(OLLAMA_URL="http://127.0.0.1:9", OLLAMA_TIMEOUT=2)
 class GameApiTests(TestCase):
+    client_class = AdminClient
+
     def setUp(self):
         # Ollama 不在時 Agent 改由引擎代下；直接讓模型呼叫失敗，不必等 Windows 拒絕連線（每次約 2 秒）
         patcher = patch("arena.agent._chat", side_effect=OSError("模型沒有回應"))
@@ -443,7 +448,7 @@ class GameApiTests(TestCase):
         # 每個請求都交給 AI 助理（2026-10-28）：它看到的工具摘要不能含 AI 的底牌，否則可能寫進回覆或紀錄
         seen = []
         latest = lambda: Game.objects.latest("id").id  # noqa: E731
-        values = {"start_game": {"game": "holdem", "seat": 1}, "run_ai_turns": {"game_id": latest},
+        values = {"start_game": {"game": "holdem", "seat": 1, "mode": "ai"}, "run_ai_turns": {"game_id": latest},
                   "play_human_move": {"game_id": latest, "action": "call"}, "load_game": {"game_id": latest}}
         with patch("arena.orchestrator._chat", side_effect=arena_tests.obedient(seen, values)), \
                 self.assertLogs("arena", "INFO") as logs:  # 運行紀錄寫的是同樣的工具摘要，也不能有底牌
@@ -515,3 +520,119 @@ class GameApiTests(TestCase):
         bad = self.post(f"/api/holdem/games/{game.id}/move/", {"action": "raise 5"})
         self.assertEqual(bad.status_code, 400)
         self.assertEqual(Game.objects.get(pk=game.id).actions, game.actions)
+
+
+@override_settings(OLLAMA_URL="http://127.0.0.1:9", OLLAMA_TIMEOUT=2)
+class PvpTableTests(TestCase):
+    """真人對戰的牌桌（2026-11-05）：開桌的人（1 號位）自選哪些座位是真人，其他座位由 AI 坐。
+    每位真人只能看到自己的底牌：網頁、復盤、提問都從請求的人的座位算，不再假設真人一定在 1 號位。"""
+
+    def setUp(self):
+        from django.contrib.auth.models import User
+        from django.test import Client
+        self.users = {name: User.objects.create_user(name, password="x") for name in ("alice", "bob")}
+        self.clients = {}
+        for name, user in self.users.items():
+            self.clients[name] = Client()
+            self.clients[name].force_login(user)
+        for target in ("arena.agent._chat", "arena.orchestrator._chat"):
+            patcher = patch(target, side_effect=OSError("測試不連模型"))
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def post(self, who, url, body):
+        return self.clients[who].post(url, json.dumps(body), content_type="application/json")
+
+    def open_table(self, seed=3):
+        with patch.object(MODULE, "new_secret", return_value={"seed": seed}):
+            r = self.post("alice", "/api/holdem/games/",
+                          {"seat": 1, "mode": "pvp", "settings": {"players": 4, "humans": [1, 3]}}).json()
+        game = Game.objects.get(pk=r["game"]["id"])
+        self.clients["bob"].post("/join/", {"code": game.room_code})
+        game.refresh_from_db()
+        return game
+
+    def test_the_host_chooses_human_seats_and_ai_fills_the_rest(self):
+        game = self.open_table()
+        self.assertEqual(game.human_seats(), {1, 3})
+        t = MODULE.new_state({**game.settings, "secret": game.secret})
+        self.assertEqual(t.roles[1], "human")
+        self.assertEqual(t.roles[3], "human")
+        self.assertNotEqual(t.roles[2], "human")
+        self.assertNotEqual(t.roles[4], "human")
+
+    def test_ai_mode_rejects_extra_human_seats(self):
+        r = self.post("alice", "/api/holdem/games/", {"seat": 1, "settings": {"players": 4, "humans": [1, 3]}})
+        self.assertEqual(r.status_code, 400)
+
+    def test_a_human_never_sees_the_other_humans_hole_cards_during_the_hand(self):
+        game = self.open_table()
+        seats = {"alice": 1, "bob": 3}
+        for _ in range(40):
+            game.refresh_from_db()
+            state = MODULE.replay({**game.settings, "secret": game.secret}, game.actions)
+            if state.hand_over or game.finished:
+                break
+            who = next(name for name, seat in seats.items() if seat == state.to_act)
+            action = "check" if state.legal()["check"] else "call"
+            body = self.post(who, f"/api/holdem/games/{game.id}/move/", {"action": action}).content.decode()
+            body += self.clients[who].get(f"/api/holdem/games/{game.id}/").content.decode()
+            game.refresh_from_db()
+            state = MODULE.replay({**game.settings, "secret": game.secret}, game.actions)
+            other = 4 - seats[who]  # 1 ↔ 3
+            if other not in state.shown:  # 攤牌亮出的牌大家都看得到
+                for c in state.hole[other]:
+                    self.assertNotIn(f'"{c}"', body, (who, other, c))
+        self.assertTrue(state.hand_over)
+
+    def test_only_the_host_can_leave_the_table(self):
+        game = self.open_table()
+        for _ in range(20):  # 等到輪到 bob（3 號位）
+            game.refresh_from_db()
+            state = MODULE.replay({**game.settings, "secret": game.secret}, game.actions)
+            if state.to_act == 3:
+                break
+            self.post("alice", f"/api/holdem/games/{game.id}/move/",
+                      {"action": "check" if state.legal()["check"] else "call"})
+        self.assertEqual(state.to_act, 3)
+        r = self.post("bob", f"/api/holdem/games/{game.id}/move/", {"action": "leave"})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("開桌的人", r.json()["error"])
+
+
+class OpponentStyleTests(SimpleTestCase):
+    """撲克的對手觀察：只用對手做過的動作算入池率與加注比例，依經驗範圍判斷鬆緊、主動或被動，再給常見的應對。"""
+
+    def hands(self, policy, n):
+        """兩位真人的單挑：policy(牌局, 座位) 決定動作，打 n 手牌，回傳 (設定, 行動)。"""
+        settings = {**settings_for(2, stack=4000, seed=5), "humans": [1, 2]}
+        t, actions = MODULE.new_state(settings), []
+        while t.hand_no <= n and not t.result():
+            action = "deal" if t.hand_over else policy(t, t.to_act)
+            if t.hand_over and t.hand_no == n:
+                break
+            t = MODULE.apply(t, action)
+            actions.append(action)
+        return settings, actions
+
+    def test_a_player_who_enters_every_pot_is_called_loose(self):
+        def policy(t, seat):
+            legal = t.legal()
+            if seat == 2:
+                return "call" if legal["call"] else "check"  # bob 每手都跟，從不加注
+            if t.street == 0 and legal["raise"]:
+                return f"raise {legal['raise'][0]}"  # alice 翻牌前都加注，所以 bob 每手都要花錢才能玩
+            return "check" if legal["check"] else "call"
+        settings, actions = self.hands(policy, 8)
+        text = " ".join(p for _, p in MODULE.opponent_points(settings, actions, 2, "bob（2 號位）"))
+        self.assertIn("偏鬆", text)
+        self.assertIn("平均牌力比較弱", text)
+        self.assertIn("大多只跟注", text)
+
+    def test_too_few_hands_say_so_instead_of_judging(self):
+        def policy(t, seat):
+            return "call" if t.legal()["call"] else "check"
+        settings, actions = self.hands(policy, 2)
+        text = " ".join(p for _, p in MODULE.opponent_points(settings, actions, 2, "bob（2 號位）"))
+        self.assertIn("樣本太少", text)
+        self.assertNotIn("偏鬆", text)

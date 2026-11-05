@@ -34,10 +34,25 @@ DEBUG = True
 
 ALLOWED_HOSTS = []
 
+# 對外公開（Cloudflare 臨時通道，2026-11-05；docs/交接.md 4.10）：tools/start_tunnel.py 設 GAME_PUBLIC=1。
+# - DEBUG 一定關掉：出錯時的除錯頁會列出設定，研究用伺服器的位址（OLLAMA_URL）不會被 Django 遮住。
+# - 只接受 *.trycloudflare.com 與本機的網址；表單的來源檢查信任通道的 https 網址。
+# - 通道在 Cloudflare 那端是 https，cloudflared 用 http 連進來並帶 X-Forwarded-Proto，靠它知道原本是 https。
+#   網站只聽 127.0.0.1（start_tunnel.py），別台電腦不經過通道連不進來，所以這個標頭只會由 cloudflared 設定。
+PUBLIC = os.environ.get('GAME_PUBLIC') == '1'
+if PUBLIC:
+    DEBUG = False
+    ALLOWED_HOSTS = ['.trycloudflare.com', 'localhost', '127.0.0.1']
+    CSRF_TRUSTED_ORIGINS = ['https://*.trycloudflare.com']
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
 
 # Application definition
 
 INSTALLED_APPS = [
+    # 真人對戰的 WebSocket（2026-11-05）：daphne 要排第一，manage.py runserver 才會改用它（ASGI，能接 WebSocket）
+    'daphne',
+    'channels',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -114,6 +129,10 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    # 帳號（2026-11-05，docs/交接.md 4.10）：記下每個瀏覽器最後活動的時間（後台的「瀏覽中的訪客」），
+    # 再要求登入：所有頁面與 API 都要登入，否則網址傳出去，別人就能用研究用伺服器
+    'arena.accounts.PresenceMiddleware',
+    'django.contrib.auth.middleware.LoginRequiredMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
@@ -136,6 +155,9 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'config.wsgi.application'
+ASGI_APPLICATION = 'config.asgi.application'
+# 只在同一個程序裡傳訊息（arena/realtime.py）；runserver 只有一個程序，夠用。要開好幾個程序時改用 channels_redis
+CHANNEL_LAYERS = {'default': {'BACKEND': 'channels.layers.InMemoryChannelLayer'}}
 
 
 # Database
@@ -152,6 +174,10 @@ DATABASES = {
     },
 }
 
+
+LOGIN_URL = 'login'
+LOGIN_REDIRECT_URL = 'arena:home'
+LOGOUT_REDIRECT_URL = 'login'
 
 # Password validation
 # https://docs.djangoproject.com/en/5.2/ref/settings/#auth-password-validators
@@ -175,7 +201,7 @@ AUTH_PASSWORD_VALIDATORS = [
 # Internationalization
 # https://docs.djangoproject.com/en/5.2/topics/i18n/
 
-LANGUAGE_CODE = 'en-us'
+LANGUAGE_CODE = 'zh-hant'  # 註冊表單的錯誤訊息、後台都用繁體中文（2026-11-05）
 
 TIME_ZONE = 'UTC'
 

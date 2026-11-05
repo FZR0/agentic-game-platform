@@ -81,6 +81,7 @@ class HoldemModule(GameModule):
     name = "德州撲克"
     seat_names = {s: f"{s} 號位" for s in range(1, MAX_PLAYERS + 1)}
     human_seats = [HUMAN]
+    pvp_pick_seats = True  # 真人對戰時開桌的人自選哪些座位給朋友坐（使用者決定，2026-11-05）
     numbered = False
     step_word = "步"
     coord_pattern = CARD_RE
@@ -181,7 +182,17 @@ class HoldemModule(GameModule):
             raise ValueError("AI 組成只能是「1 位 Agent＋風格機器人」或「全部 Agent」")
         if stack not in (1000, 2000, 4000):
             raise ValueError("起始籌碼必須是 1000、2000 或 4000")
-        return {"players": players, "ai_mode": ai_mode, "stack": stack, "sb": SB, "bb": BB}
+        cleaned = {"players": players, "ai_mode": ai_mode, "stack": stack, "sb": SB, "bb": BB}
+        # 真人對戰（2026-11-05）：開桌的人自選哪些座位是真人，其他座位照 ai_mode 由 AI 坐；開桌的人固定 1 號位
+        humans = sorted({int(s) for s in data.get("humans") or [HUMAN]})
+        if HUMAN not in humans or not all(1 <= s <= players for s in humans):
+            raise ValueError(f"真人座位必須包含 1 號位（開桌的人），而且在 1 到 {players} 號位之間")
+        if len(humans) > 1:
+            cleaned["humans"] = humans
+        return cleaned
+
+    def pvp_seats(self, settings):
+        return settings.get("humans", [HUMAN])
 
     def new_secret(self):
         return {"seed": secrets.randbits(48)}
@@ -189,15 +200,21 @@ class HoldemModule(GameModule):
     def new_state(self, settings):
         s = {**self.clean_settings({}), **(settings or {})}
         t = Table(s["players"], s["stack"], s["sb"], s["bb"], (s.get("secret") or {}).get("seed", 0))
-        t.roles = {HUMAN: "human"}
-        for i, seat in enumerate(range(2, s["players"] + 1)):
+        t.humans = set(s.get("humans") or [HUMAN])
+        # 復盤與提問從哪個真人的角度看（operations.settings_of 依請求的帳號放進 viewer）：只用他看得到的牌
+        t.viewer = s.get("viewer", HUMAN)
+        t.roles = {seat: "human" for seat in t.humans}
+        ai_seats = [seat for seat in range(2, s["players"] + 1) if seat not in t.humans]
+        for i, seat in enumerate(ai_seats):
             agent = s["ai_mode"] == "all_agent" or i == 0
             t.roles[seat] = "agent" if agent else STYLE_ORDER[(i - 1) % len(STYLE_ORDER)]
         return t
 
     def role_name(self, t, seat):
         role = t.roles[seat]
-        return {"human": "", "agent": "Agent"}.get(role, f"{STYLES.get(role, {}).get('name', '')}機器人")
+        if role == "human":
+            return "真人" if t.pvp else ""
+        return {"agent": "Agent"}.get(role, f"{STYLES.get(role, {}).get('name', '')}機器人")
 
     def normalize(self, text):
         t = str(text or "").strip().lower()
@@ -238,7 +255,7 @@ class HoldemModule(GameModule):
                 shown = [None, None]  # 背面朝上
             # 目前的牌型只給看得到牌的座位（自己的牌、攤牌時亮出的牌），否則等於洩漏別人的底牌
             visible = bool(shown) and None not in shown
-            seats.append({"seat": s, "name": "你" if s == HUMAN else f"{s} 號位", "role": self.role_name(t, s), "stack": t.stacks[s],
+            seats.append({"seat": s, "name": "你" if s == seat else f"{s} 號位", "role": self.role_name(t, s), "stack": t.stacks[s],
                           "bet": t.bet[s], "folded": s in t.folded and s in t.hole, "out": s not in t.hole,
                           "allin": s in t.allin, "cards": shown, "last": last.get(s, ""), "total": t.total[s],
                           "hand_name": cards.describe(cards.evaluate(t.hole[s] + t.board)) if visible else "",
@@ -252,7 +269,7 @@ class HoldemModule(GameModule):
         return {"hand": t.hand_no, "street": STREETS[t.street], "board": t.board, "pot": t.pot(), "seats": seats,
                 "to_move": self.to_move(t), "legal": legal, "hand_over": t.hand_over, "hand_result": t.hand_result,
                 "result": r[1] if r else None, "last": t.actions[-1] if t.actions else None,
-                "last_seat": t.last_seat}
+                "last_seat": t.last_seat, "can_leave": seat == HUMAN}  # 真人對戰只有開桌的人能離場
 
     # ---- 分析（只用 seat 看得到的資訊） ----
 
@@ -599,15 +616,17 @@ play_move 的 reason 用繁體中文一句話說明，只能提到工具結果�
             (CONDITIONAL, f"各選擇的期望值：{self._ev_text(a['ev'])}。"),
             (CONDITIONAL, f"在這些假設下，{seat_label(seat)}選擇{action_text(action)}：{why}。")]}
 
-    def overall_points(self, settings, actions, human_seat):
-        """整體評論用的打法統計：打了幾手、主動入池（翻牌前跟注或加注）、翻牌前加注、攤牌、贏下的手數與籌碼變化。"""
-        t = self.new_state(settings)
+    def _style(self, settings, actions, seat):
+        """seat 的打法統計（整體評論與對手觀察共用）：打完幾手、主動入池、翻牌前加注、攤牌、贏下的手數，
+        以及最後的牌局狀態。只看行動與結果，不看沒亮出的底牌。"""
+        t = self.new_state({**settings, "viewer": seat})
+        me = t.viewer
         hands = joined = raised = showdown = won = 0
-        dealt = HUMAN in t.hole
+        dealt = me in t.hole
         entered = opened = False
         for action in actions:
-            if not t.hand_over and t.to_act == HUMAN and t.street == 0 and action != "leave":
-                kind = self._action_key(t, HUMAN, action) if action != "fold" else "fold"
+            if not t.hand_over and t.to_act == me and t.street == 0 and action != "leave":
+                kind = self._action_key(t, me, action) if action != "fold" else "fold"
                 entered = entered or kind not in ("fold", "check")
                 opened = opened or kind not in ("fold", "check", "call")
             t = self.apply(t, action)
@@ -615,23 +634,34 @@ play_move 的 reason 用繁體中文一句話說明，只能提到工具結果�
                 hands += 1
                 joined += entered
                 raised += opened
-                showdown += HUMAN in t.shown
-                won += t.winnings.get(HUMAN, 0) > 0
+                showdown += me in t.shown
+                won += t.winnings.get(me, 0) > 0
                 dealt = entered = opened = False
             if action == "deal":
-                dealt = HUMAN in t.hole
+                dealt = me in t.hole
+        return {"hands": hands, "joined": joined, "raised": raised, "showdown": showdown, "won": won, "table": t}
+
+    def _vpip_verdict(self, settings, rate):
+        players = settings.get("players", 6)
+        low, high = next((lo, hi) for n, lo, hi in VPIP_RANGES if players <= n)
+        return players, low, high, "loose" if rate > high else "tight" if rate < low else "normal"
+
+    def overall_points(self, settings, actions, human_seat):
+        """整體評論用的打法統計：打了幾手、主動入池（翻牌前跟注或加注）、翻牌前加注、攤牌、贏下的手數與籌碼變化。"""
+        st = self._style(settings, actions, human_seat)
+        hands, joined, raised, showdown, won, t = (st[k] for k in ("hands", "joined", "raised", "showdown", "won", "table"))
+        me = t.viewer
         if not hands:
             return []
-        now = t.stacks[HUMAN] + (0 if t.hand_over else t.total[HUMAN])  # 打到一半的那手牌，已經下的注還算你的
+        now = t.stacks[me] + (0 if t.hand_over else t.total[me])  # 打到一半的那手牌，已經下的注還算你的
         diff = now - t.start_stack
         points = [(RULE, f"你打完了 {hands} 手牌：主動入池（翻牌前跟注或加注）{joined} 手（{pct(joined / hands)}），"
                          f"翻牌前加注 {raised} 手（{pct(raised / hands)}），打到攤牌 {showdown} 手，贏下 {won} 手。"),
                   (RULE, f"籌碼：起始 {t.start_stack}，現在 {now}（{'+' if diff >= 0 else ''}{diff}）。")]
         # 數字的好壞由程式判斷後寫進事實，語言模型不自己評價（它曾把 78% 的入池率說成「很穩定」）
-        players = settings.get("players", 6)
-        low, high = next((lo, hi) for n, lo, hi in VPIP_RANGES if players <= n)
         rate = joined / hands
-        verdict = "偏鬆（玩太多手）" if rate > high else "偏緊（玩太少手）" if rate < low else "在常見範圍內"
+        players, low, high, kind = self._vpip_verdict(settings, rate)
+        verdict = {"loose": "偏鬆（玩太多手）", "tight": "偏緊（玩太少手）", "normal": "在常見範圍內"}[kind]
         points.append((ESTIMATE, f"參考：{players} 人桌一般建議主動入池約 {pct(low)}–{pct(high)}（經驗值，不是這盤算出來的）；"
                                  f"你這盤 {pct(rate)}，{verdict}。"))
         if joined >= 3:
@@ -640,6 +670,49 @@ play_move 的 reason 用繁體中文一句話說明，只能提到工具結果�
                 points.append((ESTIMATE, f"你入池的 {joined} 手裡只有 {raised} 手是加注，大多只跟注，打法偏被動（經驗上入池時加注比較容易贏下底池）。"))
             elif share > 0.7:
                 points.append((ESTIMATE, f"你入池的 {joined} 手裡有 {raised} 手是加注，打法偏積極。"))
+        return points
+
+    # 對手觀察的應對建議（2026-11-05）：key 是 _judge 的標題（撲克的問題沒有 pattern）
+    opponent_tips = {
+        "棄掉了有利的牌": "對手牌不差時也常放棄：你可以多用下注對他施壓，他比較容易讓出底池。",
+        "可以免費過牌卻棄牌": "對手不需要花錢時也棄牌，代表他很怕輸：下注對他特別有效。",
+        "少賺了：牌力領先，可以加注讓對手多付": "對手拿到好牌時常只跟注或過牌：他只跟注時牌可能比看起來強，不要輕易對他詐唬。",
+        "錯過了加注的好機會": "對手很少主動加注：他突然加注時，通常是真的有好牌，可以考慮讓掉。",
+        "沒有止損：對手的動作顯示牌可能比你大": "對手被下注時常跟到底：對他少詐唬；你拿到好牌時多下注，讓他付錢。",
+        "跟注划不來": "對手常跟注不划算的注：你有好牌時可以下大一點的注，他還是可能會跟。",
+        "加注金額可以更好": "對手加注的金額常不恰當：注意他的下注大小，大小不一定代表牌力。",
+        "All in 風險太高": "對手會在不划算時 All in：他推 All in 不一定是大牌，你拿到夠強的牌可以考慮跟。",
+        "這次加注划不來": "對手加注常偏衝動：他加注時不一定是大牌，你拿到中上的牌可以跟他打下去。",
+    }
+    MIN_STYLE_HANDS = 5  # 打完幾手以上才講打法傾向；太少的話只是運氣
+
+    def opponent_points(self, settings, actions, seat, who):
+        """對手觀察：對手的入池率與加注比例（只看他做過的動作），以及對這種打法常見的應對。"""
+        st = self._style(settings, actions, seat)
+        hands, joined, raised = st["hands"], st["joined"], st["raised"]
+        if not hands:
+            return []
+        rate = joined / hands
+        players, low, high, kind = self._vpip_verdict(settings, rate)
+        points = [(RULE, f"{who}打完 {hands} 手牌，主動入池（翻牌前跟注或加注）{joined} 手（{pct(rate)}），"
+                         f"翻牌前加注 {raised} 手（{pct(raised / hands)}）。")]
+        if hands < self.MIN_STYLE_HANDS:
+            points.append((RULE, f"只打了 {hands} 手，樣本太少，看不出打法傾向（至少要 {self.MIN_STYLE_HANDS} 手）。"))
+            return points
+        style = {"loose": "偏鬆，玩很多手牌", "tight": "偏緊，只玩少數的牌", "normal": "在常見範圍內"}[kind]
+        points.append((ESTIMATE, f"參考：{players} 人桌一般主動入池約 {pct(low)}–{pct(high)}（經驗值）；{who}{style}。"))
+        if kind == "loose":
+            points.append((ESTIMATE, "應對建議（經驗做法）：玩很多手的對手平均牌力比較弱，你拿到中上的牌可以多跟他打、多下注讓他付錢。"))
+        elif kind == "tight":
+            points.append((ESTIMATE, "應對建議（經驗做法）：只玩好牌的對手主動入池或加注時要尊重，牌不夠好就讓掉；他很少入池，你可以多搶盲注。"))
+        if joined >= 3:
+            share = raised / joined
+            if share < 0.35:
+                points.append((ESTIMATE, f"{who}入池的 {joined} 手裡只有 {raised} 手是加注，大多只跟注（偏被動）。"
+                                         "應對建議（經驗做法）：被動的對手突然加注時牌通常很強；對他少詐唬，他常會跟到底。"))
+            elif share > 0.7:
+                points.append((ESTIMATE, f"{who}入池的 {joined} 手裡有 {raised} 手是加注（偏積極）。"
+                                         "應對建議（經驗做法）：常加注的對手不一定每次都有大牌，你拿到好牌可以讓他繼續下注，用中上的牌跟他打下去。"))
         return points
 
     def public_notes(self, state, notes):
@@ -674,10 +747,10 @@ play_move 的 reason 用繁體中文一句話說明，只能提到工具結果�
     # ---- 復盤與提問（玩家的角度） ----
 
     def review(self, settings, actions, human_seat):
-        t = self.new_state(settings)
+        t = self.new_state({**settings, "viewer": human_seat})
         moments = []
         for i, action in enumerate(actions):
-            if not t.hand_over and t.to_act == HUMAN and action != "leave":  # 離場是要不要繼續玩，不是牌局判斷
+            if not t.hand_over and t.to_act == t.viewer and action != "leave":  # 離場是要不要繼續玩，不是牌局判斷
                 moment = self._judge(t, i, action)
                 if moment:
                     moments.append(moment)
@@ -689,19 +762,19 @@ play_move 的 reason 用繁體中文一句話說明，只能提到工具結果�
 
     def _naive_call(self, t):
         """不看對手翻牌後動作時，玩家的勝率與跟注期望值（用來看出讀對手有沒有幫上忙）。"""
-        opponents = [o for o in t.in_hand() if o != HUMAN]
-        ranges = [r for r in (self._opponent_range(t, HUMAN, o, reads=False) for o in opponents) if r]
+        opponents = [o for o in t.in_hand() if o != t.viewer]
+        ranges = [r for r in (self._opponent_range(t, t.viewer, o, reads=False) for o in opponents) if r]
         rng = random.Random(f"{t.seed}:{len(t.actions)}:naive")
-        eq = cards.equity_vs(t.hole[HUMAN], t.board, ranges, SIMS, rng)
-        pot, to_call = t.pot(), t.legal(HUMAN)["to_call"]
+        eq = cards.equity_vs(t.hole[t.viewer], t.board, ranges, SIMS, rng)
+        pot, to_call = t.pot(), t.legal(t.viewer)["to_call"]
         return eq, eq * (pot + to_call) - to_call
 
     def _judge(self, t, index, action):
         """玩家這一步：和引擎在同樣假設下最好的選擇比，少賺或多虧多少；也找出讀對對手、精準止損的棄牌。"""
-        a = self.analysis(t, HUMAN)
+        a = self.analysis(t, t.viewer)
         ev = dict(a["ev"])
-        played = self._action_key(t, HUMAN, action)
-        ev.setdefault(played, self._ev_of(t, HUMAN, action))
+        played = self._action_key(t, t.viewer, action)
+        ev.setdefault(played, self._ev_of(t, t.viewer, action))
         best = a["best"]
         loss = ev[best] - ev[played]
         scale = a["pot"] + a["to_call"]
@@ -744,9 +817,9 @@ play_move 的 reason 用繁體中文一句話說明，只能提到工具結果�
             title = "加注金額可以更好"
         else:
             title = "All in 風險太高" if action == "allin" else "這次加注划不來"
-        points = [(RULE, f"第 {t.hand_no} 手牌{STREETS[t.street]}：你的底牌 {cards.show_all(t.hole[HUMAN])}，"
+        points = [(RULE, f"第 {t.hand_no} 手牌{STREETS[t.street]}：你的底牌 {cards.show_all(t.hole[t.viewer])}，"
                          f"公共牌 {cards.show_all(t.board) or '還沒發'}；底池 {a['pot']}，你要跟注 {a['to_call']}。")]
-        points += self._assumption_points(t, HUMAN, a)
+        points += self._assumption_points(t, t.viewer, a)
         if read:
             points.append((CONDITIONAL, f"如果不看對手翻牌後的動作，你的勝率約 {pct(read[0])}（跟注期望值約 {read[1]:+.0f}）；"
                                         f"把對手的動作算進去，勝率是 {pct(a['equity'])}（跟注期望值約 {ev['call']:+.0f}）。"))
@@ -777,15 +850,15 @@ play_move 的 reason 用繁體中文一句話說明，只能提到工具結果�
         t = state
         if t.hand_over:
             return [{"evidence": RULE, "text": f"這時第 {t.hand_no} 手牌已經結束：{t.hand_result}"}]
-        if HUMAN not in t.in_hand():
+        if t.viewer not in t.in_hand():
             points = [(RULE, f"這時你已經不在這手牌裡（底池 {t.pot()}，公共牌 {cards.show_all(t.board) or '還沒發'}）。")]
         else:
-            points = self._board_points(t, HUMAN) + self._candidate_points(t, HUMAN)
-            if t.to_act == HUMAN:
+            points = self._board_points(t, t.viewer) + self._candidate_points(t, t.viewer)
+            if t.to_act == t.viewer:
                 for action in focus[:3]:
-                    points += self._check_points(t, HUMAN, action)
+                    points += self._check_points(t, t.viewer, action)
         if next_action:
-            actor = HUMAN if t.to_act is None else t.to_act
+            actor = t.viewer if t.to_act is None else t.to_act
             points.append((RULE, f"紀錄中接下來是{seat_label(actor)}{action_text(next_action)}。"))
         return [{"evidence": ev, "text": text} for ev, text in points]
 
@@ -799,8 +872,8 @@ play_move 的 reason 用繁體中文一句話說明，只能提到工具結果�
         actor = t.to_act
         points = [(RULE, f"第 {n} 步是第 {t.hand_no} 手牌{STREETS[t.street]}，{seat_label(actor)}{action_text(action)}"
                          f"（當時底池 {t.pot()}，要跟注 {t.legal(actor)['to_call']}）。")]
-        if actor == HUMAN:
-            points += self._check_points(t, HUMAN, action)
+        if actor == t.viewer:
+            points += self._check_points(t, t.viewer, action)
         return [{"evidence": ev, "text": text} for ev, text in points]
 
 

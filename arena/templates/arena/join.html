@@ -1,0 +1,14 @@
+{% extends "arena/base.html" %}
+{% block title %}加入真人對戰｜益智遊戲 AI 教練{% endblock %}
+{% block content %}
+  <h1 class="page-title">加入真人對戰</h1>
+  <p class="muted">輸入朋友給你的房間密碼（6 個字），或直接打開朋友傳來的邀請連結。</p>
+  <form method="post" action="{% url 'arena:join' %}" class="account-form">
+    {% csrf_token %}
+    {% if error %}<p class="status warn" role="alert">{{ error }}</p>{% endif %}
+    <label>房間密碼 <input type="text" name="code" value="{{ code }}" maxlength="8" autocomplete="off" required
+      autocapitalize="characters" spellcheck="false"{% if not code %} autofocus{% endif %}></label>
+    <button type="submit" class="button primary"{% if code %} autofocus{% endif %}>加入</button>
+  </form>
+  <p class="account-switch">想自己開一盤？在遊戲的「設定」把對手改成「真人（邀請朋友）」，再按「新對局」。</p>
+{% endblock %}

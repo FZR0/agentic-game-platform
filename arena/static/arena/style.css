@@ -225,6 +225,17 @@ button:focus-visible, select:focus-visible, input:focus-visible, a:focus-visible
 .site-nav a:hover { background: var(--panel-2); color: var(--text); }
 .site-nav a[aria-current="page"] { background: var(--accent-soft); color: var(--accent); }
 
+/* 帳號（2026-11-05） */
+.account-bar { display: flex; align-items: center; gap: 8px; }
+.account-bar a { color: var(--muted); font-weight: 600; text-decoration: none; padding: 7px 10px; }
+.account-name { color: var(--muted); font-weight: 600; }
+.account-form { display: grid; gap: 12px; max-width: 360px; }
+.account-form label { display: grid; gap: 4px; font-weight: 600; }
+.account-form input { font: inherit; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--border-strong);
+  background: var(--raised); color: var(--text); }
+.account-form .hint { margin: 0; color: var(--muted); font-size: 0.9rem; font-weight: normal; }
+.account-switch { margin-top: 16px; color: var(--muted); }
+
 .coach-toggle { font-weight: 600; }
 .coach-toggle[aria-expanded="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
 
@@ -760,3 +771,16 @@ details ul { margin: 4px 0 0; padding-left: 18px; }
   .guide-section { padding: 14px; }
   .guide-head .button { width: 100%; }
 }
+
+/* 真人對戰（2026-11-05）：邀請朋友的房間密碼與連結、撲克的真人座位選擇 */
+.invite { margin: 0 0 12px; padding: 12px 14px; border: 1px solid var(--accent); border-radius: var(--radius);
+  background: var(--accent-soft); }
+.invite p { margin: 0 0 8px; }
+.room-code { font-size: 1.3rem; letter-spacing: 0.15em; color: var(--accent); }
+.invite-link { display: flex; gap: 8px; }
+.invite-link input { flex: 1; min-width: 0; }
+.human-seats { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin: 0; }
+.human-seats legend { font-weight: 600; padding: 0 4px; }
+#human-seat-boxes { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.opponent-signs { margin-top: 8px; font-size: 0.92rem; }
+.opponent-signs > li { cursor: pointer; }

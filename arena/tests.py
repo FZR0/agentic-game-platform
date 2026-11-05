@@ -17,8 +17,9 @@ from unittest.mock import patch
 from django.apps import apps
 from django.conf import settings
 from django.core.management import call_command
+from django.contrib.auth.models import User
 from django.db import connection
-from django.test import SimpleTestCase, TestCase, override_settings
+from django.test import Client, SimpleTestCase, TestCase, override_settings
 
 from gomoku.module import MODULE as GOMOKU
 from weiqi.module import MODULE as WEIQI
@@ -26,7 +27,19 @@ from weiqi.module import MODULE as WEIQI
 from . import agent, health, narrator, operations, orchestrator
 from .base import ESTIMATE
 from .management.commands.model_report import summarize
-from .models import AiNote, Game, ModelRun
+from .models import AiNote, Game, GamePlayer, LoginRecord, ModelRun, Presence
+
+
+class AdminClient(Client):
+    """測試用的瀏覽器：第一次送出請求前以管理員登入（2026-11-05 起所有頁面與 API 都要登入）。
+    管理員看得到沒有擁有者的舊對局，所以直接用 Game.objects.create 建對局的測試照樣能用。
+    要測沒登入或一般帳號的情況，用 django.test.Client 自己登入（AccountTests）。"""
+
+    def request(self, **request):
+        if "_auth_user_id" not in self.session:
+            user = User.objects.filter(username="tester").first() or User.objects.create_superuser("tester")
+            self.force_login(user)
+        return super().request(**request)
 
 
 class NarrationCheckTests(SimpleTestCase):
@@ -346,6 +359,7 @@ def fake_chat(*replies):
 
 @override_settings(OLLAMA_URL="http://127.0.0.1:9", OLLAMA_TIMEOUT=2)
 class ModelRunTests(TestCase):
+    client_class = AdminClient
     # 使用者要比較各模型的速度與成功率（2026-10-19）。以前只有 Agent 自己下成功的手記了模型與秒數：
     # 改由引擎代下的手、說明、提問都沒記，算不出成功率，秒數也只算到順利的手而偏快。
     OPEN_THREE = ["H8", "A15", "I8", "O15", "J8"]  # 黑 H8-J8 活三，輪到白（Agent）
@@ -556,11 +570,12 @@ def assert_question_focus_reaches_the_position(test, module, game, at, focus):
         r = test.client.post(f"/api/{module.key}/games/{game.id}/ask/",
                              json.dumps({"question": f"{focus} 好不好？", "at": at}), content_type="application/json").json()
     test.assertEqual(r["handled"]["by"], "agent")
-    test.assertEqual(r["facts"]["points"], operations.position_points(module, game, at, module.question_focus(focus)))
-    test.assertNotEqual(r["facts"]["points"], operations.position_points(module, game, at, []))
+    test.assertEqual(r["facts"]["points"], operations.position_points(module, game, at, module.question_focus(focus), game.human_seat))
+    test.assertNotEqual(r["facts"]["points"], operations.position_points(module, game, at, [], game.human_seat))
 
 
 class RequestAgentTests(TestCase):
+    client_class = AdminClient
     # 使用者決定（2026-10-28）：每個請求都交給 AI 助理處理，為了證明 Agentic 系統可行。
     # 這些測試守的是：功能和原本完全一樣、Agent 不能改變使用者要求的事、沒完成時一定有人補完並告訴玩家。
     def setUp(self):
@@ -665,13 +680,13 @@ class RequestAgentTests(TestCase):
     def test_agent_chooses_what_to_look_up_for_a_question(self):
         # 提問由 Agent 決定查什麼：「一開始那手」沒寫成「第 1 手」，正規表示式抓不到，Agent 可以查
         game = Game.objects.create(game_type="gomoku", human_seat=1, actions=["H8", "H9", "I8"])
-        expected = operations.action_points(GOMOKU, game, 1)
+        expected = operations.action_points(GOMOKU, game, 1, 1)
         with patch("arena.orchestrator._chat", side_effect=scripted([("explain_action", {"n": 1})])), \
                 patch("arena.narrator._ask_ollama", return_value="重點：還可以。\n說明：開局常見。"):
             r = self.post(f"/api/gomoku/games/{game.id}/ask/", {"question": "我一開始那手好嗎？", "at": 3}).json()
         self.assertEqual(r["handled"]["by"], "agent")
         self.assertEqual(r["facts"]["points"], expected)
-        self.assertNotEqual(operations.ask_points_by_rules(GOMOKU, game, "我一開始那手好嗎？", 3), expected)
+        self.assertNotEqual(operations.ask_points_by_rules(GOMOKU, game, "我一開始那手好嗎？", 3, 1), expected)
 
     def test_answers_from_agent_chosen_facts_are_still_checked(self):
         # Agent 只決定查什麼；回答照樣要通過 check_text，提到事實裡沒有的座標就改顯示事實原文
@@ -687,7 +702,7 @@ class RequestAgentTests(TestCase):
                 patch("arena.narrator._ask_ollama", side_effect=OSError("timed out")):
             r = self.post(f"/api/gomoku/games/{game.id}/ask/", {"question": "第 1 手好嗎？", "at": 3}).json()
         self.assertEqual(r["handled"]["by"], "fallback")
-        self.assertEqual(r["facts"]["points"], operations.ask_points_by_rules(GOMOKU, game, "第 1 手好嗎？", 3))
+        self.assertEqual(r["facts"]["points"], operations.ask_points_by_rules(GOMOKU, game, "第 1 手好嗎？", 3, 1))
 
     def test_pages_go_through_the_agent_and_show_when_it_failed(self):
         with patch("arena.orchestrator._chat", side_effect=obedient()):
@@ -709,6 +724,8 @@ class RequestAgentTests(TestCase):
 
 
 class RulesPanelTests(TestCase):
+    client_class = AdminClient
+
     def test_every_game_page_explains_its_rules(self):
         # 使用者要求每個遊戲都要有規則說明；新增遊戲時忘了寫規則，這個測試要擋下來
         from arena import games
@@ -720,6 +737,8 @@ class RulesPanelTests(TestCase):
 
 
 class HomePageTests(TestCase):
+    client_class = AdminClient
+
     def test_every_game_has_a_card_with_picture_and_description(self):
         # 首頁的遊戲卡片要有圖和一句介紹；新增遊戲時忘了附圖，首頁的 ?v= 版本號找不到檔案會整頁出錯
         from django.contrib.staticfiles import finders
@@ -754,6 +773,8 @@ class HomePageTests(TestCase):
 
 
 class HistoryPageTests(TestCase):
+    client_class = AdminClient
+
     def setUp(self):
         self.won = Game.objects.create(game_type="gomoku", human_seat=1, actions=["H8"], winner=1)
         self.open = Game.objects.create(game_type="gomoku", human_seat=1, actions=["H8"])
@@ -779,6 +800,7 @@ class HistoryPageTests(TestCase):
 
 
 class EndGameTests(TestCase):
+    client_class = AdminClient
     # 使用者要求能結束不想下的對局，而且「不計勝負」和認輸分開（2026-10-21）
     def setUp(self):
         self.game = Game.objects.create(game_type="gomoku", human_seat=1, actions=["H8"])
@@ -821,6 +843,8 @@ class EndGameTests(TestCase):
 
 
 class GuidePageTests(TestCase):
+    client_class = AdminClient
+
     def test_every_games_rules_can_be_read_before_playing(self):
         # 「怎麼玩」要在進對局頁之前就看得到每個遊戲的規則
         from arena import games
@@ -1197,6 +1221,7 @@ class SavePromptTests(SimpleTestCase):
         self.assertEqual(git_menu.incomplete(joined), ["alice（只在公開儲存庫）", "bob（只在私人儲存庫）"])
 
 class RunLogTests(TestCase):
+    client_class = AdminClient
     # 使用者 2026-10-28：啟動遊戲平台.bat 沒有運行紀錄，出了問題分不出是 AI 伺服器、AI 助理還是程式。
     # 紀錄要讓人一眼看出是哪一邊：伺服器連不上、AI 助理被擋下、改用原本的程式補完，各自有一行。
     def setUp(self):
@@ -1249,6 +1274,7 @@ REMOTE = override_settings(OLLAMA_URL="http://192.0.2.10:11434", OLLAMA_SERVER_N
 
 
 class AiHealthTests(TestCase):
+    client_class = AdminClient
     # 使用者 2026-10-30：與其每個請求都去連、都失敗，不如出問題時檢查一次，告訴使用者原因與排除步驟；
     # 查不出原因時列出可能原因並附故障報告。原因判斷錯了，使用者就會照錯的步驟去修。
     BODY = {"model": "gemma4:26b", "messages": []}
@@ -1374,3 +1400,343 @@ class AiHealthTests(TestCase):
         self.assertEqual(data["ai_problem"]["title"], "這台電腦的 Ollama 沒有啟動")
         health._current = None
         self.assertIsNone(self.client.get("/api/gomoku/models/").json()["ai_problem"])
+
+
+class AccountTests(TestCase):
+    """帳號（2026-11-05，docs/交接.md 4.10）：網站要放到 Cloudflare 通道上給別人連，
+    所以沒登入什麼都不能用（否則別人能用研究用伺服器），各人只看得到自己的對局，管理員看得到登入 IP 與在線的人。"""
+
+    def setUp(self):
+        self.alice = User.objects.create_user("alice", password="pw-for-tests-1")
+        self.bob = User.objects.create_user("bob", password="pw-for-tests-2")
+
+    def client_for(self, user):
+        client = Client()
+        client.force_login(user)
+        return client
+
+    def test_nothing_works_without_logging_in(self):
+        # 頁面與 API 都要登入；沒登入的請求不能走到 AI 助理（每個頁面都會呼叫模型）
+        with patch.object(orchestrator, "handle", side_effect=AssertionError("沒登入不能呼叫 AI 助理")):
+            for url in ["/", "/history/", "/guide/", "/gomoku/", "/api/gomoku/games/", "/api/gomoku/models/"]:
+                response = Client().get(url)
+                self.assertEqual(response.status_code, 302, url)
+                self.assertTrue(response["Location"].startswith("/accounts/login/"), url)
+            self.assertEqual(Client().post("/api/gomoku/games/", "{}", content_type="application/json").status_code, 302)
+
+    def test_login_and_signup_pages_never_reach_the_ai_assistant(self):
+        # 密碼不能交給模型；登入頁在 AI 伺服器連不上時也要能用
+        with patch.object(orchestrator, "handle", side_effect=AssertionError("登入頁不能呼叫 AI 助理")):
+            self.assertEqual(Client().get("/accounts/login/").status_code, 200)
+            self.assertEqual(Client().get("/accounts/signup/").status_code, 200)
+
+    def test_anyone_can_sign_up_and_is_logged_in_with_their_ip_recorded(self):
+        client = Client()
+        response = client.post("/accounts/signup/", {"username": "carol", "password1": "a-Long-pass-77",
+                                                     "password2": "a-Long-pass-77"}, REMOTE_ADDR="203.0.113.5")
+        self.assertRedirects(response, "/", fetch_redirect_response=False)
+        carol = User.objects.get(username="carol")
+        self.assertEqual(int(client.session["_auth_user_id"]), carol.id)
+        self.assertEqual(LoginRecord.objects.get(user=carol).ip, "203.0.113.5")
+
+    def test_login_records_the_real_ip_behind_the_cloudflare_tunnel(self):
+        # 經過 cloudflared 時連線來自本機，真正的位址在 CF-Connecting-IP
+        Client().post("/accounts/login/", {"username": "alice", "password": "pw-for-tests-1"},
+                      REMOTE_ADDR="127.0.0.1", HTTP_CF_CONNECTING_IP="198.51.100.7")
+        self.assertEqual(LoginRecord.objects.get(user=self.alice).ip, "198.51.100.7")
+
+    def test_a_forged_cloudflare_header_from_elsewhere_is_ignored(self):
+        # 不是從本機（cloudflared）來的連線，標頭是使用者自己填的，不能信
+        Client().post("/accounts/login/", {"username": "alice", "password": "pw-for-tests-1"},
+                      REMOTE_ADDR="203.0.113.9", HTTP_CF_CONNECTING_IP="198.51.100.7")
+        self.assertEqual(LoginRecord.objects.get(user=self.alice).ip, "203.0.113.9")
+
+    def test_players_only_see_their_own_games(self):
+        mine = Game.objects.create(game_type="gomoku", owner=self.alice, human_seat=1, actions=["H8"])
+        alice, bob = self.client_for(self.alice), self.client_for(self.bob)
+        with patch.object(orchestrator, "_chat", side_effect=OSError("測試不連模型")):
+            self.assertContains(alice.get("/history/"), f"?review={mine.id}")
+            self.assertNotContains(bob.get("/history/"), f"?review={mine.id}")
+            self.assertEqual(bob.get(f"/api/gomoku/games/{mine.id}/").status_code, 404)
+            self.assertEqual(bob.get(f"/api/gomoku/games/{mine.id}/review/").status_code, 404)
+            # 別人的對局不能替他下、也不能替他結束
+            move = bob.post(f"/api/gomoku/games/{mine.id}/move/", json.dumps({"action": "H9"}),
+                            content_type="application/json")
+            self.assertEqual(move.status_code, 404)
+            self.assertEqual(bob.post(f"/games/{mine.id}/end/").status_code, 404)
+        mine.refresh_from_db()
+        self.assertEqual((mine.actions, mine.ended), (["H8"], False))
+
+    def test_new_games_belong_to_the_player_who_started_them(self):
+        with patch.object(orchestrator, "_chat", side_effect=OSError("測試不連模型")), \
+                patch.object(agent, "_chat", side_effect=OSError("測試不連模型")):
+            response = self.client_for(self.alice).post("/api/gomoku/games/", json.dumps({"seat": 1}),
+                                                        content_type="application/json")
+        self.assertEqual(Game.objects.get(pk=response.json()["game"]["id"]).owner, self.alice)
+
+    def test_old_games_without_an_owner_are_only_visible_to_admins(self):
+        old = Game.objects.create(game_type="gomoku", human_seat=1, actions=["H8"])
+        admin = User.objects.create_superuser("boss")
+        with patch.object(orchestrator, "_chat", side_effect=OSError("測試不連模型")):
+            self.assertEqual(self.client_for(admin).get(f"/api/gomoku/games/{old.id}/").status_code, 200)
+            self.assertEqual(self.client_for(self.alice).get(f"/api/gomoku/games/{old.id}/").status_code, 404)
+
+
+class PresenceTests(TestCase):
+    """後台要看得到目前有誰在瀏覽網站（使用者要求，2026-11-05），包括還沒登入、停在登入頁的訪客。"""
+
+    def test_visitors_are_recorded_with_their_account_and_ip(self):
+        Client().get("/accounts/login/", REMOTE_ADDR="203.0.113.20")
+        user = User.objects.create_user("dave", password="x")
+        client = Client()
+        client.force_login(user)
+        with patch.object(orchestrator, "_chat", side_effect=OSError("測試不連模型")):
+            client.get("/guide/", REMOTE_ADDR="203.0.113.21")
+        anonymous = Presence.objects.get(ip="203.0.113.20")
+        self.assertIsNone(anonymous.user)
+        self.assertEqual(anonymous.path, "/accounts/login/")
+        self.assertEqual(Presence.objects.get(ip="203.0.113.21").user, user)
+
+    def test_admin_lists_only_people_online_by_default(self):
+        from django.utils import timezone as dj_timezone
+        Presence.objects.create(session_key="old", ip="203.0.113.30",
+                                last_seen=dj_timezone.now() - Presence.ONLINE - Presence.ONLINE)
+        Presence.objects.create(session_key="now", ip="203.0.113.31")
+        admin = Client()
+        admin.force_login(User.objects.create_superuser("boss"))
+        page = admin.get("/admin/arena/presence/")
+        self.assertContains(page, "203.0.113.31")
+        self.assertNotContains(page, "203.0.113.30")
+        self.assertContains(admin.get("/admin/arena/presence/?status=all"), "203.0.113.30")
+        self.assertEqual(admin.get("/admin/arena/loginrecord/").status_code, 200)
+
+
+class PvpTests(TestCase):
+    """真人對戰（2026-11-05，docs/交接.md 4.10）：兩位真人各自登入、用房間密碼加入，各下自己的座位；
+    對戰中不能用 AI 教練（否則是幫其中一方作弊），結束後每個人從自己的座位復盤。"""
+
+    def setUp(self):
+        self.alice = User.objects.create_user("alice", password="x")
+        self.bob = User.objects.create_user("bob", password="x")
+        self.carol = User.objects.create_user("carol", password="x")
+        self.clients = {}
+        for user in (self.alice, self.bob, self.carol):
+            self.clients[user.username] = Client()
+            self.clients[user.username].force_login(user)
+        patcher = patch.object(orchestrator, "_chat", side_effect=OSError("測試不連模型"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def post(self, who, url, body):
+        return self.clients[who].post(url, json.dumps(body), content_type="application/json")
+
+    def open_room(self, seat=1):
+        r = self.post("alice", "/api/gomoku/games/", {"seat": seat, "mode": "pvp"}).json()
+        return Game.objects.get(pk=r["game"]["id"]), r
+
+    def join(self, who, code):
+        return self.clients[who].post("/join/", {"code": code})
+
+    def test_a_friend_joins_with_the_room_code_and_takes_the_other_seat(self):
+        game, r = self.open_room(seat=2)
+        self.assertTrue(r["game"]["waiting"])
+        self.assertEqual(len(r["game"]["room_code"]), 6)
+        self.assertEqual(r["ai_moves"], [])  # 沒有 AI：黑棋是真人，等對手加入
+        response = self.join("bob", game.room_code.lower())  # 小寫也認得
+        self.assertRedirects(response, f"/gomoku/?resume={game.id}", fetch_redirect_response=False)
+        game.refresh_from_db()
+        self.assertEqual(game.seat_of(self.bob), 1)
+        self.assertFalse(game.waiting)
+
+    def test_opening_an_invite_link_does_not_join_until_confirmed(self):
+        # 用 GET 就加入的話，別的網站放一張圖片就能讓人坐進陌生的對局
+        game, _ = self.open_room()
+        page = self.clients["bob"].get(f"/join/{game.room_code}/")
+        self.assertContains(page, game.room_code)
+        game.refresh_from_db()
+        self.assertTrue(game.waiting)
+
+    def test_no_moves_until_the_opponent_joins(self):
+        game, _ = self.open_room()
+        self.assertEqual(self.post("alice", f"/api/gomoku/games/{game.id}/move/", {"action": "H8"}).status_code, 400)
+
+    def test_each_player_only_moves_for_their_own_seat_and_no_ai_plays(self):
+        game, _ = self.open_room()
+        self.join("bob", game.room_code)
+        url = f"/api/gomoku/games/{game.id}/move/"
+        self.assertEqual(self.post("bob", url, {"action": "H8"}).status_code, 400)  # 黑棋是 alice
+        r = self.post("alice", url, {"action": "H8"}).json()
+        self.assertEqual(r["ai_moves"], [])  # 白棋是真人，AI 不能替 bob 下
+        self.assertEqual(self.post("alice", url, {"action": "H9"}).status_code, 400)  # 輪到 bob
+        self.assertEqual(self.post("bob", url, {"action": "H9"}).status_code, 200)
+        game.refresh_from_db()
+        self.assertEqual(game.actions, ["H8", "H9"])
+        self.assertFalse(game.ai_notes.exists())
+
+    def test_a_third_person_can_neither_join_a_full_game_nor_see_it(self):
+        game, _ = self.open_room()
+        self.join("bob", game.room_code)
+        self.assertContains(self.join("carol", game.room_code), "座位已經坐滿")
+        self.assertEqual(self.clients["carol"].get(f"/api/gomoku/games/{game.id}/").status_code, 404)
+
+    def test_the_ai_coach_is_off_until_the_game_ends(self):
+        game, _ = self.open_room()
+        self.join("bob", game.room_code)
+        self.post("alice", f"/api/gomoku/games/{game.id}/move/", {"action": "H8"})
+        with patch.object(orchestrator, "handle", wraps=orchestrator.handle) as handle:
+            for who in ("alice", "bob"):
+                self.assertEqual(self.clients[who].get(f"/api/gomoku/games/{game.id}/review/").status_code, 400)
+                ask = self.post(who, f"/api/gomoku/games/{game.id}/ask/", {"question": "下哪裡好？", "at": 1})
+                self.assertEqual(ask.status_code, 400)
+            self.assertFalse(any(c.args[0] in ("review", "ask") for c in handle.call_args_list))
+
+    def test_pvp_games_cannot_be_ended_without_a_result(self):
+        # 快輸的一方按「不計勝負」就能讓輸棋不算；要結束只能認輸
+        game, _ = self.open_room()
+        self.join("bob", game.room_code)
+        self.assertEqual(self.post("bob", f"/api/gomoku/games/{game.id}/end/", {}).status_code, 400)
+        self.clients["bob"].post(f"/games/{game.id}/end/")
+        game.refresh_from_db()
+        self.assertFalse(game.ended)
+
+    def test_after_the_game_each_player_reviews_their_own_moves(self):
+        game, _ = self.open_room()
+        self.join("bob", game.room_code)
+        self.post("alice", f"/api/gomoku/games/{game.id}/move/", {"action": "H8"})
+        self.post("bob", f"/api/gomoku/games/{game.id}/move/", {"action": "A1"})
+        self.post("alice", f"/api/gomoku/games/{game.id}/move/", {"action": "resign"})
+        game.refresh_from_db()
+        self.assertEqual(game.winner, 2)
+        for who, seat in (("alice", 1), ("bob", 2)):
+            r = self.clients[who].get(f"/api/gomoku/games/{game.id}/review/")
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(r.json()["moments"], GOMOKU.review(game.settings, game.actions, seat))
+            detail = self.clients[who].get(f"/api/gomoku/games/{game.id}/").json()
+            self.assertEqual(detail["my_seat"], seat)
+        # 戰績：bob 贏、alice 輸
+        self.assertEqual(operations._result(game, self.bob), "win")
+        self.assertEqual(operations._result(game, self.alice), "loss")
+
+
+class RealtimeTests(TestCase):
+    """真人對戰的 WebSocket（arena/realtime.py）：只有坐在這盤的真人連得上；有人下了一步就通知，
+    每條連線依自己的座位重新產生畫面（和打開對局用同一個函式），不經過 AI 助理。"""
+
+    def setUp(self):
+        self.alice = User.objects.create_user("alice", password="x")
+        self.bob = User.objects.create_user("bob", password="x")
+        self.game, _ = operations.start_game(GOMOKU, 1, {}, self.alice, "pvp")
+        operations.join_game(self.game.room_code, self.bob)
+
+    def test_only_players_of_this_pvp_game_may_connect(self):
+        from django.contrib.auth.models import AnonymousUser
+        from . import realtime
+        self.assertEqual(realtime.seat_for(self.alice, self.game.id)[1], 1)
+        self.assertEqual(realtime.seat_for(self.bob, self.game.id)[1], 2)
+        self.assertEqual(realtime.seat_for(User.objects.create_user("carol"), self.game.id), (None, None))
+        self.assertEqual(realtime.seat_for(AnonymousUser(), self.game.id), (None, None))
+        ai_game, _ = operations.start_game(GOMOKU, 1, {}, self.alice)
+        self.assertEqual(realtime.seat_for(self.alice, ai_game.id), (None, None))  # 和 AI 的對局不用即時同步
+
+    def test_a_move_notifies_everyone_in_the_game(self):
+        from asgiref.sync import async_to_sync
+        from channels.layers import get_channel_layer
+        from . import realtime
+        layer = get_channel_layer()
+        channel = async_to_sync(layer.new_channel)()
+        async_to_sync(layer.group_add)(f"game_{self.game.id}", channel)
+        client = Client()
+        client.force_login(self.alice)
+        with patch.object(orchestrator, "_chat", side_effect=OSError("測試不連模型")):
+            client.post(f"/api/gomoku/games/{self.game.id}/move/", json.dumps({"action": "H8"}),
+                        content_type="application/json")
+        self.assertEqual(async_to_sync(layer.receive)(channel), {"type": "game.changed"})
+
+    def test_each_connection_gets_the_position_from_its_own_seat_without_the_ai_assistant(self):
+        from . import realtime
+        sent = []
+        consumer = realtime.GameConsumer()
+        consumer.game_id, consumer.seat = self.game.id, 2
+        consumer.send_json = sent.append
+        with patch.object(orchestrator, "handle", side_effect=AssertionError("推送不經過 AI 助理")):
+            consumer.game_changed({"type": "game.changed"})
+        self.game.refresh_from_db()
+        self.assertEqual(sent, [{"type": "update", **operations.game_detail(GOMOKU, self.game, 2)}])
+
+
+class OpponentObservationTests(TestCase):
+    """對手觀察（使用者要求，2026-11-05）：真人對戰結束後，告訴玩家對手有什麼傾向、在第幾步出現跡象、知道後可以怎麼應對。
+    傾向必須來自電腦對對手每一步的檢查（同一套復盤），應對建議由程式寫好，語言模型只能改寫。"""
+
+    def setUp(self):
+        self.alice = User.objects.create_user("alice", password="x")
+        self.bob = User.objects.create_user("bob", password="x")
+
+    def play(self, moves):
+        game, _ = operations.start_game(GOMOKU, 1, {}, self.alice, "pvp")
+        operations.join_game(game.room_code, self.bob)
+        game.refresh_from_db()
+        for i, move in enumerate(moves):
+            operations.play_human_move(GOMOKU, game, move, 1 + i % 2)
+        return game
+
+    def test_names_the_habit_the_step_it_showed_and_how_to_respond(self):
+        # 黑棋（alice）第 9 手沒有擋白棋 A1–A4 的衝四，白棋下一手連五
+        game = self.play(["H8", "A1", "J10", "A2", "L3", "A3", "C12", "A4", "N14", "A5"])
+        self.assertEqual(game.winner, 2)
+        rivals = operations.review(GOMOKU, game, 2)["opponents"]
+        self.assertEqual([r["seat"] for r in rivals], [1])  # bob 只觀察對手，不觀察自己
+        texts = [p["text"] for p in rivals[0]["facts"]["points"]]
+        habit = next(t for t in texts if "沒有擋住對手的衝四" in t)
+        self.assertIn("alice（黑棋）", habit)
+        self.assertIn("第 9 手", habit)
+        self.assertIn(GOMOKU.opponent_tips["沒有擋住對手的衝四"], " ".join(texts))
+        self.assertIn(8, [s["index"] for s in rivals[0]["signs"]])
+        self.assertEqual(rivals[0]["facts"]["kind"], "opponent")
+
+    def test_advice_is_marked_as_experience_not_a_computed_fact(self):
+        game = self.play(["H8", "A1", "J10", "A2", "L3", "A3", "C12", "A4", "N14", "A5"])
+        points = operations.review(GOMOKU, game, 2)["opponents"][0]["facts"]["points"]
+        for p in points:
+            if "應對建議" in p["text"]:
+                self.assertEqual(p["evidence"], ESTIMATE)
+                self.assertIn("經驗做法", p["text"])
+
+    def test_games_against_the_ai_have_no_opponent_observation(self):
+        # AI 的每一步就是引擎的選擇，用同一套標準檢查本來就找不到問題
+        game, _ = operations.start_game(GOMOKU, 1, {}, self.alice)
+        operations.play_human_move(GOMOKU, game, "H8", 1)
+        self.assertEqual(operations.review(GOMOKU, game, 1)["opponents"], [])
+
+    def test_the_language_model_is_told_to_add_nothing_beyond_the_facts(self):
+        self.assertIn("opponent", narrator.INTROS)
+        self.assertIn("不要加上事實裡沒有的應對方法", narrator.INTROS["opponent"])
+
+
+class JoinRaceTests(TestCase):
+    """兩個人同時用房間密碼加入時，同一個座位只能給一個人（2026-11-05 審核 #10 時發現）：
+    先讀到空位、再存檔的話，後存的會蓋掉先存的，被蓋掉的人以為加入了其實沒有座位。"""
+
+    def test_a_seat_taken_in_between_is_not_overwritten(self):
+        alice = User.objects.create_user("alice")
+        bob = User.objects.create_user("bob")
+        carol = User.objects.create_user("carol")
+        game, _ = operations.start_game(GOMOKU, 1, {}, alice, "pvp")
+        seat = game.players.get(user__isnull=True)
+        real_filter = game.players.filter
+
+        class ReadThenBobSits:
+            """carol 讀到空位之後、寫入之前，bob 先坐下了。"""
+            def __init__(self, *args, **kwargs):
+                self.qs = real_filter(*args, **kwargs)
+
+            def order_by(self, *fields):
+                rows = list(self.qs.order_by(*fields))
+                GamePlayer.objects.filter(pk=seat.pk).update(user=bob)
+                return rows
+
+        with patch.object(type(game.players), "filter", side_effect=ReadThenBobSits):
+            with self.assertRaisesMessage(ValueError, "坐滿"):
+                operations.join_game(game.room_code, carol)
+        seat.refresh_from_db()
+        self.assertEqual(seat.user, bob)

@@ -5,6 +5,7 @@
     <div class="row-meta">
       <time datetime="{{ card.when|date:'c' }}">{{ card.when|date:"Y-m-d H:i" }}</time>
       {% if card.seat %}<span>執{{ card.seat }}</span>{% endif %}
+      {% if card.pvp %}<span>真人對戰{% if card.opponents %}：對手 {{ card.opponents }}{% endif %}</span>{% endif %}
       <span>{{ card.steps }} {{ card.module.step_word }}</span>
       <span>#{{ card.id }}</span>
     </div>

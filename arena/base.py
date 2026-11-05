@@ -43,6 +43,19 @@ class GameModule:
     # 額外的參考表（撲克的起手牌勝率表），顯示在頂端列：{"label", "title", "note", "columns", "rows": [{"key", "cells"}]}
     reference = None
 
+    pvp_pick_seats = False  # 真人對戰時開局的人自選真人座位（撲克）；棋類的全部座位都是真人
+    # 對手觀察（2026-11-05）：review 對「對手的座位」找到的問題類型（pattern，沒有就是 title）→ 給玩家的應對建議。
+    # 建議由程式寫好、標成經驗做法，語言模型只改寫，不自己想應對方法
+    opponent_tips = {}
+
+    def opponent_points(self, settings, actions, seat, who):
+        """對手觀察的額外事實（撲克的打法統計與應對）：[(證據種類, 文字)]。who 是對手的稱呼，例如「bob（3 號位）」。"""
+        return []
+
+    def pvp_seats(self, settings):
+        """真人對戰時真人坐的座位（2026-11-05）：棋類是全部座位，撲克由開桌的人自選（settings["humans"]）。"""
+        return list(self.seat_names)
+
     @property
     def seat_choices(self):
         seats = self.human_seats or list(self.seat_names)

@@ -42,6 +42,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="arena\__init__.py" />
+    <Compile Include="arena\accounts.py" />
     <Compile Include="arena\admin.py" />
     <Compile Include="arena\agent.py" />
     <Compile Include="arena\apps.py" />
@@ -58,11 +59,14 @@
     <Compile Include="arena\migrations\0003_game_secret.py" />
     <Compile Include="arena\migrations\0004_modelrun.py" />
     <Compile Include="arena\migrations\0005_game_ended.py" />
+    <Compile Include="arena\migrations\0006_accounts.py" />
+    <Compile Include="arena\migrations\0007_pvp.py" />
     <Compile Include="arena\migrations\__init__.py" />
     <Compile Include="arena\models.py" />
     <Compile Include="arena\narrator.py" />
     <Compile Include="arena\operations.py" />
     <Compile Include="arena\orchestrator.py" />
+    <Compile Include="arena\realtime.py" />
     <Compile Include="arena\tests.py" />
     <Compile Include="arena\urls.py" />
     <Compile Include="arena\views.py" />
@@ -129,7 +133,10 @@
     <Content Include="arena\templates\arena\guide.html" />
     <Content Include="arena\templates\arena\history.html" />
     <Content Include="arena\templates\arena\home.html" />
+    <Content Include="arena\templates\arena\join.html" />
     <Content Include="arena\templates\arena\play.html" />
+    <Content Include="arena\templates\registration\login.html" />
+    <Content Include="arena\templates\registration\signup.html" />
     <Content Include="chessgame\static\chessgame\board.js" />
     <Content Include="chessgame\static\chessgame\icon.svg" />
     <Content Include="CLAUDE.md" />
@@ -143,12 +150,16 @@
     <Content Include="holdem\static\holdem\icon.svg" />
     <Content Include="logs\故障報告\20261030-194417.txt" />
     <Content Include="logs\故障報告\20261030-194459.txt" />
+    <Content Include="logs\故障報告\20261105-164822.txt" />
+    <Content Include="logs\故障報告\20261105-165509.txt" />
+    <Content Include="logs\故障報告\20261105-165643.txt" />
     <Content Include="README.md" />
     <Content Include="requirements.txt" />
     <Content Include="weiqi\static\weiqi\board.js" />
     <Content Include="weiqi\static\weiqi\icon.svg" />
     <Content Include="xiangqi\static\xiangqi\board.js" />
     <Content Include="xiangqi\static\xiangqi\icon.svg" />
+    <Content Include="啟動對戰測試.bat" />
     <Content Include="啟動本機測試.bat" />
     <Content Include="啟動遊戲平台.bat" />
     <Content Include="版本管理.bat" />
@@ -163,6 +174,7 @@
     <Folder Include="arena\static\arena\" />
     <Folder Include="arena\templates\" />
     <Folder Include="arena\templates\arena\" />
+    <Folder Include="arena\templates\registration\" />
     <Folder Include="chessgame\" />
     <Folder Include="chessgame\static\" />
     <Folder Include="chessgame\static\chessgame\" />

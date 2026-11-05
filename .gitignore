@@ -19,3 +19,5 @@ logs/
 tools/katago/
 tools/pikafish/
 tools/stockfish/
+# Cloudflare 臨時通道的 cloudflared.exe（約 55 MB，tools/start_tunnel.py 下載並比對 SHA-256）
+tools/cloudflared/

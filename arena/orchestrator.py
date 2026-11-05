@@ -14,7 +14,7 @@ import time
 
 from django.conf import settings
 
-from . import agent, narrator, operations
+from . import agent, games, narrator, operations
 from .models import ModelRun
 
 log = logging.getLogger(__name__)
@@ -133,17 +133,18 @@ GAME_KEY = ("string", "遊戲代號", "game")
 class NewGame(Request):
     """「新對局」：存下新對局，再讓 AI 的座位行動到輪到玩家（例如撲克或玩家執白）。"""
     kind = "new_game"
-    tools = [_tool("start_game", "建立新對局並存檔", game=GAME_KEY[:2], seat=("integer", "玩家的座位")),
+    tools = [_tool("start_game", "建立新對局並存檔", game=GAME_KEY[:2], seat=("integer", "玩家的座位"),
+                   mode=("string", "對手：ai（和 AI 對戰）或 pvp（真人對戰）")),
              _tool("run_ai_turns", "讓 AI 的座位行動，直到輪到玩家或對局結束", game_id=GAME_ID[:2])]
 
     def task(self, ctx):
         p = ctx["params"]
-        return (f"使用者在{ctx['module'].name}（遊戲代號 {p['game']}）按了「新對局」，選擇座位 {p['seat']}。"
-                "請建立對局，再讓 AI 行動到輪到玩家。")
+        return (f"使用者在{ctx['module'].name}（遊戲代號 {p['game']}）按了「新對局」，選擇座位 {p['seat']}，"
+                f"對手是 {p['mode']}。請建立對局，再讓 AI 行動到輪到玩家。")
 
     def locked(self, ctx):
         p = ctx["params"]
-        locked = {"start_game": {"game": p["game"], "seat": p["seat"]}}
+        locked = {"start_game": {"game": p["game"], "seat": p["seat"], "mode": p["mode"]}}
         if "game" in ctx:  # 還沒建立時由 call 回覆「還沒建立對局」
             locked["run_ai_turns"] = {"game_id": ctx["game"].id}
         return locked
@@ -161,11 +162,12 @@ class NewGame(Request):
 
     def _start(self, ctx):
         p = ctx["params"]
-        ctx["game"], ctx["frame"] = operations.start_game(ctx["module"], p["seat"], p["settings"])
+        ctx["game"], ctx["frame"] = operations.start_game(ctx["module"], p["seat"], p["settings"], ctx["user"],
+                                                          p["mode"])
 
     def _ai(self, ctx):
         p = ctx["params"]
-        ctx["ai_moves"] = operations.run_ai_turns(ctx["module"], ctx["game"], p["model"], p["steps"])
+        ctx["ai_moves"] = operations.run_ai_turns(ctx["module"], ctx["game"], p["model"], p["steps"], p["seat"])
 
     def done(self, ctx):
         return "ai_moves" in ctx
@@ -177,13 +179,14 @@ class NewGame(Request):
             self._ai(ctx)
 
     def respond(self, ctx):
-        return {"game": ctx["game"].summary(), "frame": ctx["frame"], "ai_moves": ctx["ai_moves"]}
+        return {"game": ctx["game"].summary(), "my_seat": ctx["params"]["seat"], "frame": ctx["frame"],
+                "ai_moves": ctx["ai_moves"]}
 
 
 def _turn_summary(ctx):
     """給 Agent 的 AI 行動摘要：只說幾步、接下來輪到誰，不含任何底牌或思路。"""
     game = ctx["game"]
-    end = "對局已結束" if game.finished else "輪到玩家"
+    end = "對局已結束" if game.finished else "還在等對手加入" if game.waiting else "輪到玩家"
     return f"AI 行動了 {len(ctx['ai_moves'])} 步，{end}。"
 
 
@@ -215,11 +218,11 @@ class Move(Request):
         return _turn_summary(ctx)
 
     def _move(self, ctx):
-        ctx["frame"] = operations.play_human_move(ctx["module"], ctx["game"], ctx["params"]["action"])
+        ctx["frame"] = operations.play_human_move(ctx["module"], ctx["game"], ctx["params"]["action"], ctx["seat"])
 
     def _ai(self, ctx):
         p = ctx["params"]
-        ctx["ai_moves"] = operations.run_ai_turns(ctx["module"], ctx["game"], p["model"], p["steps"])
+        ctx["ai_moves"] = operations.run_ai_turns(ctx["module"], ctx["game"], p["model"], p["steps"], ctx["seat"])
 
     def done(self, ctx):
         return "ai_moves" in ctx
@@ -251,12 +254,13 @@ class Ask(Request):
                 "請用工具查出回答這個問題需要的分析（可以查不只一項），查完回覆「完成」。")
 
     def call(self, ctx, name, args):
-        module, game, at = ctx["module"], ctx["game"], ctx["params"]["at"]
+        module, game, at, seat = ctx["module"], ctx["game"], ctx["params"]["at"], ctx["seat"]
         try:
             if name == "explain_position":
-                points = operations.position_points(module, game, at, module.question_focus(str(args.get("focus", ""))))
+                points = operations.position_points(module, game, at, module.question_focus(str(args.get("focus", ""))),
+                                                    seat)
             else:
-                points = operations.action_points(module, game, int(args.get("n")))
+                points = operations.action_points(module, game, int(args.get("n")), seat)
         except (TypeError, ValueError) as exc:
             return f"查不到：{exc}"
         found = ctx.setdefault("points", [])
@@ -271,7 +275,8 @@ class Ask(Request):
     def fallback(self, ctx):
         if not self.done(ctx):
             p = ctx["params"]
-            ctx["points"] = operations.ask_points_by_rules(ctx["module"], ctx["game"], p["question"], p["at"])
+            ctx["points"] = operations.ask_points_by_rules(ctx["module"], ctx["game"], p["question"], p["at"],
+                                                           ctx["seat"])
 
     def respond(self, ctx):
         p = ctx["params"]
@@ -282,11 +287,19 @@ def _game(ctx):
     return ctx["game"]
 
 
+def _join(ctx):
+    """用房間密碼加入真人對戰；最後一位真人坐好時，先讓 AI 的座位行動到輪到真人（撲克可能是 AI 先說話）。"""
+    game, seat = operations.join_game(ctx["params"]["code"], ctx["user"])
+    module = games.get(game.game_type)
+    operations.run_ai_turns(module, game, settings.OLLAMA_MODEL, module.default_steps, seat)
+    return {"game": game, "module": module}
+
+
 REQUESTS = {r.kind: r for r in [
     OneStep("home", "load_home", "使用者打開了首頁，請載入首頁的資料（未完成的對局、最近對局、戰績）。",
-            lambda ctx: operations.home_context(), game_scoped=False),
+            lambda ctx: operations.home_context(ctx["user"]), game_scoped=False),
     OneStep("history", "load_history", "使用者打開了對局紀錄，篩選條件：遊戲「{game}」、結果「{result}」、第 {page} 頁。請載入這一頁。",
-            lambda ctx: operations.history_context(ctx["params"]["game"], ctx["params"]["result"], ctx["params"]["page"]),
+            lambda ctx: operations.history_context(ctx["user"], ctx["params"]["game"], ctx["params"]["result"], ctx["params"]["page"]),
             game_scoped=False,
             params={"game": ("string", "遊戲代號，沒有篩選就填空字串", "game"),
                     "result": ("string", "結果，沒有篩選就填空字串", "result"),
@@ -300,25 +313,30 @@ REQUESTS = {r.kind: r for r in [
     OneStep("models", "load_models", "使用者打開了遊戲「{game}」的設定，請載入可以選的 AI 模型與狀態。",
             lambda ctx: narrator.models_status(ctx["module"].key), params={"game": GAME_KEY}),
     OneStep("list_games", "list_games", "使用者要看遊戲「{game}」的對局清單，請載入。",
-            lambda ctx: operations.list_games(ctx["module"]), params={"game": GAME_KEY}),
+            lambda ctx: operations.list_games(ctx["module"], ctx["user"]), params={"game": GAME_KEY}),
     OneStep("detail", "load_game", "使用者要打開第 {game_id} 盤（復盤或接著下），請載入這盤棋。",
-            lambda ctx: operations.game_detail(ctx["module"], _game(ctx)), params={"game_id": GAME_ID}),
+            lambda ctx: operations.game_detail(ctx["module"], _game(ctx), ctx["seat"]), params={"game_id": GAME_ID}),
     OneStep("end", "end_game", "使用者在對局頁按了第 {game_id} 盤的「結束（不計勝負）」，請結束這盤。",
             lambda ctx: operations.end_game(_game(ctx)) or {"game": _game(ctx).summary()}, params={"game_id": GAME_ID}),
     OneStep("review", "review_game", "使用者按了第 {game_id} 盤的「復盤」，請檢查這盤棋的問題。",
-            lambda ctx: operations.review(ctx["module"], _game(ctx)), params={"game_id": GAME_ID},
+            lambda ctx: operations.review(ctx["module"], _game(ctx), ctx["seat"]), params={"game_id": GAME_ID},
             summary=lambda data: f"找到 {len(data['moments'])} 個問題。"),
     OneStep("note", "explain_note", "使用者要看第 {game_id} 盤第 {index} 步 AI 的思路說明，請產生說明。",
             lambda ctx: operations.narrate_note(ctx["module"], ctx["note"], ctx["params"]["model"]),
             params={"game_id": GAME_ID, "index": ("integer", "第幾步（從 0 起算）", "index")}),
     OneStep("narrate", "explain_facts", "使用者要看一段分析的白話說明，請產生說明。",
             lambda ctx: operations.narrate(ctx["module"], ctx["params"]["facts"], ctx["params"]["model"])),
+    # 真人對戰（2026-11-05）：輸入房間密碼的頁面，與按下「加入」
+    OneStep("join_page", "open_join_page", "使用者打開了「加入真人對戰」頁面，請載入頁面。",
+            lambda ctx: operations.join_context(), game_scoped=False),
+    OneStep("join", "join_game", "使用者輸入房間密碼「{code}」要加入真人對戰，請讓他加入。", _join, game_scoped=False,
+            params={"code": ("string", "房間密碼", "code")}, summary=lambda data: f"已加入第 {data['game'].id} 盤。"),
     NewGame(), Move(), Ask(),
 ]}
 
 
 def handle(kind, ctx):
-    """處理一個請求，回傳 (結果, handled)。handled 是 {"by": "agent"|"fallback"|"direct", "seconds", ...}，
+    """處理一個請求，回傳 (結果, handled)。ctx["user"] 是送出請求的帳號（views 放進去）。handled 是 {"by": "agent"|"fallback"|"direct", "seconds", ...}，
     fallback 時另有給玩家看的 notice。"""
     spec = REQUESTS[kind]
     module = ctx.get("module")

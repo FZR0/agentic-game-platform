@@ -53,6 +53,12 @@
         <button id="settings-toggle" aria-expanded="false" aria-controls="settings-panel">設定</button>
         <div id="settings-panel" class="popover settings" hidden>
           <h2>設定</h2>
+          <label>對手
+            <select id="opponent">
+              <option value="ai">AI</option>
+              <option value="pvp">真人（邀請朋友）</option>
+            </select>
+          </label>
           <label{% if module.seat_choices|length == 1 %} hidden{% endif %}>我執
             <select id="human-seat">
               {% for seat, name in module.seat_choices %}<option value="{{ seat }}">{{ name }}</option>{% endfor %}
@@ -65,7 +71,12 @@
             </select>
           </label>
           {% endfor %}
-          <p class="muted">還沒開始下時改了立即生效；對局中改的話，從下一局開始。</p>
+          {# 撲克的真人對戰：開桌的人自選哪些座位給朋友坐，其他座位由 AI 坐（2026-11-05） #}
+          <fieldset id="human-seats" class="human-seats" hidden>
+            <legend>朋友坐哪些座位（你固定 1 號位，其他由 AI 坐）</legend>
+            <div id="human-seat-boxes"></div>
+          </fieldset>
+          <p class="muted">還沒開始下時改了立即生效；對局中改的話，從下一局開始。真人對戰要按「新對局」開房間。</p>
           <details class="advanced">
             <summary>進階設定</summary>
             <label>AI 模型
@@ -132,6 +143,11 @@
 
     <main class="board-area">
       <p id="game-status" class="game-status"></p>
+      {# 真人對戰等對手加入時：房間密碼與邀請連結 #}
+      <div id="invite" class="invite" hidden>
+        <p>把房間密碼 <strong id="room-code" class="room-code"></strong> 或下面的連結傳給朋友，朋友登入後就能加入。</p>
+        <div class="invite-link"><input id="invite-link" type="text" readonly aria-label="邀請連結"><button id="copy-invite" type="button">複製連結</button></div>
+      </div>
       <canvas id="board" width="640" height="640" aria-label="{{ module.name }}棋盤"></canvas>
       <div id="review-nav" class="review-nav" hidden>
         <button id="nav-first" title="第一手（Home）">⏮</button>
