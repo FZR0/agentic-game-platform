@@ -6,6 +6,7 @@ from unittest.mock import patch
 from django.conf import settings
 from django.test import SimpleTestCase, TestCase, override_settings
 
+from arena.tests import AdminClient
 from arena import agent
 from arena import tests as arena_tests
 from arena.base import ESTIMATE, RULE
@@ -227,6 +228,7 @@ class ReviewTests(SimpleTestCase):
 
 @override_settings(OLLAMA_URL="http://127.0.0.1:9", OLLAMA_TIMEOUT=2)
 class GameApiTests(TestCase):
+    client_class = AdminClient
     def setUp(self):
         self.kata = FakeKataGo()
         patcher = patch.object(MODULE, "analyzer", self.kata)

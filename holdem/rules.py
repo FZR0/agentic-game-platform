@@ -36,6 +36,8 @@ class Table:
         self.stacks = {s: stack for s in self.seats}  # 桌上還沒投入底池的籌碼
         self.start_stack = stack
         self.left = False  # 玩家離場了，牌局結束
+        # 真人坐的座位（module.new_state 設定）；真人對戰（2026-11-05）時不只 1 號位。1 號位是開桌的人，只有他開下一手、離場
+        self.humans = {HUMAN}
         self.hand_no = 0
         self.button = random.Random(f"{seed}:button").choice(self.seats)
         self.actions = []
@@ -150,6 +152,8 @@ class Table:
         if self.left:
             raise ValueError("你已經離場，牌局結束了")
         if action == "leave":
+            if self.pvp and not self.hand_over and self.to_act != HUMAN:
+                raise ValueError("真人對戰只有開桌的人（1 號位）能離場、結束牌局")
             self._leave()
             return
         if self.hand_over:
@@ -284,8 +288,22 @@ class Table:
 
     # ---- 牌局結束 ----
 
+    @property
+    def pvp(self):
+        return len(self.humans) > 1
+
+    def _leader(self, seats):
+        return max(seats, key=lambda s: self.stacks[s])
+
     def result(self):
-        """玩家離場、輸光或其他人都輸光時結束：(勝方座位或 None（不輸不贏）, 說明)；還沒結束回傳 None。"""
+        """玩家離場、輸光或其他人都輸光時結束：(勝方座位或 None（不輸不贏）, 說明)；還沒結束回傳 None。
+        真人對戰時每位真人看到同一句話，所以不寫「你」；離場或開桌的人輸光時，籌碼最多的座位獲勝。"""
+        if self.pvp and (self.left or (self.hand_over and self.stacks[HUMAN] == 0)):
+            leader = self._leader(self.seats)
+            why = "開桌的人（1 號位）離場" if self.left else "開桌的人（1 號位）籌碼輸光"
+            return leader, f"{why}，牌局結束；籌碼最多的是 {leader} 號位（{self.stacks[leader]}）"
+        if self.pvp and self.hand_over and all(self.stacks[s] == 0 for s in self.seats if s != HUMAN):
+            return HUMAN, "其他玩家的籌碼都輸光了，1 號位贏得整場牌局"
         if self.left:
             chips = self.stacks[HUMAN]
             diff = chips - self.start_stack

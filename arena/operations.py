@@ -116,13 +116,13 @@ def _result(game):
     return "unfinished"
 
 
-def _played_games(**filters):
-    """玩家至少下過一步的對局，最近下的在前（首頁與對局紀錄都用這個）。
+def _played_games(user, **filters):
+    """這位使用者看得到、而且玩家至少下過一步的對局，最近下的在前（首頁與對局紀錄都用這個）。
 
     打開對局頁時如果 AI 先行動（例如撲克），對局一建立就存檔；玩家一步都沒下就離開的不列出，
     否則每打開一次撲克頁就多一盤「未完成」。AI 的每一步都有一筆 AiNote，所以行動數多於 AiNote 數就是玩家下過。
     """
-    qs = Game.objects.filter(game_type__in=list(games.GAMES), **filters)
+    qs = Game.visible_to(user).filter(game_type__in=list(games.GAMES), **filters)
     ai_counts = dict(AiNote.objects.filter(game__in=qs).values("game").annotate(n=Count("id")).values_list("game", "n"))
     return [g for g in qs if len(g.actions) > ai_counts.get(g.id, 0)]
 
@@ -140,8 +140,8 @@ def _card(game):
             "end_url": reverse("arena:end_game", args=[game.id]) if result == "unfinished" else ""}
 
 
-def home_context():
-    played = _played_games()
+def home_context(user):
+    played = _played_games(user)
     unfinished = [g for g in played if not g.finished]
     stats = []
     for module in games.GAMES.values():
@@ -156,8 +156,8 @@ def home_context():
             "stats": stats, "any_finished": any(s["finished"] for s in stats)}
 
 
-def history_context(game_key, result, page):
-    played = _played_games(**({"game_type": game_key} if game_key else {}))
+def history_context(user, game_key, result, page):
+    played = _played_games(user, **({"game_type": game_key} if game_key else {}))
     if result:
         played = [g for g in played if _result(g) == result]
     page = Paginator(played, HISTORY_PAGE_SIZE).get_page(page)
@@ -179,13 +179,13 @@ def play_context(module):
 
 # ---- 對局 ----
 
-def list_games(module):
-    return {"games": [g.summary() for g in Game.objects.filter(game_type=module.key)[:30]]}
+def list_games(module, user):
+    return {"games": [g.summary() for g in Game.visible_to(user).filter(game_type=module.key)[:30]]}
 
 
-def start_game(module, seat, settings):
-    """建立並存下新對局，回傳 (對局, 開局畫面)。AI 先行動的部分由 run_ai_turns 處理。"""
-    game = Game(game_type=module.key, human_seat=seat, settings=settings, secret=module.new_secret())
+def start_game(module, seat, settings, user):
+    """建立並存下新對局（開局的人是 user），回傳 (對局, 開局畫面)。AI 先行動的部分由 run_ai_turns 處理。"""
+    game = Game(game_type=module.key, owner=user, human_seat=seat, settings=settings, secret=module.new_secret())
     state = module.new_state(settings_of(game))
     game.save()
     return game, module.frame(state, seat)

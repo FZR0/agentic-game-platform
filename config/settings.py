@@ -114,6 +114,10 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    # 帳號（2026-11-05，docs/交接.md 4.10）：記下每個瀏覽器最後活動的時間（後台的「瀏覽中的訪客」），
+    # 再要求登入：所有頁面與 API 都要登入，否則網址傳出去，別人就能用研究用伺服器
+    'arena.accounts.PresenceMiddleware',
+    'django.contrib.auth.middleware.LoginRequiredMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
@@ -153,6 +157,10 @@ DATABASES = {
 }
 
 
+LOGIN_URL = 'login'
+LOGIN_REDIRECT_URL = 'arena:home'
+LOGOUT_REDIRECT_URL = 'login'
+
 # Password validation
 # https://docs.djangoproject.com/en/5.2/ref/settings/#auth-password-validators
 
@@ -175,7 +183,7 @@ AUTH_PASSWORD_VALIDATORS = [
 # Internationalization
 # https://docs.djangoproject.com/en/5.2/topics/i18n/
 
-LANGUAGE_CODE = 'en-us'
+LANGUAGE_CODE = 'zh-hant'  # 註冊表單的錯誤訊息、後台都用繁體中文（2026-11-05）
 
 TIME_ZONE = 'UTC'
 

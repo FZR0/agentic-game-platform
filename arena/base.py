@@ -43,6 +43,10 @@ class GameModule:
     # 額外的參考表（撲克的起手牌勝率表），顯示在頂端列：{"label", "title", "note", "columns", "rows": [{"key", "cells"}]}
     reference = None
 
+    def pvp_seats(self, settings):
+        """真人對戰時真人坐的座位（2026-11-05）：棋類是全部座位，撲克由開桌的人自選（settings["humans"]）。"""
+        return list(self.seat_names)
+
     @property
     def seat_choices(self):
         seats = self.human_seats or list(self.seat_names)

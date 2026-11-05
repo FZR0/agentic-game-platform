@@ -1,17 +1,27 @@
 import logging
 import platform
+import secrets
 import urllib.parse
+from datetime import timedelta
 
 from django.conf import settings
 from django.db import models
 from django.utils import timezone
+
+USER_MODEL = settings.AUTH_USER_MODEL  # Game 有一個欄位叫 settings，類別裡面不能直接用 settings.AUTH_USER_MODEL
 
 
 class Game(models.Model):
     """一盤對局（任何遊戲）。actions 由伺服器逐步驗證後才寫入，因此一定是合法的紀錄。"""
 
     game_type = models.CharField(max_length=20)  # 遊戲模組的 key，例如 "gomoku"
-    human_seat = models.PositiveSmallIntegerField()  # 玩家的座位；五子棋 1＝黑、2＝白
+    # 開局的人（2026-11-05 加帳號）；空的＝加帳號之前的舊對局，只有管理員（superuser）看得到（使用者決定）
+    owner = models.ForeignKey(USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="games")
+    human_seat = models.PositiveSmallIntegerField()  # 玩家的座位（真人對戰時是開局的人的座位）；五子棋 1＝黑、2＝白
+    # 真人對戰（2026-11-05，docs/交接.md 4.10）：pvp 時真人的座位在 GamePlayer，對手用房間密碼加入
+    MODES = {"ai": "和 AI 對戰", "pvp": "真人對戰"}
+    mode = models.CharField(max_length=4, default="ai")
+    room_code = models.CharField(max_length=8, blank=True, db_index=True)
     settings = models.JSONField(default=dict)  # 各遊戲的設定，例如圍棋的棋盤大小
     actions = models.JSONField(default=list)  # 各遊戲記法的字串，例如五子棋 "H8"
     secret = models.JSONField(default=dict, blank=True)  # 只在伺服器的資料（撲克的洗牌種子），絕不送到網頁
@@ -25,14 +35,70 @@ class Game(models.Model):
     class Meta:
         ordering = ["-updated_at"]
 
+    @classmethod
+    def visible_to(cls, user):
+        """這位使用者看得到的對局：自己開的、真人對戰裡坐了一個座位的；沒有擁有者的舊對局只給管理員看。"""
+        mine = models.Q(owner=user) | models.Q(players__user=user)
+        if user.is_superuser:
+            mine |= models.Q(owner__isnull=True)
+        return cls.objects.filter(pk__in=cls.objects.filter(mine).values("pk"))  # 子查詢避免 join 造成重複
+
+    @property
+    def pvp(self):
+        return self.mode == "pvp"
+
+    def human_seats(self):
+        """真人坐的座位；其他座位由 AI 行動。"""
+        if self.pvp:
+            return {p.seat for p in self.players.all()}
+        return {self.human_seat}
+
+    def seat_of(self, user):
+        """這位使用者坐哪個座位；和 AI 的對局只有一位真人。不在這盤裡時是 None。"""
+        if not self.pvp:
+            return self.human_seat
+        return next((p.seat for p in self.players.all() if p.user_id == user.id), None)
+
+    @property
+    def waiting(self):
+        """真人對戰還有空的真人座位：等對手用房間密碼加入，還不能開始下。"""
+        return self.pvp and any(p.user_id is None for p in self.players.all())
+
+    @staticmethod
+    def new_room_code():
+        """房間密碼：6 個字，不用容易看錯的 0／O、1／I／L。"""
+        letters = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+        while True:
+            code = "".join(secrets.choice(letters) for _ in range(6))
+            if not Game.objects.filter(room_code=code).exists():
+                return code
+
     @property
     def finished(self):
         return bool(self.winner or self.draw or self.ended)
 
     def summary(self):
-        return {"id": self.id, "game_type": self.game_type, "human_seat": self.human_seat,
+        data = {"id": self.id, "game_type": self.game_type, "human_seat": self.human_seat, "mode": self.mode,
                 "settings": self.settings, "winner": self.winner, "draw": self.draw, "ended": self.ended,
                 "action_count": len(self.actions), "created_at": self.created_at.isoformat()}
+        if self.pvp:
+            data["players"] = {p.seat: p.user.username if p.user else None for p in self.players.all()}
+            data["waiting"] = self.waiting
+            data["room_code"] = self.room_code if self.waiting else ""
+        return data
+
+
+class GamePlayer(models.Model):
+    """真人對戰的一個真人座位。user 是空的＝還在等人用房間密碼加入（2026-11-05）。"""
+
+    game = models.ForeignKey(Game, on_delete=models.CASCADE, related_name="players")
+    seat = models.PositiveSmallIntegerField()
+    user = models.ForeignKey(USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="seats")
+    joined_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["seat"]
+        constraints = [models.UniqueConstraint(fields=["game", "seat"], name="unique_arena_player_seat")]
 
 
 class AiNote(models.Model):
@@ -104,3 +170,39 @@ class ModelRun(models.Model):
         return cls.objects.create(kind=kind, game_type=game_type, game=game, index=index,
                                   server=urllib.parse.urlsplit(settings.OLLAMA_URL).hostname or "",
                                   machine=platform.node(), **run)
+
+
+class LoginRecord(models.Model):
+    """每次登入一筆：誰、從哪個 IP、用什麼瀏覽器（使用者要求，2026-11-05：管理員後台要看得到登入 IP）。"""
+
+    user = models.ForeignKey(USER_MODEL, on_delete=models.CASCADE, related_name="login_records")
+    ip = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.CharField(max_length=300, blank=True)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = verbose_name_plural = "登入紀錄"
+
+
+class Presence(models.Model):
+    """每個瀏覽器（session）最後一次在網站上活動的時間（使用者要求，2026-11-05：後台要看得到目前有誰在瀏覽）。
+    arena.accounts.PresenceMiddleware 寫入；ONLINE 之內有活動的算「目前在線」。沒登入的訪客 user 是空的。"""
+
+    ONLINE = timedelta(minutes=5)
+
+    session_key = models.CharField(max_length=40, unique=True)
+    user = models.ForeignKey(USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="presences")
+    ip = models.GenericIPAddressField(null=True, blank=True)
+    path = models.CharField(max_length=200, blank=True)
+    user_agent = models.CharField(max_length=300, blank=True)
+    first_seen = models.DateTimeField(default=timezone.now)
+    last_seen = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ["-last_seen"]
+        verbose_name = verbose_name_plural = "瀏覽中的訪客"
+
+    @classmethod
+    def online(cls):
+        return cls.objects.filter(last_seen__gte=timezone.now() - cls.ONLINE)

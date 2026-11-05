@@ -15,6 +15,15 @@
       <a href="{% url 'arena:history' %}"{% if nav == "history" %} aria-current="page"{% endif %}>對局紀錄</a>
       <a href="{% url 'arena:guide' %}"{% if nav == "guide" %} aria-current="page"{% endif %}>怎麼玩</a>
     </nav>
+    <div class="account-bar">
+      {% if user.is_authenticated %}
+        <span class="account-name">{{ user.username }}</span>
+        {# Django 5 的登出只接受 POST #}
+        <form method="post" action="{% url 'logout' %}">{% csrf_token %}<button type="submit">登出</button></form>
+      {% else %}
+        <a href="{% url 'login' %}">登入</a><a href="{% url 'signup' %}">註冊</a>
+      {% endif %}
+    </div>
   </header>
   <main class="page">
     {% include "arena/_ai_problem.html" %}

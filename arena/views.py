@@ -52,10 +52,15 @@ def _agent_options(data, module):
     return config["name"], steps
 
 
-def _json(kind, ctx):
+def _game(request, module, game_id):
+    """這位使用者看得到的對局（自己的；舊對局只給管理員），別人的一律當成不存在。"""
+    return get_object_or_404(Game.visible_to(request.user), pk=game_id, game_type=module.key)
+
+
+def _json(request, kind, ctx):
     """交給 AI 助理處理，回傳 JSON；請求不成立（ValueError，例如不合法的一步）時回覆錯誤。"""
     try:
-        data, handled = orchestrator.handle(kind, ctx)
+        data, handled = orchestrator.handle(kind, {**ctx, "user": request.user})
     except ValueError as exc:
         return _error(exc)
     # ai_problem：AI 伺服器目前的問題（health，2026-10-30），沒有問題時是 None，畫面據此顯示或收起說明
@@ -63,7 +68,7 @@ def _json(kind, ctx):
 
 
 def _page(request, template, kind, ctx):
-    data, handled = orchestrator.handle(kind, ctx)
+    data, handled = orchestrator.handle(kind, {**ctx, "user": request.user})
     return render(request, template, {**data, "handled": handled, "ai_problem": health.current()})
 
 
@@ -88,9 +93,9 @@ def guide(request):
 @require_POST
 def end_game(request, game_id):
     """首頁、對局紀錄清單上的「結束」按鈕（表單送出）；結束後回到原本的頁面。"""
-    game = get_object_or_404(Game, pk=game_id)
+    game = get_object_or_404(Game.visible_to(request.user), pk=game_id)
     if not game.finished:
-        _, handled = orchestrator.handle("end_form", {"game": game, "params": {"game_id": game.id}})
+        _, handled = orchestrator.handle("end_form", {"game": game, "user": request.user, "params": {"game_id": game.id}})
         if handled.get("notice"):  # 轉址後的頁面才看得到，所以放進 messages
             messages.warning(request, handled["notice"])
     target = request.POST.get("next", "")
@@ -109,14 +114,14 @@ def play(request, game_key):
 @require_GET
 def api_models(request, game_key):
     module = _module(game_key)
-    return _json("models", {"module": module, "params": {"game": module.key}})
+    return _json(request, "models", {"module": module, "params": {"game": module.key}})
 
 
 @require_http_methods(["GET", "POST"])
 def api_games(request, game_key):
     module = _module(game_key)
     if request.method == "GET":
-        return _json("list_games", {"module": module, "params": {"game": module.key}})
+        return _json(request, "list_games", {"module": module, "params": {"game": module.key}})
     try:
         data = _read_json(request)
         seat = int(data["seat"])
@@ -126,22 +131,22 @@ def api_games(request, game_key):
         model, steps = _agent_options(data, module)
     except (ValueError, KeyError, TypeError) as exc:
         return _error(exc)
-    return _json("new_game", {"module": module, "params": {"game": module.key, "seat": seat, "settings": settings,
+    return _json(request, "new_game", {"module": module, "params": {"game": module.key, "seat": seat, "settings": settings,
                                                            "model": model, "steps": steps}})
 
 
 @require_GET
 def api_game_detail(request, game_key, game_id):
     module = _module(game_key)
-    game = get_object_or_404(Game, pk=game_id, game_type=module.key)
-    return _json("detail", {"module": module, "game": game, "params": {"game_id": game.id}})
+    game = _game(request, module, game_id)
+    return _json(request, "detail", {"module": module, "game": game, "params": {"game_id": game.id}})
 
 
 @require_POST
 def api_game_move(request, game_key, game_id):
     """玩家行動：伺服器驗證後存檔，再由 AI 的座位行動，直到又輪到玩家。"""
     module = _module(game_key)
-    game = get_object_or_404(Game, pk=game_id, game_type=module.key)
+    game = _game(request, module, game_id)
     try:
         if game.finished:
             raise ValueError("這盤棋已經結束")
@@ -152,7 +157,7 @@ def api_game_move(request, game_key, game_id):
             raise ValueError(f"行動格式不對：{data['action']}")
     except (ValueError, KeyError, TypeError) as exc:
         return _error(exc)
-    return _json("move", {"module": module, "game": game,
+    return _json(request, "move", {"module": module, "game": game,
                           "params": {"game_id": game.id, "action": action, "model": model, "steps": steps}})
 
 
@@ -160,35 +165,35 @@ def api_game_move(request, game_key, game_id):
 def api_game_end(request, game_key, game_id):
     """對局頁的「結束（不計勝負）」。"""
     module = _module(game_key)
-    game = get_object_or_404(Game, pk=game_id, game_type=module.key)
-    return _json("end", {"module": module, "game": game, "params": {"game_id": game.id}})
+    game = _game(request, module, game_id)
+    return _json(request, "end", {"module": module, "game": game, "params": {"game_id": game.id}})
 
 
 @require_POST
 def api_note_narrate(request, game_key, game_id, index):
     """產生 AI 某一步的說明。模型成功改寫後存起來，之後（例如復盤時）直接回傳同一段說明。"""
     module = _module(game_key)
-    note = get_object_or_404(AiNote, game_id=game_id, game__game_type=module.key, index=index)
+    note = get_object_or_404(AiNote, game=_game(request, module, game_id), index=index)
     try:
         model = narrator.model_config(_read_json(request).get("model"))["name"]
     except (ValueError, TypeError) as exc:
         return _error(exc)
-    return _json("note", {"module": module, "game": note.game, "note": note,
+    return _json(request, "note", {"module": module, "game": note.game, "note": note,
                           "params": {"game_id": note.game_id, "index": index, "model": model}})
 
 
 @require_GET
 def api_game_review(request, game_key, game_id):
     module = _module(game_key)
-    game = get_object_or_404(Game, pk=game_id, game_type=module.key)
-    return _json("review", {"module": module, "game": game, "params": {"game_id": game.id}})
+    game = _game(request, module, game_id)
+    return _json(request, "review", {"module": module, "game": game, "params": {"game_id": game.id}})
 
 
 @require_POST
 def api_game_ask(request, game_key, game_id):
     """復盤提問：由 AI 助理決定要查哪些局面與步數（引擎分析），再請語言模型依事實回答。"""
     module = _module(game_key)
-    game = get_object_or_404(Game, pk=game_id, game_type=module.key)
+    game = _game(request, module, game_id)
     try:
         data = _read_json(request)
         question = str(data["question"]).strip()
@@ -200,7 +205,7 @@ def api_game_ask(request, game_key, game_id):
             raise ValueError("局面超出這盤棋的步數")
     except (ValueError, KeyError, TypeError) as exc:
         return _error(exc)
-    return _json("ask", {"module": module, "game": game,
+    return _json(request, "ask", {"module": module, "game": game,
                          "params": {"game_id": game.id, "question": question, "at": at, "model": model}})
 
 
@@ -218,4 +223,4 @@ def api_narrate(request, game_key):
                 raise ValueError("事實格式錯誤")
     except (ValueError, KeyError, TypeError) as exc:
         return _error(exc)
-    return _json("narrate", {"module": module, "params": {"facts": facts, "model": model}})
+    return _json(request, "narrate", {"module": module, "params": {"facts": facts, "model": model}})

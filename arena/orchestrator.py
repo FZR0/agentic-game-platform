@@ -161,7 +161,7 @@ class NewGame(Request):
 
     def _start(self, ctx):
         p = ctx["params"]
-        ctx["game"], ctx["frame"] = operations.start_game(ctx["module"], p["seat"], p["settings"])
+        ctx["game"], ctx["frame"] = operations.start_game(ctx["module"], p["seat"], p["settings"], ctx["user"])
 
     def _ai(self, ctx):
         p = ctx["params"]
@@ -284,9 +284,9 @@ def _game(ctx):
 
 REQUESTS = {r.kind: r for r in [
     OneStep("home", "load_home", "使用者打開了首頁，請載入首頁的資料（未完成的對局、最近對局、戰績）。",
-            lambda ctx: operations.home_context(), game_scoped=False),
+            lambda ctx: operations.home_context(ctx["user"]), game_scoped=False),
     OneStep("history", "load_history", "使用者打開了對局紀錄，篩選條件：遊戲「{game}」、結果「{result}」、第 {page} 頁。請載入這一頁。",
-            lambda ctx: operations.history_context(ctx["params"]["game"], ctx["params"]["result"], ctx["params"]["page"]),
+            lambda ctx: operations.history_context(ctx["user"], ctx["params"]["game"], ctx["params"]["result"], ctx["params"]["page"]),
             game_scoped=False,
             params={"game": ("string", "遊戲代號，沒有篩選就填空字串", "game"),
                     "result": ("string", "結果，沒有篩選就填空字串", "result"),
@@ -300,7 +300,7 @@ REQUESTS = {r.kind: r for r in [
     OneStep("models", "load_models", "使用者打開了遊戲「{game}」的設定，請載入可以選的 AI 模型與狀態。",
             lambda ctx: narrator.models_status(ctx["module"].key), params={"game": GAME_KEY}),
     OneStep("list_games", "list_games", "使用者要看遊戲「{game}」的對局清單，請載入。",
-            lambda ctx: operations.list_games(ctx["module"]), params={"game": GAME_KEY}),
+            lambda ctx: operations.list_games(ctx["module"], ctx["user"]), params={"game": GAME_KEY}),
     OneStep("detail", "load_game", "使用者要打開第 {game_id} 盤（復盤或接著下），請載入這盤棋。",
             lambda ctx: operations.game_detail(ctx["module"], _game(ctx)), params={"game_id": GAME_ID}),
     OneStep("end", "end_game", "使用者在對局頁按了第 {game_id} 盤的「結束（不計勝負）」，請結束這盤。",
@@ -318,7 +318,7 @@ REQUESTS = {r.kind: r for r in [
 
 
 def handle(kind, ctx):
-    """處理一個請求，回傳 (結果, handled)。handled 是 {"by": "agent"|"fallback"|"direct", "seconds", ...}，
+    """處理一個請求，回傳 (結果, handled)。ctx["user"] 是送出請求的帳號（views 放進去）。handled 是 {"by": "agent"|"fallback"|"direct", "seconds", ...}，
     fallback 時另有給玩家看的 notice。"""
     spec = REQUESTS[kind]
     module = ctx.get("module")

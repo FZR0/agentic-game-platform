@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from django.test import SimpleTestCase, TestCase, override_settings
 
+from arena.tests import AdminClient
 from arena import agent
 from arena import tests as arena_tests
 from arena.base import CONDITIONAL
@@ -188,6 +189,7 @@ class RuleTests(SimpleTestCase):
 
 
 class EquityTableTests(TestCase):
+    client_class = AdminClient
     def test_table_covers_every_starting_hand_and_ranks_them_sensibly(self):
         # 使用者要求的起手牌勝率表：169 種起手牌都要有，數字要和牌型判斷一致（AA 最強、不同花的小牌最弱）
         ref = MODULE.reference
@@ -413,6 +415,7 @@ class AgentTests(SimpleTestCase):
 
 @override_settings(OLLAMA_URL="http://127.0.0.1:9", OLLAMA_TIMEOUT=2)
 class GameApiTests(TestCase):
+    client_class = AdminClient
     def setUp(self):
         # Ollama 不在時 Agent 改由引擎代下；直接讓模型呼叫失敗，不必等 Windows 拒絕連線（每次約 2 秒）
         patcher = patch("arena.agent._chat", side_effect=OSError("模型沒有回應"))

@@ -181,7 +181,17 @@ class HoldemModule(GameModule):
             raise ValueError("AI 組成只能是「1 位 Agent＋風格機器人」或「全部 Agent」")
         if stack not in (1000, 2000, 4000):
             raise ValueError("起始籌碼必須是 1000、2000 或 4000")
-        return {"players": players, "ai_mode": ai_mode, "stack": stack, "sb": SB, "bb": BB}
+        cleaned = {"players": players, "ai_mode": ai_mode, "stack": stack, "sb": SB, "bb": BB}
+        # 真人對戰（2026-11-05）：開桌的人自選哪些座位是真人，其他座位照 ai_mode 由 AI 坐；開桌的人固定 1 號位
+        humans = sorted({int(s) for s in data.get("humans") or [HUMAN]})
+        if HUMAN not in humans or not all(1 <= s <= players for s in humans):
+            raise ValueError(f"真人座位必須包含 1 號位（開桌的人），而且在 1 到 {players} 號位之間")
+        if len(humans) > 1:
+            cleaned["humans"] = humans
+        return cleaned
+
+    def pvp_seats(self, settings):
+        return settings.get("humans", [HUMAN])
 
     def new_secret(self):
         return {"seed": secrets.randbits(48)}
@@ -189,15 +199,21 @@ class HoldemModule(GameModule):
     def new_state(self, settings):
         s = {**self.clean_settings({}), **(settings or {})}
         t = Table(s["players"], s["stack"], s["sb"], s["bb"], (s.get("secret") or {}).get("seed", 0))
-        t.roles = {HUMAN: "human"}
-        for i, seat in enumerate(range(2, s["players"] + 1)):
+        t.humans = set(s.get("humans") or [HUMAN])
+        # 復盤與提問從哪個真人的角度看（operations.settings_of 依請求的帳號放進 viewer）：只用他看得到的牌
+        t.viewer = s.get("viewer", HUMAN)
+        t.roles = {seat: "human" for seat in t.humans}
+        ai_seats = [seat for seat in range(2, s["players"] + 1) if seat not in t.humans]
+        for i, seat in enumerate(ai_seats):
             agent = s["ai_mode"] == "all_agent" or i == 0
             t.roles[seat] = "agent" if agent else STYLE_ORDER[(i - 1) % len(STYLE_ORDER)]
         return t
 
     def role_name(self, t, seat):
         role = t.roles[seat]
-        return {"human": "", "agent": "Agent"}.get(role, f"{STYLES.get(role, {}).get('name', '')}機器人")
+        if role == "human":
+            return "真人" if t.pvp else ""
+        return {"agent": "Agent"}.get(role, f"{STYLES.get(role, {}).get('name', '')}機器人")
 
     def normalize(self, text):
         t = str(text or "").strip().lower()
@@ -238,7 +254,7 @@ class HoldemModule(GameModule):
                 shown = [None, None]  # 背面朝上
             # 目前的牌型只給看得到牌的座位（自己的牌、攤牌時亮出的牌），否則等於洩漏別人的底牌
             visible = bool(shown) and None not in shown
-            seats.append({"seat": s, "name": "你" if s == HUMAN else f"{s} 號位", "role": self.role_name(t, s), "stack": t.stacks[s],
+            seats.append({"seat": s, "name": "你" if s == seat else f"{s} 號位", "role": self.role_name(t, s), "stack": t.stacks[s],
                           "bet": t.bet[s], "folded": s in t.folded and s in t.hole, "out": s not in t.hole,
                           "allin": s in t.allin, "cards": shown, "last": last.get(s, ""), "total": t.total[s],
                           "hand_name": cards.describe(cards.evaluate(t.hole[s] + t.board)) if visible else "",
@@ -252,7 +268,7 @@ class HoldemModule(GameModule):
         return {"hand": t.hand_no, "street": STREETS[t.street], "board": t.board, "pot": t.pot(), "seats": seats,
                 "to_move": self.to_move(t), "legal": legal, "hand_over": t.hand_over, "hand_result": t.hand_result,
                 "result": r[1] if r else None, "last": t.actions[-1] if t.actions else None,
-                "last_seat": t.last_seat}
+                "last_seat": t.last_seat, "can_leave": seat == HUMAN}  # 真人對戰只有開桌的人能離場
 
     # ---- 分析（只用 seat 看得到的資訊） ----
 
@@ -601,13 +617,14 @@ play_move 的 reason 用繁體中文一句話說明，只能提到工具結果�
 
     def overall_points(self, settings, actions, human_seat):
         """整體評論用的打法統計：打了幾手、主動入池（翻牌前跟注或加注）、翻牌前加注、攤牌、贏下的手數與籌碼變化。"""
-        t = self.new_state(settings)
+        t = self.new_state({**settings, "viewer": human_seat})
+        me = t.viewer
         hands = joined = raised = showdown = won = 0
-        dealt = HUMAN in t.hole
+        dealt = me in t.hole
         entered = opened = False
         for action in actions:
-            if not t.hand_over and t.to_act == HUMAN and t.street == 0 and action != "leave":
-                kind = self._action_key(t, HUMAN, action) if action != "fold" else "fold"
+            if not t.hand_over and t.to_act == me and t.street == 0 and action != "leave":
+                kind = self._action_key(t, me, action) if action != "fold" else "fold"
                 entered = entered or kind not in ("fold", "check")
                 opened = opened or kind not in ("fold", "check", "call")
             t = self.apply(t, action)
@@ -615,14 +632,14 @@ play_move 的 reason 用繁體中文一句話說明，只能提到工具結果�
                 hands += 1
                 joined += entered
                 raised += opened
-                showdown += HUMAN in t.shown
-                won += t.winnings.get(HUMAN, 0) > 0
+                showdown += me in t.shown
+                won += t.winnings.get(me, 0) > 0
                 dealt = entered = opened = False
             if action == "deal":
-                dealt = HUMAN in t.hole
+                dealt = me in t.hole
         if not hands:
             return []
-        now = t.stacks[HUMAN] + (0 if t.hand_over else t.total[HUMAN])  # 打到一半的那手牌，已經下的注還算你的
+        now = t.stacks[me] + (0 if t.hand_over else t.total[me])  # 打到一半的那手牌，已經下的注還算你的
         diff = now - t.start_stack
         points = [(RULE, f"你打完了 {hands} 手牌：主動入池（翻牌前跟注或加注）{joined} 手（{pct(joined / hands)}），"
                          f"翻牌前加注 {raised} 手（{pct(raised / hands)}），打到攤牌 {showdown} 手，贏下 {won} 手。"),
@@ -674,10 +691,10 @@ play_move 的 reason 用繁體中文一句話說明，只能提到工具結果�
     # ---- 復盤與提問（玩家的角度） ----
 
     def review(self, settings, actions, human_seat):
-        t = self.new_state(settings)
+        t = self.new_state({**settings, "viewer": human_seat})
         moments = []
         for i, action in enumerate(actions):
-            if not t.hand_over and t.to_act == HUMAN and action != "leave":  # 離場是要不要繼續玩，不是牌局判斷
+            if not t.hand_over and t.to_act == t.viewer and action != "leave":  # 離場是要不要繼續玩，不是牌局判斷
                 moment = self._judge(t, i, action)
                 if moment:
                     moments.append(moment)
@@ -689,19 +706,19 @@ play_move 的 reason 用繁體中文一句話說明，只能提到工具結果�
 
     def _naive_call(self, t):
         """不看對手翻牌後動作時，玩家的勝率與跟注期望值（用來看出讀對手有沒有幫上忙）。"""
-        opponents = [o for o in t.in_hand() if o != HUMAN]
-        ranges = [r for r in (self._opponent_range(t, HUMAN, o, reads=False) for o in opponents) if r]
+        opponents = [o for o in t.in_hand() if o != t.viewer]
+        ranges = [r for r in (self._opponent_range(t, t.viewer, o, reads=False) for o in opponents) if r]
         rng = random.Random(f"{t.seed}:{len(t.actions)}:naive")
-        eq = cards.equity_vs(t.hole[HUMAN], t.board, ranges, SIMS, rng)
-        pot, to_call = t.pot(), t.legal(HUMAN)["to_call"]
+        eq = cards.equity_vs(t.hole[t.viewer], t.board, ranges, SIMS, rng)
+        pot, to_call = t.pot(), t.legal(t.viewer)["to_call"]
         return eq, eq * (pot + to_call) - to_call
 
     def _judge(self, t, index, action):
         """玩家這一步：和引擎在同樣假設下最好的選擇比，少賺或多虧多少；也找出讀對對手、精準止損的棄牌。"""
-        a = self.analysis(t, HUMAN)
+        a = self.analysis(t, t.viewer)
         ev = dict(a["ev"])
-        played = self._action_key(t, HUMAN, action)
-        ev.setdefault(played, self._ev_of(t, HUMAN, action))
+        played = self._action_key(t, t.viewer, action)
+        ev.setdefault(played, self._ev_of(t, t.viewer, action))
         best = a["best"]
         loss = ev[best] - ev[played]
         scale = a["pot"] + a["to_call"]
@@ -744,9 +761,9 @@ play_move 的 reason 用繁體中文一句話說明，只能提到工具結果�
             title = "加注金額可以更好"
         else:
             title = "All in 風險太高" if action == "allin" else "這次加注划不來"
-        points = [(RULE, f"第 {t.hand_no} 手牌{STREETS[t.street]}：你的底牌 {cards.show_all(t.hole[HUMAN])}，"
+        points = [(RULE, f"第 {t.hand_no} 手牌{STREETS[t.street]}：你的底牌 {cards.show_all(t.hole[t.viewer])}，"
                          f"公共牌 {cards.show_all(t.board) or '還沒發'}；底池 {a['pot']}，你要跟注 {a['to_call']}。")]
-        points += self._assumption_points(t, HUMAN, a)
+        points += self._assumption_points(t, t.viewer, a)
         if read:
             points.append((CONDITIONAL, f"如果不看對手翻牌後的動作，你的勝率約 {pct(read[0])}（跟注期望值約 {read[1]:+.0f}）；"
                                         f"把對手的動作算進去，勝率是 {pct(a['equity'])}（跟注期望值約 {ev['call']:+.0f}）。"))
@@ -777,15 +794,15 @@ play_move 的 reason 用繁體中文一句話說明，只能提到工具結果�
         t = state
         if t.hand_over:
             return [{"evidence": RULE, "text": f"這時第 {t.hand_no} 手牌已經結束：{t.hand_result}"}]
-        if HUMAN not in t.in_hand():
+        if t.viewer not in t.in_hand():
             points = [(RULE, f"這時你已經不在這手牌裡（底池 {t.pot()}，公共牌 {cards.show_all(t.board) or '還沒發'}）。")]
         else:
-            points = self._board_points(t, HUMAN) + self._candidate_points(t, HUMAN)
-            if t.to_act == HUMAN:
+            points = self._board_points(t, t.viewer) + self._candidate_points(t, t.viewer)
+            if t.to_act == t.viewer:
                 for action in focus[:3]:
-                    points += self._check_points(t, HUMAN, action)
+                    points += self._check_points(t, t.viewer, action)
         if next_action:
-            actor = HUMAN if t.to_act is None else t.to_act
+            actor = t.viewer if t.to_act is None else t.to_act
             points.append((RULE, f"紀錄中接下來是{seat_label(actor)}{action_text(next_action)}。"))
         return [{"evidence": ev, "text": text} for ev, text in points]
 
@@ -799,8 +816,8 @@ play_move 的 reason 用繁體中文一句話說明，只能提到工具結果�
         actor = t.to_act
         points = [(RULE, f"第 {n} 步是第 {t.hand_no} 手牌{STREETS[t.street]}，{seat_label(actor)}{action_text(action)}"
                          f"（當時底池 {t.pot()}，要跟注 {t.legal(actor)['to_call']}）。")]
-        if actor == HUMAN:
-            points += self._check_points(t, HUMAN, action)
+        if actor == t.viewer:
+            points += self._check_points(t, t.viewer, action)
         return [{"evidence": ev, "text": text} for ev, text in points]
 
 

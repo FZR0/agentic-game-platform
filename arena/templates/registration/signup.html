@@ -1,0 +1,16 @@
+{% extends "arena/base.html" %}
+{% block title %}註冊｜益智遊戲 AI 教練{% endblock %}
+{% block content %}
+  <h1 class="page-title">註冊帳號</h1>
+  <form method="post" class="account-form">
+    {% csrf_token %}
+    {% for field in form %}
+      <label>{{ field.label }} {{ field }}</label>
+      {% for error in field.errors %}<p class="status warn" role="alert">{{ error }}</p>{% endfor %}
+      {% if field.help_text and field.name != "password1" %}<p class="hint">{{ field.help_text|striptags }}</p>{% endif %}
+    {% endfor %}
+    <p class="hint">密碼至少 8 個字，不能全是數字，也不要和帳號太像。</p>
+    <button type="submit" class="button primary">註冊並登入</button>
+  </form>
+  <p class="account-switch">已經有帳號？<a href="{% url 'login' %}">登入</a></p>
+{% endblock %}

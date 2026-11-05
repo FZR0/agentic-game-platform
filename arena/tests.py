@@ -17,8 +17,9 @@ from unittest.mock import patch
 from django.apps import apps
 from django.conf import settings
 from django.core.management import call_command
+from django.contrib.auth.models import User
 from django.db import connection
-from django.test import SimpleTestCase, TestCase, override_settings
+from django.test import Client, SimpleTestCase, TestCase, override_settings
 
 from gomoku.module import MODULE as GOMOKU
 from weiqi.module import MODULE as WEIQI
@@ -26,7 +27,19 @@ from weiqi.module import MODULE as WEIQI
 from . import agent, health, narrator, operations, orchestrator
 from .base import ESTIMATE
 from .management.commands.model_report import summarize
-from .models import AiNote, Game, ModelRun
+from .models import AiNote, Game, LoginRecord, ModelRun, Presence
+
+
+class AdminClient(Client):
+    """測試用的瀏覽器：第一次送出請求前以管理員登入（2026-11-05 起所有頁面與 API 都要登入）。
+    管理員看得到沒有擁有者的舊對局，所以直接用 Game.objects.create 建對局的測試照樣能用。
+    要測沒登入或一般帳號的情況，用 django.test.Client 自己登入（AccountTests）。"""
+
+    def request(self, **request):
+        if "_auth_user_id" not in self.session:
+            user = User.objects.filter(username="tester").first() or User.objects.create_superuser("tester")
+            self.force_login(user)
+        return super().request(**request)
 
 
 class NarrationCheckTests(SimpleTestCase):
@@ -346,6 +359,7 @@ def fake_chat(*replies):
 
 @override_settings(OLLAMA_URL="http://127.0.0.1:9", OLLAMA_TIMEOUT=2)
 class ModelRunTests(TestCase):
+    client_class = AdminClient
     # 使用者要比較各模型的速度與成功率（2026-10-19）。以前只有 Agent 自己下成功的手記了模型與秒數：
     # 改由引擎代下的手、說明、提問都沒記，算不出成功率，秒數也只算到順利的手而偏快。
     OPEN_THREE = ["H8", "A15", "I8", "O15", "J8"]  # 黑 H8-J8 活三，輪到白（Agent）
@@ -561,6 +575,7 @@ def assert_question_focus_reaches_the_position(test, module, game, at, focus):
 
 
 class RequestAgentTests(TestCase):
+    client_class = AdminClient
     # 使用者決定（2026-10-28）：每個請求都交給 AI 助理處理，為了證明 Agentic 系統可行。
     # 這些測試守的是：功能和原本完全一樣、Agent 不能改變使用者要求的事、沒完成時一定有人補完並告訴玩家。
     def setUp(self):
@@ -709,6 +724,7 @@ class RequestAgentTests(TestCase):
 
 
 class RulesPanelTests(TestCase):
+    client_class = AdminClient
     def test_every_game_page_explains_its_rules(self):
         # 使用者要求每個遊戲都要有規則說明；新增遊戲時忘了寫規則，這個測試要擋下來
         from arena import games
@@ -720,6 +736,7 @@ class RulesPanelTests(TestCase):
 
 
 class HomePageTests(TestCase):
+    client_class = AdminClient
     def test_every_game_has_a_card_with_picture_and_description(self):
         # 首頁的遊戲卡片要有圖和一句介紹；新增遊戲時忘了附圖，首頁的 ?v= 版本號找不到檔案會整頁出錯
         from django.contrib.staticfiles import finders
@@ -754,6 +771,7 @@ class HomePageTests(TestCase):
 
 
 class HistoryPageTests(TestCase):
+    client_class = AdminClient
     def setUp(self):
         self.won = Game.objects.create(game_type="gomoku", human_seat=1, actions=["H8"], winner=1)
         self.open = Game.objects.create(game_type="gomoku", human_seat=1, actions=["H8"])
@@ -779,6 +797,7 @@ class HistoryPageTests(TestCase):
 
 
 class EndGameTests(TestCase):
+    client_class = AdminClient
     # 使用者要求能結束不想下的對局，而且「不計勝負」和認輸分開（2026-10-21）
     def setUp(self):
         self.game = Game.objects.create(game_type="gomoku", human_seat=1, actions=["H8"])
@@ -821,6 +840,7 @@ class EndGameTests(TestCase):
 
 
 class GuidePageTests(TestCase):
+    client_class = AdminClient
     def test_every_games_rules_can_be_read_before_playing(self):
         # 「怎麼玩」要在進對局頁之前就看得到每個遊戲的規則
         from arena import games
@@ -1197,6 +1217,7 @@ class SavePromptTests(SimpleTestCase):
         self.assertEqual(git_menu.incomplete(joined), ["alice（只在公開儲存庫）", "bob（只在私人儲存庫）"])
 
 class RunLogTests(TestCase):
+    client_class = AdminClient
     # 使用者 2026-10-28：啟動遊戲平台.bat 沒有運行紀錄，出了問題分不出是 AI 伺服器、AI 助理還是程式。
     # 紀錄要讓人一眼看出是哪一邊：伺服器連不上、AI 助理被擋下、改用原本的程式補完，各自有一行。
     def setUp(self):
@@ -1249,6 +1270,7 @@ REMOTE = override_settings(OLLAMA_URL="http://192.0.2.10:11434", OLLAMA_SERVER_N
 
 
 class AiHealthTests(TestCase):
+    client_class = AdminClient
     # 使用者 2026-10-30：與其每個請求都去連、都失敗，不如出問題時檢查一次，告訴使用者原因與排除步驟；
     # 查不出原因時列出可能原因並附故障報告。原因判斷錯了，使用者就會照錯的步驟去修。
     BODY = {"model": "gemma4:26b", "messages": []}
@@ -1374,3 +1396,112 @@ class AiHealthTests(TestCase):
         self.assertEqual(data["ai_problem"]["title"], "這台電腦的 Ollama 沒有啟動")
         health._current = None
         self.assertIsNone(self.client.get("/api/gomoku/models/").json()["ai_problem"])
+
+
+class AccountTests(TestCase):
+    """帳號（2026-11-05，docs/交接.md 4.10）：網站要放到 Cloudflare 通道上給別人連，
+    所以沒登入什麼都不能用（否則別人能用研究用伺服器），各人只看得到自己的對局，管理員看得到登入 IP 與在線的人。"""
+
+    def setUp(self):
+        self.alice = User.objects.create_user("alice", password="pw-for-tests-1")
+        self.bob = User.objects.create_user("bob", password="pw-for-tests-2")
+
+    def client_for(self, user):
+        client = Client()
+        client.force_login(user)
+        return client
+
+    def test_nothing_works_without_logging_in(self):
+        # 頁面與 API 都要登入；沒登入的請求不能走到 AI 助理（每個頁面都會呼叫模型）
+        with patch.object(orchestrator, "handle", side_effect=AssertionError("沒登入不能呼叫 AI 助理")):
+            for url in ["/", "/history/", "/guide/", "/gomoku/", "/api/gomoku/games/", "/api/gomoku/models/"]:
+                response = Client().get(url)
+                self.assertEqual(response.status_code, 302, url)
+                self.assertTrue(response["Location"].startswith("/accounts/login/"), url)
+            self.assertEqual(Client().post("/api/gomoku/games/", "{}", content_type="application/json").status_code, 302)
+
+    def test_login_and_signup_pages_never_reach_the_ai_assistant(self):
+        # 密碼不能交給模型；登入頁在 AI 伺服器連不上時也要能用
+        with patch.object(orchestrator, "handle", side_effect=AssertionError("登入頁不能呼叫 AI 助理")):
+            self.assertEqual(Client().get("/accounts/login/").status_code, 200)
+            self.assertEqual(Client().get("/accounts/signup/").status_code, 200)
+
+    def test_anyone_can_sign_up_and_is_logged_in_with_their_ip_recorded(self):
+        client = Client()
+        response = client.post("/accounts/signup/", {"username": "carol", "password1": "a-Long-pass-77",
+                                                     "password2": "a-Long-pass-77"}, REMOTE_ADDR="203.0.113.5")
+        self.assertRedirects(response, "/", fetch_redirect_response=False)
+        carol = User.objects.get(username="carol")
+        self.assertEqual(int(client.session["_auth_user_id"]), carol.id)
+        self.assertEqual(LoginRecord.objects.get(user=carol).ip, "203.0.113.5")
+
+    def test_login_records_the_real_ip_behind_the_cloudflare_tunnel(self):
+        # 經過 cloudflared 時連線來自本機，真正的位址在 CF-Connecting-IP
+        Client().post("/accounts/login/", {"username": "alice", "password": "pw-for-tests-1"},
+                      REMOTE_ADDR="127.0.0.1", HTTP_CF_CONNECTING_IP="198.51.100.7")
+        self.assertEqual(LoginRecord.objects.get(user=self.alice).ip, "198.51.100.7")
+
+    def test_a_forged_cloudflare_header_from_elsewhere_is_ignored(self):
+        # 不是從本機（cloudflared）來的連線，標頭是使用者自己填的，不能信
+        Client().post("/accounts/login/", {"username": "alice", "password": "pw-for-tests-1"},
+                      REMOTE_ADDR="203.0.113.9", HTTP_CF_CONNECTING_IP="198.51.100.7")
+        self.assertEqual(LoginRecord.objects.get(user=self.alice).ip, "203.0.113.9")
+
+    def test_players_only_see_their_own_games(self):
+        mine = Game.objects.create(game_type="gomoku", owner=self.alice, human_seat=1, actions=["H8"])
+        alice, bob = self.client_for(self.alice), self.client_for(self.bob)
+        with patch.object(orchestrator, "_chat", side_effect=OSError("測試不連模型")):
+            self.assertContains(alice.get("/history/"), f"?review={mine.id}")
+            self.assertNotContains(bob.get("/history/"), f"?review={mine.id}")
+            self.assertEqual(bob.get(f"/api/gomoku/games/{mine.id}/").status_code, 404)
+            self.assertEqual(bob.get(f"/api/gomoku/games/{mine.id}/review/").status_code, 404)
+            # 別人的對局不能替他下、也不能替他結束
+            move = bob.post(f"/api/gomoku/games/{mine.id}/move/", json.dumps({"action": "H9"}),
+                            content_type="application/json")
+            self.assertEqual(move.status_code, 404)
+            self.assertEqual(bob.post(f"/games/{mine.id}/end/").status_code, 404)
+        mine.refresh_from_db()
+        self.assertEqual((mine.actions, mine.ended), (["H8"], False))
+
+    def test_new_games_belong_to_the_player_who_started_them(self):
+        with patch.object(orchestrator, "_chat", side_effect=OSError("測試不連模型")), \
+                patch.object(agent, "_chat", side_effect=OSError("測試不連模型")):
+            response = self.client_for(self.alice).post("/api/gomoku/games/", json.dumps({"seat": 1}),
+                                                        content_type="application/json")
+        self.assertEqual(Game.objects.get(pk=response.json()["game"]["id"]).owner, self.alice)
+
+    def test_old_games_without_an_owner_are_only_visible_to_admins(self):
+        old = Game.objects.create(game_type="gomoku", human_seat=1, actions=["H8"])
+        admin = User.objects.create_superuser("boss")
+        with patch.object(orchestrator, "_chat", side_effect=OSError("測試不連模型")):
+            self.assertEqual(self.client_for(admin).get(f"/api/gomoku/games/{old.id}/").status_code, 200)
+            self.assertEqual(self.client_for(self.alice).get(f"/api/gomoku/games/{old.id}/").status_code, 404)
+
+
+class PresenceTests(TestCase):
+    """後台要看得到目前有誰在瀏覽網站（使用者要求，2026-11-05），包括還沒登入、停在登入頁的訪客。"""
+
+    def test_visitors_are_recorded_with_their_account_and_ip(self):
+        Client().get("/accounts/login/", REMOTE_ADDR="203.0.113.20")
+        user = User.objects.create_user("dave", password="x")
+        client = Client()
+        client.force_login(user)
+        with patch.object(orchestrator, "_chat", side_effect=OSError("測試不連模型")):
+            client.get("/guide/", REMOTE_ADDR="203.0.113.21")
+        anonymous = Presence.objects.get(ip="203.0.113.20")
+        self.assertIsNone(anonymous.user)
+        self.assertEqual(anonymous.path, "/accounts/login/")
+        self.assertEqual(Presence.objects.get(ip="203.0.113.21").user, user)
+
+    def test_admin_lists_only_people_online_by_default(self):
+        from django.utils import timezone as dj_timezone
+        Presence.objects.create(session_key="old", ip="203.0.113.30",
+                                last_seen=dj_timezone.now() - Presence.ONLINE - Presence.ONLINE)
+        Presence.objects.create(session_key="now", ip="203.0.113.31")
+        admin = Client()
+        admin.force_login(User.objects.create_superuser("boss"))
+        page = admin.get("/admin/arena/presence/")
+        self.assertContains(page, "203.0.113.31")
+        self.assertNotContains(page, "203.0.113.30")
+        self.assertContains(admin.get("/admin/arena/presence/?status=all"), "203.0.113.30")
+        self.assertEqual(admin.get("/admin/arena/loginrecord/").status_code, 200)
