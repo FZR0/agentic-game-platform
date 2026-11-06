@@ -137,6 +137,7 @@
     <Content Include="arena\templates\arena\play.html" />
     <Content Include="arena\templates\registration\login.html" />
     <Content Include="arena\templates\registration\signup.html" />
+    <Content Include="arena\templates\registration\upgrade.html" />
     <Content Include="chessgame\static\chessgame\board.js" />
     <Content Include="chessgame\static\chessgame\icon.svg" />
     <Content Include="CLAUDE.md" />
@@ -153,6 +154,9 @@
     <Content Include="logs\故障報告\20261105-164822.txt" />
     <Content Include="logs\故障報告\20261105-165509.txt" />
     <Content Include="logs\故障報告\20261105-165643.txt" />
+    <Content Include="logs\故障報告\20261105-170136.txt" />
+    <Content Include="logs\故障報告\20261105-170358.txt" />
+    <Content Include="logs\故障報告\20261106-193251.txt" />
     <Content Include="README.md" />
     <Content Include="requirements.txt" />
     <Content Include="weiqi\static\weiqi\board.js" />

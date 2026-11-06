@@ -11,4 +11,11 @@
     <button type="submit" class="button primary">登入</button>
   </form>
   <p class="account-switch">還沒有帳號？<a href="{% url 'signup' %}">註冊一個</a></p>
+  {# 遊客（2026-11-06）：不註冊也能玩；之後可以設定帳號密碼，對局都會保留 #}
+  <form method="post" action="{% url 'guest' %}" class="guest-form">
+    {% csrf_token %}
+    <input type="hidden" name="next" value="{{ next }}">
+    <button type="submit" class="button">以遊客身分進入</button>
+    <span class="hint">不用註冊就能玩。之後可以設定帳號和密碼，下過的對局都會保留。</span>
+  </form>
 {% endblock %}

@@ -1740,3 +1740,69 @@ class JoinRaceTests(TestCase):
                 operations.join_game(game.room_code, carol)
         seat.refresh_from_db()
         self.assertEqual(seat.user, bob)
+
+
+class GuestTests(TestCase):
+    """遊客（使用者要求，2026-11-06）：不註冊也能玩，能做的事和帳號一樣；之後設定帳號名稱與密碼就變成正式帳號，
+    下過的對局、戰績、真人對戰的座位都要跟著保留（是同一個帳號，不是搬資料）。"""
+
+    def enter_as_guest(self, client=None, **extra):
+        client = client or Client()
+        response = client.post("/accounts/guest/", extra.pop("data", {}), REMOTE_ADDR="203.0.113.40", **extra)
+        return client, response, User.objects.get(pk=client.session["_auth_user_id"])
+
+    def test_a_guest_is_a_logged_in_account_without_a_password(self):
+        with patch.object(orchestrator, "handle", side_effect=AssertionError("遊客登入不經過 AI 助理")):
+            client, response, guest = self.enter_as_guest()
+        self.assertRedirects(response, "/", fetch_redirect_response=False)
+        self.assertTrue(guest.username.startswith("遊客-"))
+        self.assertFalse(guest.has_usable_password())  # 沒有密碼：別人不能用這個名稱登入
+        self.assertEqual(LoginRecord.objects.get(user=guest).ip, "203.0.113.40")
+
+    def test_an_invite_link_still_leads_to_the_join_page(self):
+        _, response, _ = self.enter_as_guest(data={"next": "/join/ABCDEF/"})
+        self.assertRedirects(response, "/join/ABCDEF/", fetch_redirect_response=False)
+        _, response, _ = self.enter_as_guest(data={"next": "https://evil.example.com/"})
+        self.assertRedirects(response, "/", fetch_redirect_response=False)
+
+    def test_guests_can_play_and_join_pvp_like_accounts(self):
+        alice = User.objects.create_user("alice", password="x")
+        game, _ = operations.start_game(GOMOKU, 1, {}, alice, "pvp")
+        client, _, guest = self.enter_as_guest()
+        with patch.object(orchestrator, "_chat", side_effect=OSError("測試不連模型")):
+            client.post("/join/", {"code": game.room_code})
+        game.refresh_from_db()
+        self.assertEqual(game.seat_of(guest), 2)
+
+    def test_upgrading_keeps_the_same_account_and_its_games(self):
+        client, _, guest = self.enter_as_guest()
+        with patch.object(orchestrator, "_chat", side_effect=OSError("測試不連模型")), \
+                patch.object(agent, "_chat", side_effect=OSError("測試不連模型")):
+            game_id = client.post("/api/gomoku/games/", json.dumps({"seat": 2}),
+                                  content_type="application/json").json()["game"]["id"]
+        response = client.post("/accounts/upgrade/", {"username": "dora", "password1": "a-Long-pass-88",
+                                                      "password2": "a-Long-pass-88"})
+        self.assertRedirects(response, "/", fetch_redirect_response=False)
+        dora = User.objects.get(pk=guest.pk)
+        self.assertEqual(dora.username, "dora")
+        self.assertTrue(dora.check_password("a-Long-pass-88"))
+        self.assertEqual(Game.objects.get(pk=game_id).owner, dora)
+        self.assertEqual(int(client.session["_auth_user_id"]), dora.pk)  # 改密碼後仍然登入
+        self.assertTrue(Client().login(username="dora", password="a-Long-pass-88"))  # 別台電腦也能登入了
+
+    def test_only_guests_can_use_the_upgrade_page(self):
+        # 正式帳號不能從這裡改名、改密碼（沒有驗證舊密碼）
+        member = User.objects.create_user("erin", password="pw-for-tests-3")
+        client = Client()
+        client.force_login(member)
+        client.post("/accounts/upgrade/", {"username": "mallory", "password1": "a-Long-pass-99",
+                                           "password2": "a-Long-pass-99"})
+        member.refresh_from_db()
+        self.assertEqual(member.username, "erin")
+        self.assertTrue(member.check_password("pw-for-tests-3"))
+
+    def test_the_upgrade_form_starts_with_an_empty_name(self):
+        # 留著「遊客-XXXXXX」直接送出會因為名稱已經存在而失敗，所以讓遊客自己取名字
+        client, _, guest = self.enter_as_guest()
+        page = client.get("/accounts/upgrade/").content.decode()
+        self.assertNotIn(guest.username, page.split('name="username"')[1].split(">")[0])
