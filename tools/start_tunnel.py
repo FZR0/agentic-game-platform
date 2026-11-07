@@ -1,18 +1,16 @@
-"""真人對戰測試：用 Cloudflare 臨時通道讓別台電腦連進來（由 啟動對戰測試.bat 呼叫；2026-11-05，docs/交接.md 4.10）。
+"""真人對戰：用 Cloudflare 臨時通道讓別台電腦連進來（tools/launch.py 呼叫；2026-11-05，docs/交接.md 4.10）。
+2026-11-07 起兩個啟動檔（本機 AI、學校 VPN）都走這裡，不再有只在本機玩的啟動檔（使用者決定）。
 
-做的事：
-0. 加 --vpn 時（啟動對戰測試-先連VPN.bat，2026-11-07）：先確認連得上研究用伺服器，連不上就打開 FortiClient，
-   等使用者連好學校的 VPN 再繼續（按 S 不等、按 Q 結束）。
-1. 沒有 tools/cloudflared/cloudflared.exe 時問一次，從 Cloudflare 在 GitHub 的官方發行版下載，比對大小與 SHA-256（不符就刪掉）。
-2. 以公開模式（GAME_PUBLIC=1：DEBUG 關閉、只接受通道網址，見 config/settings.py）啟動網站，只聽 127.0.0.1，
-   別台電腦只能經過通道連進來。
-3. 開臨時通道（`cloudflared tunnel --url`，不需要 Cloudflare 帳號），印出 https://<隨機>.trycloudflare.com 網址。
+- ensure_cloudflared：沒有 tools/cloudflared/cloudflared.exe 時問一次，從 Cloudflare 在 GitHub 的官方發行版下載，
+  比對大小與 SHA-256（不符就刪掉）。
+- wait_for_vpn（VPN 版）：連不上研究用伺服器時打開 FortiClient，等使用者連好學校的 VPN（按 S 不等、按 Q 結束）。
+- run：以公開模式（GAME_PUBLIC=1：DEBUG 關閉、只接受通道網址，見 config/settings.py）啟動網站，只聽 127.0.0.1，
+  別台電腦只能經過通道連進來；再開臨時通道（`cloudflared tunnel --url`，不需要 Cloudflare 帳號），印出並打開
+  https://<隨機>.trycloudflare.com。
 
-網站和 cloudflared 放進同一個 Windows 工作物件（和 tools/start_local_test.py 同一個做法）：按 Enter、關閉視窗
+網站和 cloudflared 放進同一個 Windows 工作物件（tools/local_ollama.KillOnExit）：按 Enter、關閉視窗
 或被強制結束時一起停止，不會留下一個對外公開的網站。每次啟動網址都不一樣；臨時通道沒有穩定性保證，只適合測試。
 """
-import argparse
-import ctypes
 import msvcrt
 import os
 import re
@@ -23,13 +21,14 @@ import tempfile
 import threading
 import time
 import urllib.parse
+import webbrowser
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from tools.setup_engines import download  # noqa: E402  比對大小與 SHA-256 的下載，和引擎共用
-from tools.start_local_test import KillOnExit, wait_until  # noqa: E402
+from tools.local_ollama import wait_until  # noqa: E402
 from config import local  # noqa: E402  AI 伺服器位址的來源和網站相同（環境變數 → private/settings.json → config/local.json）
 
 # 2026.10.3（2026-10-21 發布）：刻意不用最新版，選發布超過兩週的版本。大小與 SHA-256 是 GitHub 發行版公布的值（2026-11-05 查）
@@ -51,7 +50,7 @@ def ai_server_reachable():
 
 
 def wait_for_vpn():
-    """--vpn（啟動對戰測試-先連VPN.bat）：連不上研究用伺服器時打開 FortiClient，等使用者連好 VPN 再啟動網站。
+    """VPN 版（啟動對戰平台-VPN.bat）：連不上研究用伺服器時打開 FortiClient，等使用者連好 VPN 再啟動網站。
     帳號密碼由使用者自己在 FortiClient 輸入，這裡不經手。回傳 False 表示使用者選擇結束。"""
     if ai_server_reachable():
         print("研究用伺服器連得上。")
@@ -98,41 +97,19 @@ def ensure_cloudflared():
     return True
 
 
-def has_admin():
-    """有沒有管理員帳號（後台看登入紀錄與線上訪客要用）。"""
-    code = ("import django, os; os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings'); django.setup(); "
-            "from django.contrib.auth.models import User; print(User.objects.filter(is_superuser=True).exists())")
-    out = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True)
-    return out.stdout.strip() == "True"
-
-
-def main():
-    parser = argparse.ArgumentParser(description="真人對戰測試：開 Cloudflare 臨時通道")
-    parser.add_argument("--port", type=int, default=8010, help="網站的埠（只聽 127.0.0.1；預設 8010，和平常的 8000 分開）")
-    parser.add_argument("--vpn", action="store_true", help="先確認連得上研究用伺服器，連不上就打開 FortiClient 等你連好 VPN")
-    args = parser.parse_args()
-    ctypes.windll.kernel32.SetConsoleTitleW("益智遊戲 AI 教練（真人對戰測試：對外公開中）")
-    site_check = f"http://127.0.0.1:{args.port}/static/arena/style.css"  # 不經過 AI 助理（同 tools/launch.py）
-
-    if args.vpn and not wait_for_vpn():
-        return 0
-    if not ensure_cloudflared():
-        return 1
-    if not has_admin():
-        print("提醒：還沒有管理員帳號，後台（/admin/）看不到登入紀錄與線上訪客。")
-        print("要建立的話，另開一個視窗在專案資料夾執行：.venv\\Scripts\\python.exe manage.py createsuperuser\n")
-
-    group = KillOnExit()
+def run(group, port, open_browser=True):
+    """以公開模式啟動網站並開通道（都放進 group），等使用者按 Enter；回傳結束碼。"""
+    site_check = f"http://127.0.0.1:{port}/static/arena/style.css"  # 不經過 AI 助理（每個頁面都會叫模型）
     print("正在以公開模式啟動網站...")
     # --insecure：DEBUG 關閉時 runserver 預設不提供靜態檔（CSS、JS），測試用的網站由它直接提供
-    group.start([sys.executable, "manage.py", "runserver", "--insecure", f"127.0.0.1:{args.port}"], cwd=ROOT,
+    group.start([sys.executable, "manage.py", "runserver", "--insecure", f"127.0.0.1:{port}"], cwd=ROOT,
                 env=dict(os.environ, GAME_PUBLIC="1"))
     if not wait_until(site_check, 30):
         print("網站沒有在 30 秒內啟動，請看上面的錯誤訊息。")
         return 1
 
     print("正在開 Cloudflare 臨時通道...")
-    tunnel = group.start([str(CLOUDFLARED_EXE), "tunnel", "--no-autoupdate", "--url", f"http://127.0.0.1:{args.port}"],
+    tunnel = group.start([str(CLOUDFLARED_EXE), "tunnel", "--no-autoupdate", "--url", f"http://127.0.0.1:{port}"],
                          stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
     found = threading.Event()
 
@@ -144,20 +121,19 @@ def main():
                 found.set()
                 print("\n" + "=" * 60)
                 print(f"  對外網址：{m.group(0)}")
-                print("  把這個網址傳給朋友：註冊或登入後，用房間密碼或邀請連結加入對局。")
+                print("  把這個網址傳給朋友：註冊、登入或以遊客身分進入後，用房間密碼或邀請連結加入對局。")
                 print(f"  管理員後台（登入紀錄、線上訪客）：{m.group(0)}/admin/")
                 print("=" * 60)
-                print("測完按 Enter，或直接關閉這個視窗，網站和通道會一起停止。")
+                print("關掉網站：按 Enter，或直接關閉這個視窗，網站和通道會一起停止。")
+                # 自己也用通道網址玩：邀請連結是用網址列的網址組成的，用 localhost 開的話朋友點不進來
+                if open_browser:
+                    webbrowser.open(m.group(0))
 
     threading.Thread(target=read_tunnel_output, daemon=True).start()
     if not found.wait(60):
-        print("60 秒內沒有拿到通道網址，可能連不上 Cloudflare。網站仍在本機執行；按 Enter 結束。")
+        print(f"60 秒內沒有拿到通道網址，可能連不上 Cloudflare。網站仍在本機執行（http://localhost:{port}/）；按 Enter 結束。")
     try:
         input()
     except (EOFError, KeyboardInterrupt):
         pass
     return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

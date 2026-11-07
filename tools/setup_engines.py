@@ -1,5 +1,5 @@
 """檢查遊戲引擎（圍棋 KataGo、象棋 Pikafish、國際象棋 Stockfish），缺少時問一次再從官方發行版下載
-（啟動遊戲平台.bat 呼叫；2026-10-15 使用者決定）。
+（tools/launch.py 呼叫；2026-10-15 使用者決定）。
 
 只補缺少的檔案，已經有的（包括調過的設定檔）不會覆蓋。每個下載的檔案都先比對大小和 SHA-256（GitHub 發行版公布的值；
 KataGo 網路是原開發機那份的值），不符就刪掉、不使用。檔案位置照 config/settings.py（可用 KATAGO_EXE、KATAGO_MODEL、

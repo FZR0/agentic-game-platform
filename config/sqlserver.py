@@ -33,7 +33,7 @@ def database():
     """settings.DATABASES["default"]。這台電腦還沒設定時直接停下來，不改用別的資料庫（使用者 2026-10-19 決定）。"""
     entry = load().get(MACHINE)
     if not entry or not entry.get("host"):
-        raise ImproperlyConfigured(f"這台電腦（{MACHINE}）還沒設定 SQL Server：請先執行 啟動遊戲平台.bat，"
+        raise ImproperlyConfigured(f"這台電腦（{MACHINE}）還沒設定 SQL Server：請先執行 啟動對戰平台-VPN.bat 或 啟動對戰平台-本機AI.bat，"
                                    "或 .venv/Scripts/python.exe tools/setup_sqlserver.py。")
     # 測試資料庫名稱帶程序編號：同一個資料夾常有好幾個工作階段，同時跑測試時共用一個測試資料庫會互相刪掉
     return {"ENGINE": "mssql", "NAME": DATABASE, "HOST": entry["host"],

@@ -1236,7 +1236,7 @@ class SavePromptTests(SimpleTestCase):
 
 class RunLogTests(TestCase):
     client_class = AdminClient
-    # 使用者 2026-10-28：啟動遊戲平台.bat 沒有運行紀錄，出了問題分不出是 AI 伺服器、AI 助理還是程式。
+    # 使用者 2026-10-28：啟動檔沒有運行紀錄，出了問題分不出是 AI 伺服器、AI 助理還是程式。
     # 紀錄要讓人一眼看出是哪一邊：伺服器連不上、AI 助理被擋下、改用原本的程式補完，各自有一行。
     def setUp(self):
         narrator._retry_at = 0.0
@@ -1320,7 +1320,7 @@ class AiHealthTests(TestCase):
         self.assertTrue(any("ollama serve" in s for s in p["steps"]))
 
     def test_local_ollama_that_is_not_installed_says_so(self):
-        # 啟動遊戲平台.bat 本來該用研究用伺服器：先提醒確認位址，而不是叫人去裝 Ollama
+        # 啟動檔本來該用研究用伺服器：先提醒確認位址，而不是叫人去裝 Ollama
         with patch("arena.health.OLLAMA_EXE", Path("C:/不存在/ollama.exe")), patch("shutil.which", return_value=None):
             p = self.chat_failing(self.refused())
         self.assertEqual(p["title"], "這台電腦沒有安裝 Ollama")

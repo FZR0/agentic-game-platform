@@ -124,7 +124,7 @@ def _refused(model, checks, where, local, port):
     if OLLAMA_EXE.exists() or shutil.which("ollama"):
         steps = ["從開始選單打開 Ollama（右下角會出現 Ollama 圖示）",
                  "或在命令提示字元執行「ollama serve」",
-                 "或改用「啟動本機測試.bat」，它會自動啟動這台電腦的 Ollama"]
+                 "或改用「啟動對戰平台-本機AI.bat」，它會自動啟動這台電腦的 Ollama"]
         if port != DEFAULT_PORT:
             steps.append(port_note)
         return _problem("local_not_running", "這台電腦的 Ollama 沒有啟動", checks,
