@@ -2,7 +2,7 @@
 
 2026-11-07 使用者決定只留這兩個啟動檔，都開真人對戰的通道，不再有只在本機玩的版本：
 - 本機 AI：用這台電腦的 Ollama（tools/local_ollama.py，原本的本機測試模式）。
-- VPN：用研究用伺服器，連不上就打開 FortiClient 等使用者連好學校的 VPN（tools/start_tunnel.wait_for_vpn）。
+- VPN：用研究用伺服器，連不上就等使用者自己用 FortiClient 連好學校的 VPN（tools/start_tunnel.wait_for_vpn）。
 兩個都在任何一台新電腦上直接部署：找 Python、建 .venv（.bat）、補裝套件、SQL Server、資料庫、遊戲引擎、cloudflared。
 
 啟動檔只負責找 Python 和第一次建立 .venv，而且只放 ASCII：.bat 裡有中文時，新開的主控台會讀錯位置，

@@ -3,7 +3,8 @@
 
 - ensure_cloudflared：沒有 tools/cloudflared/cloudflared.exe 時問一次，從 Cloudflare 在 GitHub 的官方發行版下載，
   比對大小與 SHA-256（不符就刪掉）。
-- wait_for_vpn（VPN 版）：連不上研究用伺服器時打開 FortiClient，等使用者連好學校的 VPN（按 S 不等、按 Q 結束）。
+- wait_for_vpn（VPN 版）：連不上研究用伺服器時，等使用者自己打開 FortiClient 連好學校的 VPN（按 S 不等、按 Q 結束）。
+  不替使用者打開 FortiClient（使用者決定，2026-11-08）。
 - run：以公開模式（GAME_PUBLIC=1：DEBUG 關閉、只接受通道網址，見 config/settings.py）啟動網站，只聽 127.0.0.1，
   別台電腦只能經過通道連進來；再開臨時通道（`cloudflared tunnel --url`，不需要 Cloudflare 帳號），印出並打開
   https://<隨機>.trycloudflare.com。
@@ -36,7 +37,6 @@ CLOUDFLARED = ("https://github.com/cloudflare/cloudflared/releases/download/2026
                55329336, "76b2805253d0d6ffacb092a7acfbee99e7af6917835c0c5410e23f3ef5052da2")
 CLOUDFLARED_EXE = ROOT / "tools" / "cloudflared" / "cloudflared.exe"
 URL_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
-FORTICLIENT = Path(r"C:\Program Files\Fortinet\FortiClient\FortiClient.exe")  # 學校的 VPN 軟體（使用者 2026-11-07）
 
 
 def ai_server_reachable():
@@ -50,17 +50,12 @@ def ai_server_reachable():
 
 
 def wait_for_vpn():
-    """VPN 版（啟動對戰平台-VPN.bat）：連不上研究用伺服器時打開 FortiClient，等使用者連好 VPN 再啟動網站。
+    """VPN 版（啟動對戰平台-VPN.bat）：連不上研究用伺服器時，等使用者自己連好 VPN 再啟動網站。
     帳號密碼由使用者自己在 FortiClient 輸入，這裡不經手。回傳 False 表示使用者選擇結束。"""
     if ai_server_reachable():
         print("研究用伺服器連得上。")
         return True
-    print("連不上研究用伺服器：在校外要先連學校的 VPN。")
-    if FORTICLIENT.exists():
-        subprocess.Popen([str(FORTICLIENT)])
-        print("已打開 FortiClient，請在裡面連上學校的 VPN。")
-    else:
-        print(f"找不到 FortiClient（{FORTICLIENT}），請自己打開學校的 VPN 軟體連線。")
+    print("連不上研究用伺服器：在校外要先連學校的 VPN，請自己打開 FortiClient 連線。")
     print("連上後會自動繼續。按 S 不等了直接啟動（AI 會改用原本的程式），按 Q 結束。")
     while True:
         for _ in range(30):  # 每 3 秒檢查一次連線，中間每 0.1 秒看一次按鍵
