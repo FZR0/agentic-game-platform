@@ -1,6 +1,8 @@
 """真人對戰測試：用 Cloudflare 臨時通道讓別台電腦連進來（由 啟動對戰測試.bat 呼叫；2026-11-05，docs/交接.md 4.10）。
 
 做的事：
+0. 加 --vpn 時（啟動對戰測試-先連VPN.bat，2026-11-07）：先確認連得上研究用伺服器，連不上就打開 FortiClient，
+   等使用者連好學校的 VPN 再繼續（按 S 不等、按 Q 結束）。
 1. 沒有 tools/cloudflared/cloudflared.exe 時問一次，從 Cloudflare 在 GitHub 的官方發行版下載，比對大小與 SHA-256（不符就刪掉）。
 2. 以公開模式（GAME_PUBLIC=1：DEBUG 關閉、只接受通道網址，見 config/settings.py）啟動網站，只聽 127.0.0.1，
    別台電腦只能經過通道連進來。
@@ -11,12 +13,16 @@
 """
 import argparse
 import ctypes
+import msvcrt
 import os
 import re
+import socket
 import subprocess
 import sys
 import tempfile
 import threading
+import time
+import urllib.parse
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -24,12 +30,52 @@ sys.path.insert(0, str(ROOT))
 
 from tools.setup_engines import download  # noqa: E402  比對大小與 SHA-256 的下載，和引擎共用
 from tools.start_local_test import KillOnExit, wait_until  # noqa: E402
+from config import local  # noqa: E402  AI 伺服器位址的來源和網站相同（環境變數 → private/settings.json → config/local.json）
 
 # 2026.10.3（2026-10-21 發布）：刻意不用最新版，選發布超過兩週的版本。大小與 SHA-256 是 GitHub 發行版公布的值（2026-11-05 查）
 CLOUDFLARED = ("https://github.com/cloudflare/cloudflared/releases/download/2026.10.3/cloudflared-windows-amd64.exe",
                55329336, "76b2805253d0d6ffacb092a7acfbee99e7af6917835c0c5410e23f3ef5052da2")
 CLOUDFLARED_EXE = ROOT / "tools" / "cloudflared" / "cloudflared.exe"
 URL_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
+FORTICLIENT = Path(r"C:\Program Files\Fortinet\FortiClient\FortiClient.exe")  # 學校的 VPN 軟體（使用者 2026-11-07）
+
+
+def ai_server_reachable():
+    """連得上 AI 伺服器的埠嗎（只連 TCP，3 秒）。位址不印出來：研究用伺服器的位址不能公開。"""
+    url = urllib.parse.urlsplit(local.get("OLLAMA_URL", "http://127.0.0.1:11434"))
+    try:
+        with socket.create_connection((url.hostname, url.port or 11434), timeout=3):
+            return True
+    except OSError:
+        return False
+
+
+def wait_for_vpn():
+    """--vpn（啟動對戰測試-先連VPN.bat）：連不上研究用伺服器時打開 FortiClient，等使用者連好 VPN 再啟動網站。
+    帳號密碼由使用者自己在 FortiClient 輸入，這裡不經手。回傳 False 表示使用者選擇結束。"""
+    if ai_server_reachable():
+        print("研究用伺服器連得上。")
+        return True
+    print("連不上研究用伺服器：在校外要先連學校的 VPN。")
+    if FORTICLIENT.exists():
+        subprocess.Popen([str(FORTICLIENT)])
+        print("已打開 FortiClient，請在裡面連上學校的 VPN。")
+    else:
+        print(f"找不到 FortiClient（{FORTICLIENT}），請自己打開學校的 VPN 軟體連線。")
+    print("連上後會自動繼續。按 S 不等了直接啟動（AI 會改用原本的程式），按 Q 結束。")
+    while True:
+        for _ in range(30):  # 每 3 秒檢查一次連線，中間每 0.1 秒看一次按鍵
+            while msvcrt.kbhit():
+                key = msvcrt.getwch().lower()
+                if key == "s":
+                    print("不等 VPN，直接啟動。")
+                    return True
+                if key == "q":
+                    return False
+            time.sleep(0.1)
+        if ai_server_reachable():
+            print("研究用伺服器連得上了。")
+            return True
 
 
 def ensure_cloudflared():
@@ -63,10 +109,13 @@ def has_admin():
 def main():
     parser = argparse.ArgumentParser(description="真人對戰測試：開 Cloudflare 臨時通道")
     parser.add_argument("--port", type=int, default=8010, help="網站的埠（只聽 127.0.0.1；預設 8010，和平常的 8000 分開）")
+    parser.add_argument("--vpn", action="store_true", help="先確認連得上研究用伺服器，連不上就打開 FortiClient 等你連好 VPN")
     args = parser.parse_args()
     ctypes.windll.kernel32.SetConsoleTitleW("益智遊戲 AI 教練（真人對戰測試：對外公開中）")
     site_check = f"http://127.0.0.1:{args.port}/static/arena/style.css"  # 不經過 AI 助理（同 tools/launch.py）
 
+    if args.vpn and not wait_for_vpn():
+        return 0
     if not ensure_cloudflared():
         return 1
     if not has_admin():

@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.apps import apps
 from django.conf import settings
@@ -137,6 +137,20 @@ class OllamaRetryTests(SimpleTestCase):
             with self.assertRaises(OSError):
                 narrator.chat(self.BODY)
             self.assertEqual(urlopen.call_count, 2)
+
+    def test_an_absent_server_costs_only_the_connect_timeout(self):
+        # 伺服器不在（例如沒連學校 VPN）時，Windows 要等約 21 秒才回報連不上，每個頁面都卡那麼久（2026-11-07）。
+        # 建立連線只能等 OLLAMA_CONNECT_TIMEOUT；連上之後等回答仍是 OLLAMA_TIMEOUT，模型第一次載入要 40 秒以上。
+        self.assertLess(settings.OLLAMA_CONNECT_TIMEOUT, 10)
+        with patch("socket.create_connection", side_effect=TimeoutError("timed out")) as connect:
+            with self.assertRaises(OSError):
+                urllib.request.urlopen("http://example.invalid:11434/api/tags", timeout=120)
+        self.assertEqual(connect.call_args.args[1], settings.OLLAMA_CONNECT_TIMEOUT)
+        sock = MagicMock()
+        with patch("socket.create_connection", return_value=sock):
+            conn = narrator._QuickConnection("example.invalid", 11434, timeout=120)
+            conn.connect()
+        sock.settimeout.assert_called_with(120)
 
     def test_error_reply_from_the_server_does_not_pause_calls(self):
         # 伺服器有回應（例如選的模型不存在）不是卡住；暫停的話，換別的模型也要白等好幾分鐘。

@@ -157,12 +157,14 @@
     <Content Include="logs\故障報告\20261105-170136.txt" />
     <Content Include="logs\故障報告\20261105-170358.txt" />
     <Content Include="logs\故障報告\20261106-193251.txt" />
+    <Content Include="logs\故障報告\20261107-223436.txt" />
     <Content Include="README.md" />
     <Content Include="requirements.txt" />
     <Content Include="weiqi\static\weiqi\board.js" />
     <Content Include="weiqi\static\weiqi\icon.svg" />
     <Content Include="xiangqi\static\xiangqi\board.js" />
     <Content Include="xiangqi\static\xiangqi\icon.svg" />
+    <Content Include="啟動對戰測試-先連VPN.bat" />
     <Content Include="啟動對戰測試.bat" />
     <Content Include="啟動本機測試.bat" />
     <Content Include="啟動遊戲平台.bat" />

@@ -92,6 +92,8 @@ OLLAMA_URL = local.get('OLLAMA_URL', 'http://127.0.0.1:11434')
 OLLAMA_SERVER_NAMES = local.get('OLLAMA_SERVER_NAMES', {})
 OLLAMA_MODEL = os.environ.get('OLLAMA_MODEL', 'gemma4:26b')  # 研究用伺服器上測得最快最穩（2026-10-14 使用者決定）
 OLLAMA_TIMEOUT = 120  # 秒；模型第一次載入約需 40 秒
+# 建立連線最多等幾秒（arena/narrator.py::_QuickConnection）：伺服器不在時不必等 Windows 預設的約 21 秒
+OLLAMA_CONNECT_TIMEOUT = 3
 # 每個 Ollama 請求的上下文長度（options.num_ctx）。不指定時 Ollama 用伺服器預設值，可能開得非常大，
 # 共用伺服器的記憶體會被吃光而當掉（gemma4:31b 曾載入後佔約 100 GB）。所以每個請求都要明確帶這個值。
 OLLAMA_NUM_CTX = int(os.environ.get('OLLAMA_NUM_CTX', '8192'))
