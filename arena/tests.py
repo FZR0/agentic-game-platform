@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.apps import apps
 from django.conf import settings
@@ -137,6 +137,20 @@ class OllamaRetryTests(SimpleTestCase):
             with self.assertRaises(OSError):
                 narrator.chat(self.BODY)
             self.assertEqual(urlopen.call_count, 2)
+
+    def test_an_absent_server_costs_only_the_connect_timeout(self):
+        # 伺服器不在（例如沒連學校 VPN）時，Windows 要等約 21 秒才回報連不上，每個頁面都卡那麼久（2026-11-07）。
+        # 建立連線只能等 OLLAMA_CONNECT_TIMEOUT；連上之後等回答仍是 OLLAMA_TIMEOUT，模型第一次載入要 40 秒以上。
+        self.assertLess(settings.OLLAMA_CONNECT_TIMEOUT, 10)
+        with patch("socket.create_connection", side_effect=TimeoutError("timed out")) as connect:
+            with self.assertRaises(OSError):
+                urllib.request.urlopen("http://example.invalid:11434/api/tags", timeout=120)
+        self.assertEqual(connect.call_args.args[1], settings.OLLAMA_CONNECT_TIMEOUT)
+        sock = MagicMock()
+        with patch("socket.create_connection", return_value=sock):
+            conn = narrator._QuickConnection("example.invalid", 11434, timeout=120)
+            conn.connect()
+        sock.settimeout.assert_called_with(120)
 
     def test_error_reply_from_the_server_does_not_pause_calls(self):
         # 伺服器有回應（例如選的模型不存在）不是卡住；暫停的話，換別的模型也要白等好幾分鐘。
@@ -1222,7 +1236,7 @@ class SavePromptTests(SimpleTestCase):
 
 class RunLogTests(TestCase):
     client_class = AdminClient
-    # 使用者 2026-10-28：啟動遊戲平台.bat 沒有運行紀錄，出了問題分不出是 AI 伺服器、AI 助理還是程式。
+    # 使用者 2026-10-28：啟動檔沒有運行紀錄，出了問題分不出是 AI 伺服器、AI 助理還是程式。
     # 紀錄要讓人一眼看出是哪一邊：伺服器連不上、AI 助理被擋下、改用原本的程式補完，各自有一行。
     def setUp(self):
         narrator._retry_at = 0.0
@@ -1306,7 +1320,7 @@ class AiHealthTests(TestCase):
         self.assertTrue(any("ollama serve" in s for s in p["steps"]))
 
     def test_local_ollama_that_is_not_installed_says_so(self):
-        # 啟動遊戲平台.bat 本來該用研究用伺服器：先提醒確認位址，而不是叫人去裝 Ollama
+        # 啟動檔本來該用研究用伺服器：先提醒確認位址，而不是叫人去裝 Ollama
         with patch("arena.health.OLLAMA_EXE", Path("C:/不存在/ollama.exe")), patch("shutil.which", return_value=None):
             p = self.chat_failing(self.refused())
         self.assertEqual(p["title"], "這台電腦沒有安裝 Ollama")
@@ -1740,3 +1754,69 @@ class JoinRaceTests(TestCase):
                 operations.join_game(game.room_code, carol)
         seat.refresh_from_db()
         self.assertEqual(seat.user, bob)
+
+
+class GuestTests(TestCase):
+    """遊客（使用者要求，2026-11-06）：不註冊也能玩，能做的事和帳號一樣；之後設定帳號名稱與密碼就變成正式帳號，
+    下過的對局、戰績、真人對戰的座位都要跟著保留（是同一個帳號，不是搬資料）。"""
+
+    def enter_as_guest(self, client=None, **extra):
+        client = client or Client()
+        response = client.post("/accounts/guest/", extra.pop("data", {}), REMOTE_ADDR="203.0.113.40", **extra)
+        return client, response, User.objects.get(pk=client.session["_auth_user_id"])
+
+    def test_a_guest_is_a_logged_in_account_without_a_password(self):
+        with patch.object(orchestrator, "handle", side_effect=AssertionError("遊客登入不經過 AI 助理")):
+            client, response, guest = self.enter_as_guest()
+        self.assertRedirects(response, "/", fetch_redirect_response=False)
+        self.assertTrue(guest.username.startswith("遊客-"))
+        self.assertFalse(guest.has_usable_password())  # 沒有密碼：別人不能用這個名稱登入
+        self.assertEqual(LoginRecord.objects.get(user=guest).ip, "203.0.113.40")
+
+    def test_an_invite_link_still_leads_to_the_join_page(self):
+        _, response, _ = self.enter_as_guest(data={"next": "/join/ABCDEF/"})
+        self.assertRedirects(response, "/join/ABCDEF/", fetch_redirect_response=False)
+        _, response, _ = self.enter_as_guest(data={"next": "https://evil.example.com/"})
+        self.assertRedirects(response, "/", fetch_redirect_response=False)
+
+    def test_guests_can_play_and_join_pvp_like_accounts(self):
+        alice = User.objects.create_user("alice", password="x")
+        game, _ = operations.start_game(GOMOKU, 1, {}, alice, "pvp")
+        client, _, guest = self.enter_as_guest()
+        with patch.object(orchestrator, "_chat", side_effect=OSError("測試不連模型")):
+            client.post("/join/", {"code": game.room_code})
+        game.refresh_from_db()
+        self.assertEqual(game.seat_of(guest), 2)
+
+    def test_upgrading_keeps_the_same_account_and_its_games(self):
+        client, _, guest = self.enter_as_guest()
+        with patch.object(orchestrator, "_chat", side_effect=OSError("測試不連模型")), \
+                patch.object(agent, "_chat", side_effect=OSError("測試不連模型")):
+            game_id = client.post("/api/gomoku/games/", json.dumps({"seat": 2}),
+                                  content_type="application/json").json()["game"]["id"]
+        response = client.post("/accounts/upgrade/", {"username": "dora", "password1": "a-Long-pass-88",
+                                                      "password2": "a-Long-pass-88"})
+        self.assertRedirects(response, "/", fetch_redirect_response=False)
+        dora = User.objects.get(pk=guest.pk)
+        self.assertEqual(dora.username, "dora")
+        self.assertTrue(dora.check_password("a-Long-pass-88"))
+        self.assertEqual(Game.objects.get(pk=game_id).owner, dora)
+        self.assertEqual(int(client.session["_auth_user_id"]), dora.pk)  # 改密碼後仍然登入
+        self.assertTrue(Client().login(username="dora", password="a-Long-pass-88"))  # 別台電腦也能登入了
+
+    def test_only_guests_can_use_the_upgrade_page(self):
+        # 正式帳號不能從這裡改名、改密碼（沒有驗證舊密碼）
+        member = User.objects.create_user("erin", password="pw-for-tests-3")
+        client = Client()
+        client.force_login(member)
+        client.post("/accounts/upgrade/", {"username": "mallory", "password1": "a-Long-pass-99",
+                                           "password2": "a-Long-pass-99"})
+        member.refresh_from_db()
+        self.assertEqual(member.username, "erin")
+        self.assertTrue(member.check_password("pw-for-tests-3"))
+
+    def test_the_upgrade_form_starts_with_an_empty_name(self):
+        # 留著「遊客-XXXXXX」直接送出會因為名稱已經存在而失敗，所以讓遊客自己取名字
+        client, _, guest = self.enter_as_guest()
+        page = client.get("/accounts/upgrade/").content.decode()
+        self.assertNotIn(guest.username, page.split('name="username"')[1].split(">")[0])

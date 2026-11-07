@@ -19,8 +19,13 @@
     <div class="account-bar">
       {% if user.is_authenticated %}
         <span class="account-name">{{ user.username }}</span>
+        {% if not user.has_usable_password %}{# 遊客：沒有密碼，登出後就回不來 #}
+          <a href="{% url 'upgrade' %}">設定帳號密碼</a>
+          <form method="post" action="{% url 'logout' %}" onsubmit="return confirm('確定要登出嗎？遊客沒有密碼，登出後就回不到這個身分，下過的對局也看不到了。想保留的話按「取消」，先設定帳號密碼。')">{% csrf_token %}<button type="submit">登出</button></form>
+        {% else %}
         {# Django 5 的登出只接受 POST #}
         <form method="post" action="{% url 'logout' %}">{% csrf_token %}<button type="submit">登出</button></form>
+        {% endif %}
       {% else %}
         <a href="{% url 'login' %}">登入</a><a href="{% url 'signup' %}">註冊</a>
       {% endif %}

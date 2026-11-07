@@ -18,10 +18,10 @@
    ```
 
 2. 這台電腦要有 SQL Server（Express 或 LocalDB 都可以）和 ODBC Driver 18 或 17。
-3. 在專案資料夾雙擊 `啟動遊戲平台.bat`。第一次會準備 Python 環境、設定資料庫，並詢問要不要從官方網站下載遊戲引擎（KataGo、Pikafish、Stockfish）。
+3. 在專案資料夾雙擊 `啟動對戰平台-VPN.bat`（AI 用研究用伺服器，在校外會先等你連上學校的 VPN）或 `啟動對戰平台-本機AI.bat`（AI 用這台電腦的 Ollama）。第一次會準備 Python 環境、設定資料庫，並詢問要不要從官方網站下載遊戲引擎（KataGo、Pikafish、Stockfish）。
 4. AI 由 [Ollama](https://ollama.com) 上的語言模型擔任。第一次啟動時輸入你的 Ollama 伺服器位址，或在這台電腦安裝 Ollama 後直接按 Enter。連不上 Ollama 時一樣可以下棋，AI 改由遊戲引擎直接下。
 
-準備好之後瀏覽器會自動打開首頁。
+準備好之後會開一條 Cloudflare 臨時通道，印出對外網址並用瀏覽器打開；把網址傳給朋友就能真人對戰。**這會讓網站對外公開**，關閉啟動視窗（或按 Enter）網站和通道就一起停止。
 
 ## 關於這個專案
 

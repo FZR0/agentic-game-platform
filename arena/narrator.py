@@ -3,6 +3,7 @@
 語言模型只負責措辭：說明送出前會檢查，若提到事實裡沒有的座標，或在只有引擎估計時
 使用確定的用語，就改用事實原文（範本說明）。Ollama 無法使用時也是如此。
 """
+import http.client
 import json
 import logging
 import math
@@ -120,6 +121,30 @@ def request_body(facts, config, game_name):
 
 
 _retry_at = 0.0  # 呼叫 Ollama 連不上或逾時後，在這個時間（time.monotonic）以前不再呼叫
+
+
+class _QuickConnection(http.client.HTTPConnection):
+    """建立連線只等 OLLAMA_CONNECT_TIMEOUT 秒，連上後才用呼叫端給的逾時（OLLAMA_TIMEOUT）等回答。
+    伺服器不在（例如沒連學校 VPN）時，Windows 預設要等約 21 秒才回報連不上，每個頁面都卡那麼久（2026-11-07）。"""
+
+    def connect(self):
+        wanted = self.timeout
+        self.timeout = settings.OLLAMA_CONNECT_TIMEOUT
+        try:
+            super().connect()
+        finally:
+            self.timeout = wanted
+        self.sock.settimeout(wanted)
+
+
+class _QuickHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        return self.do_open(_QuickConnection, req)
+
+
+# 裝成 urllib 的預設：這個程序裡的 urlopen 只用來連 Ollama（narrator、health、benchmark_models），
+# 而且測試 patch 的是 urllib.request.urlopen，照樣有效。
+urllib.request.install_opener(urllib.request.build_opener(_QuickHandler))
 
 
 def chat(body):

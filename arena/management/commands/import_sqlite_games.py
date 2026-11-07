@@ -1,4 +1,4 @@
-"""把改用 SQL Server 之前存在 db.sqlite3 的資料搬進 SQL Server（啟動遊戲平台.bat 每次啟動時呼叫；2026-10-19 使用者決定）。
+"""把改用 SQL Server 之前存在 db.sqlite3 的資料搬進 SQL Server（tools/launch.py 每次啟動時呼叫；2026-10-19 使用者決定）。
 
 搬 arena 的每一張表（對局、AI 思路、模型使用紀錄；以後加的表也會跟著搬），保留編號與時間：
 復盤靠編號找對局，AiNote、ModelRun 靠編號對到 Game。只在 SQL Server 那邊 arena 的表全都是空的時候搬，

@@ -784,3 +784,7 @@ details ul { margin: 4px 0 0; padding-left: 18px; }
 #human-seat-boxes { display: flex; flex-wrap: wrap; gap: 6px 14px; }
 .opponent-signs { margin-top: 8px; font-size: 0.92rem; }
 .opponent-signs > li { cursor: pointer; }
+/* 遊客（2026-11-06） */
+.guest-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 20px; padding-top: 16px;
+  border-top: 1px solid var(--border); max-width: 520px; }
+.guest-form .hint { color: var(--muted); font-size: 0.9rem; }

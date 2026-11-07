@@ -270,7 +270,7 @@ def update(interactive=True):
     if "requirements.txt" in out(*GIT, "diff", "--name-only", before, "HEAD").splitlines():
         print("套件清單有更新，正在安裝...")
         show(sys.executable, "-m", "pip", "install", "-r", "requirements.txt")
-    print("已經是最新版本。網站伺服器正在執行的話，關掉它的視窗再用 啟動遊戲平台.bat 重開（會一併更新資料庫）。")
+    print("已經是最新版本。網站伺服器正在執行的話，關掉它的視窗再用 啟動對戰平台-VPN.bat 或 啟動對戰平台-本機AI.bat 重開（會一併更新資料庫）。")
     return True
 
 

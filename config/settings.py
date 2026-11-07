@@ -34,11 +34,11 @@ DEBUG = True
 
 ALLOWED_HOSTS = []
 
-# 對外公開（Cloudflare 臨時通道，2026-11-05；docs/交接.md 4.10）：tools/start_tunnel.py 設 GAME_PUBLIC=1。
+# 對外公開（Cloudflare 臨時通道，2026-11-05；docs/交接.md 4.10）：tools/start_tunnel.run 設 GAME_PUBLIC=1。
 # - DEBUG 一定關掉：出錯時的除錯頁會列出設定，研究用伺服器的位址（OLLAMA_URL）不會被 Django 遮住。
 # - 只接受 *.trycloudflare.com 與本機的網址；表單的來源檢查信任通道的 https 網址。
 # - 通道在 Cloudflare 那端是 https，cloudflared 用 http 連進來並帶 X-Forwarded-Proto，靠它知道原本是 https。
-#   網站只聽 127.0.0.1（start_tunnel.py），別台電腦不經過通道連不進來，所以這個標頭只會由 cloudflared 設定。
+#   網站只聽 127.0.0.1（start_tunnel.run），別台電腦不經過通道連不進來，所以這個標頭只會由 cloudflared 設定。
 PUBLIC = os.environ.get('GAME_PUBLIC') == '1'
 if PUBLIC:
     DEBUG = False
@@ -92,6 +92,8 @@ OLLAMA_URL = local.get('OLLAMA_URL', 'http://127.0.0.1:11434')
 OLLAMA_SERVER_NAMES = local.get('OLLAMA_SERVER_NAMES', {})
 OLLAMA_MODEL = os.environ.get('OLLAMA_MODEL', 'gemma4:26b')  # 研究用伺服器上測得最快最穩（2026-10-14 使用者決定）
 OLLAMA_TIMEOUT = 120  # 秒；模型第一次載入約需 40 秒
+# 建立連線最多等幾秒（arena/narrator.py::_QuickConnection）：伺服器不在時不必等 Windows 預設的約 21 秒
+OLLAMA_CONNECT_TIMEOUT = 3
 # 每個 Ollama 請求的上下文長度（options.num_ctx）。不指定時 Ollama 用伺服器預設值，可能開得非常大，
 # 共用伺服器的記憶體會被吃光而當掉（gemma4:31b 曾載入後佔約 100 GB）。所以每個請求都要明確帶這個值。
 OLLAMA_NUM_CTX = int(os.environ.get('OLLAMA_NUM_CTX', '8192'))
@@ -100,7 +102,7 @@ if sys.argv[1:2] == ['test']:
     # 測試絕不能連到共用的研究用伺服器：所有請求（包括頁面，2026-10-28 起每個請求都會呼叫 AI 助理）都改送到
     # 不存在的位址，立刻失敗而走原本的程式；要測模型的回應時，測試自己 patch。
     OLLAMA_URL, OLLAMA_TIMEOUT = 'http://127.0.0.1:9', 2
-# 模型閒置多久後由 Ollama 卸載；啟動本機測試.bat 設成 2m，讓本機的顯示卡記憶體盡快釋放
+# 模型閒置多久後由 Ollama 卸載；啟動對戰平台-本機AI.bat 設成 2m，讓本機的顯示卡記憶體盡快釋放
 OLLAMA_KEEP_ALIVE = os.environ.get('OLLAMA_KEEP_ALIVE', '30m')
 # 使用者可選的 AI 模型（Agent 下棋與說明），依智慧程度由高到低排列（依參數量與世代估計，不是實測）。
 # think：是否開啟思考模式（只能思考的模型要開，回答才不會混入推理過程）。目前清單裡沒有這種模型。
@@ -220,7 +222,7 @@ STATIC_URL = 'static/'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# 運行紀錄（使用者要求，2026-10-28：啟動遊戲平台.bat 沒有紀錄，出問題時分不出是 AI 伺服器、AI 助理還是程式）。
+# 運行紀錄（使用者要求，2026-10-28：當時的啟動檔沒有紀錄，出問題時分不出是 AI 伺服器、AI 助理還是程式）。
 # 每次呼叫 Ollama、每筆模型使用紀錄、AI 助理的每次工具呼叫、伺服器錯誤，同時顯示在網站伺服器視窗與寫進
 # logs/網站紀錄.log（主要的專案資料夾，git 不管）。研究用伺服器只寫代稱（narrator.server_label），不寫位址
 LOG_FILE = LOCAL_DIR / 'logs' / '網站紀錄.log'
