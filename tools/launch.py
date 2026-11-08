@@ -20,6 +20,9 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+# 啟動檔執行的是 tools\launch.py，Python 只把 tools\ 放進搜尋路徑；要先加專案根目錄，`from tools import ...` 才找得到
+# （2026-11-08：本機 AI 版在這之前就 import tools.local_ollama，ModuleNotFoundError）
+sys.path.insert(0, str(ROOT))
 
 
 def responds(url, timeout=2):
@@ -62,7 +65,6 @@ def main():
         if not python("-m", "pip", "install", "-r", "requirements.txt"):
             print("安裝套件失敗，請查看上面的錯誤訊息（需要能連上網路）。")
             return 1
-    sys.path.insert(0, str(ROOT))
     os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
     # 研究用伺服器的位址不能公開（2026-10-21），放在私人儲存庫：受邀的成員在這裡自動下載，位址就不用輸入。
     # 沒有權限的電腦問一次，存在 config/local.json。要在載入 Django 設定之前做，設定才讀得到
