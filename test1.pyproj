@@ -159,6 +159,7 @@
     <Content Include="logs\故障報告\20261106-193251.txt" />
     <Content Include="logs\故障報告\20261107-223436.txt" />
     <Content Include="logs\故障報告\20261107-231250.txt" />
+    <Content Include="logs\故障報告\20261107-232026.txt" />
     <Content Include="README.md" />
     <Content Include="requirements.txt" />
     <Content Include="weiqi\static\weiqi\board.js" />
