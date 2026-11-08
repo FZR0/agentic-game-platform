@@ -1,26 +1,22 @@
-"""本機測試模式（由 啟動本機測試.bat 呼叫；2026-10-15 使用者決定）。
+"""用這台電腦的 Ollama 當 AI（啟動對戰平台-本機AI.bat → tools/launch.py --ai local）。
 
-只有這次執行改用本機 Ollama，平常的 啟動遊戲平台.bat 仍只用研究用伺服器。為了不拖慢電腦：預設用小模型
-gemma4:e2b、同時只載入一個模型、閒置 2 分鐘就卸載、本機 Ollama 用低於標準的優先權。網站開在 8001 埠，
-和平常的 8000 分開。
+2026-10-15 的本機測試模式（使用者決定）在 2026-11-07 併進一鍵啟動：啟動檔只剩「本機 AI」與「學校 VPN」兩個，
+都開真人對戰的通道。為了不拖慢電腦：預設用小模型 gemma4:e2b、同時只載入一個模型、閒置 2 分鐘就卸載、
+本機 Ollama 用低於標準的優先權。
 
-這次啟動的本機 Ollama 和網站都放進同一個 Windows 工作物件（job object）：這個程式一結束（按 Enter、關閉視窗
-或被強制結束），系統就把它們一起結束，不會留在背景佔用顯示卡記憶體。只靠「關閉主控台視窗會結束裡面的程式」
-不可靠：2026-10-15 實測直接結束主控台時，背景的 Ollama 和網站都還在跑。
+這次啟動的本機 Ollama 和網站都放進同一個 Windows 工作物件（job object，KillOnExit）：啟動程式一結束（按 Enter、
+關閉視窗或被強制結束），系統就把它們一起結束，不會留在背景佔用顯示卡記憶體或對外公開。只靠「關閉主控台視窗
+會結束裡面的程式」不可靠：2026-10-15 實測直接結束主控台時，背景的 Ollama 和網站都還在跑。
 """
-import argparse
 import ctypes
 import json
 import os
 import subprocess
-import sys
 import time
 import urllib.request
-import webbrowser
 from ctypes import wintypes
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
 OLLAMA_EXE = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Ollama" / "ollama.exe"
 MODEL = os.environ.get("OLLAMA_MODEL", "gemma4:e2b")  # 選單裡最小的模型；原開發機本機實測每手 7–9 秒
 KEEP_ALIVE = "2m"
@@ -83,61 +79,31 @@ def wait_until(url, seconds):
     return False
 
 
-def main():
-    parser = argparse.ArgumentParser(description="本機測試模式：用本機 Ollama 開一個測試用的網站")
-    parser.add_argument("--site-port", type=int, default=8001)
-    parser.add_argument("--ollama-port", type=int, default=11434)
-    parser.add_argument("--no-browser", action="store_true", help="不自動打開瀏覽器")
-    args = parser.parse_args()
-    ctypes.windll.kernel32.SetConsoleTitleW("益智遊戲 AI 教練（本機測試）")
-    # 用 127.0.0.1 而不是 localhost：localhost 會先試 IPv6，本機 Ollama 和開發伺服器都只聽 IPv4
-    ollama_url = f"http://127.0.0.1:{args.ollama_port}"
-    site_check = f"http://127.0.0.1:{args.site_port}/static/arena/style.css"  # 不經過 AI 助理（同 tools/launch.py）
-    site_url = f"http://localhost:{args.site_port}/"
+def env(port=11434):
+    """網站改用本機 Ollama 的環境變數。tools/launch.py 一開始就設進自己的環境：之後載入的設定與啟動的網站都會沿用，
+    也不會再問研究用伺服器的位址。用 127.0.0.1：localhost 會先試 IPv6，本機 Ollama 只聽 IPv4。"""
+    return {"OLLAMA_URL": f"http://127.0.0.1:{port}", "OLLAMA_MODEL": MODEL, "OLLAMA_KEEP_ALIVE": KEEP_ALIVE}
 
-    if responds(site_check):
-        print(f"本機測試的網站已經在執行：{site_url}")
-        if not args.no_browser:
-            webbrowser.open(site_url)
-        return 0
 
-    group = KillOnExit()
-    env = dict(os.environ, OLLAMA_URL=ollama_url, OLLAMA_MODEL=MODEL, OLLAMA_KEEP_ALIVE=KEEP_ALIVE)
-    if responds(f"{ollama_url}/api/tags"):
+def start(group, port=11434):
+    """本機 Ollama 沒在執行就啟動它（放進 group）；成功回傳 True。"""
+    url = f"http://127.0.0.1:{port}"
+    if responds(f"{url}/api/tags"):
         print("本機 Ollama 已經在執行，直接沿用：「同時只載入一個模型」要等它重新啟動才會生效，關閉這個視窗也不會停止它。")
     else:
         if not OLLAMA_EXE.exists():
-            print(f"找不到本機 Ollama：{OLLAMA_EXE}\n請先到 https://ollama.com 下載安裝。")
-            return 1
+            print(f"找不到本機 Ollama：{OLLAMA_EXE}\n請先到 https://ollama.com 下載安裝，或改用 啟動對戰平台-VPN.bat。")
+            return False
         print("正在啟動本機 Ollama...")
         group.start([str(OLLAMA_EXE), "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                     creationflags=BELOW_NORMAL_PRIORITY_CLASS,
-                    env=dict(env, OLLAMA_HOST=f"127.0.0.1:{args.ollama_port}",
+                    env=dict(os.environ, OLLAMA_HOST=f"127.0.0.1:{port}",
                              OLLAMA_MAX_LOADED_MODELS="1", OLLAMA_NUM_PARALLEL="1"))
-        if not wait_until(f"{ollama_url}/api/tags", 20):
+        if not wait_until(f"{url}/api/tags", 20):
             print("本機 Ollama 沒有在 20 秒內啟動。")
-            return 1
-
-    with urllib.request.urlopen(f"{ollama_url}/api/tags", timeout=10) as resp:
+            return False
+    with urllib.request.urlopen(f"{url}/api/tags", timeout=10) as resp:
         installed = {m["name"] for m in json.load(resp)["models"]}
     if MODEL not in installed:
-        print(f"本機沒有 {MODEL} 這個模型，AI 會改由引擎代下。要下載的話執行：ollama pull {MODEL}")
-
-    print("正在啟動網站...")
-    group.start([sys.executable, "manage.py", "runserver", str(args.site_port)], cwd=ROOT, env=env)
-    if not wait_until(site_check, 30):
-        print("網站沒有在 30 秒內啟動，請看上面的錯誤訊息。")
-        return 1
-    if not args.no_browser:
-        webbrowser.open(site_url)
-    print(f"\n本機測試中：網站 {site_url}，AI 用本機 Ollama 的 {MODEL}。")
-    print("測完按 Enter，或直接關閉這個視窗，網站和這次啟動的本機 Ollama 會一起停止。")
-    try:
-        input()
-    except (EOFError, KeyboardInterrupt):
-        pass
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+        print(f"本機沒有 {MODEL} 這個模型，AI 會改由電腦代下。要下載的話執行：ollama pull {MODEL}")
+    return True

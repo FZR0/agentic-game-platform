@@ -15,7 +15,7 @@ logs/
 # 私人儲存庫會看不到它們），由 tools/git_menu.py 寫進 .git/info/exclude（docs/交接.md 4.8）
 # 沒有 private/ 的電腦，工作紀錄寫在這裡（.claude/hooks/log_progress.py）
 /工作紀錄.md
-# 遊戲引擎：啟動遊戲平台.bat 會從官方發行版下載並比對 SHA-256（tools/setup_engines.py），檔案太大不放進儲存庫
+# 遊戲引擎：啟動檔（tools/launch.py）會從官方發行版下載並比對 SHA-256（tools/setup_engines.py），檔案太大不放進儲存庫
 tools/katago/
 tools/pikafish/
 tools/stockfish/

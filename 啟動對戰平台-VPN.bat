@@ -4,7 +4,8 @@ chcp 65001 <nul >nul
 cd /d "%~dp0"
 :: Keep this file ASCII only: cmd misreads a UTF-8 .bat that contains Chinese and runs half-lines as commands
 :: (found 2026-10-15, see docs section 7). Chinese messages are in tools\messages\*.txt, and everything after
-:: Python is found (packages, database, game engines, Ollama check, server window, browser) is in tools\launch.py.
+:: Python is found (packages, database, game engines, AI check, public site, Cloudflare tunnel) is in tools\launch.py.
+:: AI: the research server; waits for the school VPN (FortiClient) first. Both launchers open the PvP tunnel (user decision 2026-11-07).
 if exist ".venv\Scripts\python.exe" goto run
 :: Find a Python that Django 5.2 supports (3.10-3.13) through the py launcher. Never the bare python command:
 :: it may be the Microsoft Store stub or another program's virtual environment.
@@ -23,7 +24,7 @@ if not exist %PY% goto python_manual
 type "tools\messages\creating_venv.txt"
 %PY% -m venv .venv || goto failed
 :run
-".venv\Scripts\python.exe" tools\launch.py %*
+".venv\Scripts\python.exe" tools\launch.py --ai vpn %*
 if errorlevel 1 goto failed
 exit /b 0
 

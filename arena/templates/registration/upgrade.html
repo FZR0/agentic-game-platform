@@ -1,0 +1,15 @@
+{% extends "arena/base.html" %}
+{% block title %}設定帳號｜益智遊戲 AI 教練{% endblock %}
+{% block content %}
+  <h1 class="page-title">把遊客變成正式帳號</h1>
+  <p class="muted">設定帳號名稱和密碼後，就能在任何電腦登入；你下過的對局、戰績和真人對戰都會保留。</p>
+  <form method="post" class="account-form">
+    {% csrf_token %}
+    {% for field in form %}
+      <label>{{ field.label }} {{ field }}</label>
+      {% for error in field.errors %}<p class="status warn" role="alert">{{ error }}</p>{% endfor %}
+    {% endfor %}
+    <p class="hint">密碼至少 8 個字，不能全是數字，也不要和帳號太像。</p>
+    <button type="submit" class="button primary">設定帳號</button>
+  </form>
+{% endblock %}

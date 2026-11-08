@@ -1,23 +1,25 @@
-"""一鍵啟動（由 啟動遊戲平台.bat 呼叫；一鍵部署 2026-10-15）。
+"""一鍵部署與啟動（啟動對戰平台-本機AI.bat 用 --ai local、啟動對戰平台-VPN.bat 用 --ai vpn；一鍵部署 2026-10-15）。
+
+2026-11-07 使用者決定只留這兩個啟動檔，都開真人對戰的通道，不再有只在本機玩的版本：
+- 本機 AI：用這台電腦的 Ollama（tools/local_ollama.py，原本的本機測試模式）。
+- VPN：用研究用伺服器，連不上就等使用者自己用 FortiClient 連好學校的 VPN（tools/start_tunnel.wait_for_vpn）。
+兩個都在任何一台新電腦上直接部署：找 Python、建 .venv（.bat）、補裝套件、SQL Server、資料庫、遊戲引擎、cloudflared。
 
 啟動檔只負責找 Python 和第一次建立 .venv，而且只放 ASCII：.bat 裡有中文時，新開的主控台會讀錯位置，
 把半行中文當成指令執行（docs/交接.md 第 7 節）。其餘步驟都在這裡：補裝套件、下載私人資料與設定 AI 伺服器位址（2026-10-21）、設定這台電腦的 SQL Server、更新資料庫、
 搬 db.sqlite3 的舊對局、檢查並下載遊戲引擎、
-檢查研究用 Ollama 伺服器、開網站伺服器視窗、打開瀏覽器。
+檢查 AI 伺服器，最後以公開模式啟動網站並開 Cloudflare 臨時通道（tools/start_tunnel.run），打開通道網址。
+網站、通道和這次啟動的本機 Ollama 都在這個視窗結束時一起停止。
 """
 import argparse
 import ctypes
 import os
 import subprocess
 import sys
-import time
 import urllib.request
-import webbrowser
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-CREATE_NEW_CONSOLE = 0x10
-SW_SHOWMINNOACTIVE = 7
 
 
 def responds(url, timeout=2):
@@ -33,21 +35,24 @@ def python(*args, **kwargs):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="啟動遊戲平台")
-    parser.add_argument("--port", type=int, default=8000)
+    parser = argparse.ArgumentParser(description="部署並啟動遊戲平台（真人對戰，對外公開）")
+    parser.add_argument("--ai", choices=["local", "vpn"], required=True, help="local：這台電腦的 Ollama；vpn：研究用伺服器")
+    parser.add_argument("--port", type=int, default=8010, help="網站的埠（只聽 127.0.0.1，別台電腦經過通道連進來）")
     parser.add_argument("--no-browser", action="store_true", help="不自動打開瀏覽器")
     args = parser.parse_args()
-    ctypes.windll.kernel32.SetConsoleTitleW("益智遊戲 AI 教練")
+    where = "本機 AI" if args.ai == "local" else "研究用伺服器"
+    ctypes.windll.kernel32.SetConsoleTitleW(f"益智遊戲 AI 教練（{where}，對外公開中；關閉這個視窗就會停止）")
     # 用 127.0.0.1 檢查：localhost 會先試 IPv6，開發伺服器只聽 IPv4，每次要多等約 2 秒
     # 檢查用 CSS 檔：每個頁面都交給 AI 助理（2026-10-28），首頁第一次要等模型十幾秒，
     # 檢查會逾時、誤以為伺服器沒開，而且每試一次就多叫一次模型
-    site_check = f"http://127.0.0.1:{args.port}/static/arena/style.css"
-    site_url = f"http://localhost:{args.port}/"
-
-    if responds(site_check):  # 伺服器已經在執行時，直接打開網頁
-        if not args.no_browser:
-            webbrowser.open(site_url)
+    if responds(f"http://127.0.0.1:{args.port}/static/arena/style.css"):
+        print(f"網站已經在另一個視窗執行（埠 {args.port}），對外網址在那個視窗裡。要重開的話先關掉那個視窗。")
+        input("按 Enter 結束。")
         return 0
+    if args.ai == "local":
+        # 先設好：之後載入的 Django 設定、啟動的網站都改用本機 Ollama，也不會問研究用伺服器的位址
+        from tools import local_ollama
+        os.environ.update(local_ollama.env())
 
     # 上次安裝到一半失敗時，環境在但套件不完整，所以檢查套件能不能載入，不能就重新安裝。
     # requirements.txt 加了套件時這裡也要加：舊電腦的環境裡有 Django、沒有新套件（例如國際象棋的 chess），
@@ -89,34 +94,32 @@ def main():
     from tools import setup_engines
     setup_engines.main()
 
+    # 開通道要用的 cloudflared：沒有時問一次再下載。放在啟動任何程式之前，不下載就直接結束
+    from tools import start_tunnel
+    if not start_tunnel.ensure_cloudflared():
+        return 1
+    from tools.local_ollama import KillOnExit
+    group = KillOnExit()  # 這次啟動的本機 Ollama、網站、通道：這個視窗結束時一起停止
+    if args.ai == "local":
+        if not local_ollama.start(group):
+            return 1
+    elif not start_tunnel.wait_for_vpn():
+        return 0
+
     # 檢查 AI 伺服器：有問題時印出原因與排除步驟（查不出原因時印可能原因），並存一份故障報告（arena/health.py）
     import django
     django.setup()
     from django.conf import settings
+    from django.contrib.auth.models import User
     from arena import health
     problem = health.check()
     if problem:
         print(health.as_text(problem))
-
-    print(f"運行紀錄（AI 伺服器、AI 助理、錯誤）會顯示在「遊戲平台伺服器」視窗，也存在 {settings.LOG_FILE}")
-    print("伺服器啟動中...")
-    startup = subprocess.STARTUPINFO()
-    startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    startup.wShowWindow = SW_SHOWMINNOACTIVE
-    # 網站伺服器開在自己的視窗：關閉那個視窗就會停止。整串交給 cmd，cmd 會拿掉最外面那對引號
-    subprocess.Popen(f'cmd /k "title 遊戲平台伺服器（關閉這個視窗就會停止）& "{sys.executable}" manage.py runserver {args.port}"',
-                     cwd=ROOT, creationflags=CREATE_NEW_CONSOLE, startupinfo=startup)
-    for _ in range(30):
-        if responds(site_check):
-            break
-        time.sleep(1)
-    else:
-        print("伺服器沒有在 30 秒內啟動，請查看「遊戲平台伺服器」視窗裡的錯誤訊息。")
-        return 1
-    if not args.no_browser:
-        webbrowser.open(site_url)
-    return 0
-
+    if not User.objects.filter(is_superuser=True).exists():
+        print("提醒：還沒有管理員帳號，後台（/admin/）看不到登入紀錄與線上訪客。")
+        print("要建立的話，另開一個視窗在專案資料夾執行：.venv\\Scripts\\python.exe manage.py createsuperuser\n")
+    print(f"運行紀錄（AI 伺服器、AI 助理、錯誤）會顯示在這個視窗，也存在 {settings.LOG_FILE}")
+    return start_tunnel.run(group, args.port, open_browser=not args.no_browser)
 
 if __name__ == "__main__":
     sys.exit(main())

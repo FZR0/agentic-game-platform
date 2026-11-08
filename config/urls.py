@@ -25,5 +25,7 @@ urlpatterns = [
     path('accounts/login/', accounts.SignInView.as_view(), name='login'),
     path('accounts/logout/', LogoutView.as_view(), name='logout'),
     path('accounts/signup/', accounts.signup, name='signup'),
+    path('accounts/guest/', accounts.guest, name='guest'),
+    path('accounts/upgrade/', accounts.upgrade, name='upgrade'),
     path('', include('arena.urls')),
 ]
