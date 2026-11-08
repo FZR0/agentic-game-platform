@@ -17,6 +17,7 @@ urlpatterns = [
     path("api/<slug:game_key>/games/<int:game_id>/", views.api_game_detail, name="game_detail"),
     path("api/<slug:game_key>/games/<int:game_id>/move/", views.api_game_move, name="game_move"),
     path("api/<slug:game_key>/games/<int:game_id>/end/", views.api_game_end, name="game_end"),
+    path("api/<slug:game_key>/games/<int:game_id>/room/", views.api_room_settings, name="room_settings"),
     path("api/<slug:game_key>/games/<int:game_id>/review/", views.api_game_review, name="game_review"),
     path("api/<slug:game_key>/games/<int:game_id>/ask/", views.api_game_ask, name="game_ask"),
     path("api/<slug:game_key>/games/<int:game_id>/notes/<int:index>/narrate/", views.api_note_narrate,

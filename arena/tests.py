@@ -24,7 +24,7 @@ from django.test import Client, SimpleTestCase, TestCase, override_settings
 from gomoku.module import MODULE as GOMOKU
 from weiqi.module import MODULE as WEIQI
 
-from . import agent, health, narrator, operations, orchestrator
+from . import agent, games, health, narrator, operations, orchestrator
 from .base import ESTIMATE
 from .management.commands.model_report import summarize
 from .models import AiNote, Game, GamePlayer, LoginRecord, ModelRun, Presence
@@ -1820,3 +1820,162 @@ class GuestTests(TestCase):
         client, _, guest = self.enter_as_guest()
         page = client.get("/accounts/upgrade/").content.decode()
         self.assertNotIn(guest.username, page.split('name="username"')[1].split(">")[0])
+
+
+class RoomSettingsTests(TestCase):
+    """建立對戰房間（使用者要求，2026-11-08）：首頁一鍵開房，朋友加入前房主可以自由改設定。
+    改的是同一個房間（房間密碼不變，已經傳出去的邀請照樣能用）；朋友加入後就不能改，因為對方是看了設定才加入的。"""
+
+    def setUp(self):
+        self.alice = User.objects.create_user("alice", password="x")
+        self.bob = User.objects.create_user("bob", password="x")
+        self.clients = {}
+        for user in (self.alice, self.bob):
+            self.clients[user.username] = Client()
+            self.clients[user.username].force_login(user)
+        patcher = patch.object(orchestrator, "_chat", side_effect=OSError("測試不連模型"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def post(self, who, url, body):
+        return self.clients[who].post(url, json.dumps(body), content_type="application/json")
+
+    def open_room(self, game="weiqi", **body):
+        r = self.post("alice", f"/api/{game}/games/", {"seat": 1, "mode": "pvp", **body}).json()
+        return Game.objects.get(pk=r["game"]["id"])
+
+    def test_the_home_page_links_to_creating_a_room_for_every_game(self):
+        page = self.clients["alice"].get("/").content.decode()
+        self.assertIn("建立對戰房間", page)
+        for key in games.GAMES:
+            self.assertIn(f"/{key}/?room=new", page)
+
+    def test_the_host_changes_settings_in_the_same_room_before_anyone_joins(self):
+        game = self.open_room(settings={"size": 9})
+        code = game.room_code
+        r = self.post("alice", f"/api/weiqi/games/{game.id}/room/", {"seat": 2, "settings": {"size": 13}})
+        self.assertEqual(r.status_code, 200)
+        game.refresh_from_db()
+        self.assertEqual((game.settings["size"], game.human_seat, game.room_code), (13, 2, code))
+        self.assertEqual(r.json()["frame"]["size"], 13)
+        # 朋友用原本的密碼加入，拿到的是新的設定，坐進房主讓出來的座位
+        self.clients["bob"].post("/join/", {"code": code})
+        game.refresh_from_db()
+        self.assertEqual((game.seat_of(self.alice), game.seat_of(self.bob)), (2, 1))
+
+    def test_settings_are_locked_once_a_friend_has_joined(self):
+        game = self.open_room(settings={"size": 9})
+        self.clients["bob"].post("/join/", {"code": game.room_code})
+        r = self.post("alice", f"/api/weiqi/games/{game.id}/room/", {"seat": 1, "settings": {"size": 19}})
+        self.assertEqual(r.status_code, 400)
+        game.refresh_from_db()
+        self.assertEqual(game.settings["size"], 9)
+        self.assertEqual(game.seat_of(self.bob), 2)  # 朋友的座位還在
+
+    def test_only_the_host_can_change_the_room(self):
+        game = self.open_room()
+        # 還沒加入的人看不到這盤；直接呼叫也會被擋
+        self.assertEqual(self.post("bob", f"/api/weiqi/games/{game.id}/room/", {"seat": 1, "settings": {}}).status_code, 404)
+        with self.assertRaises(ValueError):
+            operations.change_room(WEIQI, game, self.bob, 1, {"size": 9})
+
+    def test_poker_host_can_change_the_table_size_and_the_seats_for_friends(self):
+        from holdem.module import MODULE as HOLDEM
+        game = self.open_room("holdem", settings={"players": 4, "humans": [1, 2]})
+        old_seed = game.secret["seed"]
+        r = self.post("alice", f"/api/holdem/games/{game.id}/room/",
+                      {"seat": 1, "settings": {"players": 6, "humans": [1, 3, 5]}})
+        self.assertEqual(r.status_code, 200)
+        game.refresh_from_db()
+        self.assertEqual(sorted(game.human_seats()), [1, 3, 5])
+        self.assertEqual(game.settings["players"], 6)
+        self.assertNotEqual(game.secret["seed"], old_seed)  # 新的牌局，洗牌種子也換掉
+        self.assertNotIn("seed", json.dumps(r.json()))  # 洗牌種子絕不送到網頁
+        self.assertEqual(HOLDEM.pvp_seats(game.settings), [1, 3, 5])
+
+
+class SpectatorTests(TestCase):
+    """觀戰（使用者要求，2026-11-08）：有房間密碼或邀請連結的人才看得到；觀戰的人沒有座位，
+    只看所有人都看得到的資訊（撲克的底牌要攤牌才看得到），不能下、不能用 AI 教練，觀戰的對局也不算進自己的紀錄。"""
+
+    def setUp(self):
+        self.alice = User.objects.create_user("alice", password="x")
+        self.bob = User.objects.create_user("bob", password="x")
+        self.carol = User.objects.create_user("carol", password="x")
+        self.clients = {}
+        for user in (self.alice, self.bob, self.carol):
+            self.clients[user.username] = Client()
+            self.clients[user.username].force_login(user)
+        patcher = patch.object(orchestrator, "_chat", side_effect=OSError("測試不連模型"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.game, _ = operations.start_game(GOMOKU, 1, {}, self.alice, "pvp")
+        operations.join_game(self.game.room_code, self.bob)
+
+    def watch(self, who="carol", code=None):
+        return self.clients[who].post("/join/", {"code": code or self.game.room_code, "action": "watch"})
+
+    def post(self, who, url, body):
+        return self.clients[who].post(url, json.dumps(body), content_type="application/json")
+
+    def test_watching_needs_the_room_code(self):
+        self.assertEqual(self.clients["carol"].get(f"/api/gomoku/games/{self.game.id}/").status_code, 404)
+        self.assertRedirects(self.watch(), f"/gomoku/?watch={self.game.id}", fetch_redirect_response=False)
+        detail = self.clients["carol"].get(f"/api/gomoku/games/{self.game.id}/").json()
+        self.assertIsNone(detail["my_seat"])
+        self.assertContains(self.watch(code="ZZZZZZ"), "找不到這個房間密碼")
+
+    def test_a_full_room_can_still_be_watched_and_players_keep_their_seat(self):
+        self.assertContains(self.clients["carol"].post("/join/", {"code": self.game.room_code}), "座位已經坐滿")
+        self.assertRedirects(self.watch(), f"/gomoku/?watch={self.game.id}", fetch_redirect_response=False)
+        # 坐在這盤的人按「觀戰」照樣回到自己的座位，不會變成觀戰者
+        self.assertRedirects(self.watch("bob"), f"/gomoku/?resume={self.game.id}", fetch_redirect_response=False)
+        self.assertFalse(self.game.spectators.filter(user=self.bob).exists())
+
+    def test_spectators_cannot_move_or_use_the_ai_coach(self):
+        self.watch()
+        url = f"/api/gomoku/games/{self.game.id}"
+        self.assertEqual(self.post("carol", f"{url}/move/", {"action": "H8"}).status_code, 404)
+        self.post("alice", f"{url}/move/", {"action": "H8"})
+        self.post("bob", f"{url}/move/", {"action": "A1"})
+        self.post("alice", f"{url}/move/", {"action": "resign"})
+        # 結束後也不能復盤、提問：分析是從某一方的座位寫的（「你贏了」、撲克要用那個座位的底牌）
+        self.assertEqual(self.clients["carol"].get(f"{url}/review/").status_code, 404)
+        self.assertEqual(self.post("carol", f"{url}/ask/", {"question": "誰比較好？", "at": 1}).status_code, 404)
+        self.assertEqual(self.post("carol", f"{url}/end/", {}).status_code, 404)
+        self.game.refresh_from_db()
+        self.assertEqual(self.game.actions, ["H8", "A1", "resign"])
+
+    def test_watched_games_do_not_count_as_your_own(self):
+        self.watch()
+        self.post("alice", f"/api/gomoku/games/{self.game.id}/move/", {"action": "resign"})
+        self.assertNotIn(self.game, Game.visible_to(self.carol))
+        home = operations.home_context(self.carol)
+        self.assertFalse(home["recent"] or home["resume"])
+
+    def test_spectators_get_live_updates_from_no_seat(self):
+        from . import realtime
+        self.assertEqual(realtime.seat_for(self.carol, self.game.id), (None, None))
+        self.watch()
+        game, seat = realtime.seat_for(self.carol, self.game.id)
+        self.assertEqual((game.id, seat), (self.game.id, None))
+        self.assertEqual(realtime.seat_for(self.alice, self.game.id)[1], 1)
+
+    def test_poker_spectators_never_see_hole_cards_before_showdown(self):
+        from holdem.module import MODULE as HOLDEM
+        game, _ = operations.start_game(HOLDEM, 1, {"players": 4, "humans": [1, 2]}, self.alice, "pvp")
+        operations.join_game(game.room_code, self.bob)
+        game.refresh_from_db()
+        with patch.object(agent, "_chat", side_effect=OSError("測試不連模型")):
+            operations.run_ai_turns(HOLDEM, game, settings.OLLAMA_MODEL, HOLDEM.default_steps, 1)
+        operations.watch_game(game.room_code, self.carol)
+        detail = self.clients["carol"].get(f"/api/holdem/games/{game.id}/").json()
+        state = HOLDEM.replay(operations.settings_of(game), game.actions)
+        self.assertFalse(state.hand_over)  # 牌局進行中
+        for frame in detail["frames"]:
+            for s in frame["seats"]:
+                self.assertTrue(all(c is None for c in s["cards"]), s)
+                self.assertEqual(s["hand_name"], "")
+        self.assertIsNone(detail["frames"][-1]["legal"])
+        self.assertTrue(all(n.get("hidden") for n in detail["notes"]))
+        self.assertNotIn("seed", json.dumps(detail))

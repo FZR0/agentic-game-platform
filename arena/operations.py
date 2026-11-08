@@ -11,13 +11,14 @@ from pathlib import Path
 
 from django.contrib.staticfiles import finders
 from django.core.paginator import Paginator
+from django.db import transaction
 from django.db.models import Count
 from django.urls import reverse
 from django.utils import timezone
 
 from . import agent, games, narrator
 from .base import ESTIMATE, RULE
-from .models import AiNote, Game, GamePlayer, ModelRun
+from .models import AiNote, Game, GamePlayer, GameSpectator, ModelRun
 
 MOVE_REF_RE = re.compile(r"第\s*(\d{1,3})\s*[手步](?!牌)")  # 撲克的「第 3 手牌」不是第 3 步
 
@@ -205,16 +206,59 @@ def start_game(module, seat, settings, user, mode="ai"):
     game = Game(game_type=module.key, owner=user, human_seat=seat, settings=settings, secret=module.new_secret(),
                 mode=mode)
     if mode == "pvp":
-        seats = module.pvp_seats(settings)
-        if seat not in seats or len(seats) < 2:
-            raise ValueError("真人對戰至少要有兩個真人座位，而且要包含你的座位")
+        seats = _pvp_seats(module, seat, settings)
         game.room_code = Game.new_room_code()
     state = module.new_state(settings_of(game))
     game.save()
     if mode == "pvp":
-        GamePlayer.objects.bulk_create([GamePlayer(game=game, seat=s, user=user if s == seat else None,
-                                                   joined_at=timezone.now() if s == seat else None) for s in seats])
+        _seat_players(game, seats, seat, user)
     return game, module.frame(state, seat)
+
+
+def _pvp_seats(module, seat, settings):
+    seats = module.pvp_seats(settings)
+    if seat not in seats or len(seats) < 2:
+        raise ValueError("真人對戰至少要有兩個真人座位，而且要包含你的座位")
+    return seats
+
+
+def _seat_players(game, seats, seat, user):
+    """真人對戰的座位：開房的人坐 seat，其他真人座位空著等人加入。"""
+    GamePlayer.objects.bulk_create([GamePlayer(game=game, seat=s, user=user if s == seat else None,
+                                               joined_at=timezone.now() if s == seat else None) for s in seats])
+
+
+def change_room(module, game, user, seat, settings):
+    """房主在朋友加入前改設定（使用者要求，2026-11-08：先開房，等人時還能自由設定）。
+    同一個房間（編號、房間密碼不變），設定、座位、撲克的洗牌種子換成新的，回傳 (對局, 開局畫面)。
+    有人加入或已經有人行動之後就不能改：對方是看了設定才加入的。"""
+    if not game.pvp or game.owner_id != user.id:
+        raise ValueError("只有開房的人能改房間設定")
+    seats = _pvp_seats(module, seat, settings)
+    with transaction.atomic():
+        game = Game.objects.select_for_update().get(pk=game.pk)
+        # 已經有人坐進來（或剛好同時加入）就不改：先刪掉空的座位，剩下的只能是房主自己
+        GamePlayer.objects.filter(game=game, user__isnull=True).delete()
+        if game.actions or game.finished or game.players.exclude(user=user).exists():
+            raise ValueError("朋友已經加入，不能再改設定；要換設定請開新的房間")
+        game.players.all().delete()
+        game.human_seat, game.settings, game.secret = seat, settings, module.new_secret()
+        game.save()
+        _seat_players(game, seats, seat, user)
+    return game, module.frame(module.new_state(settings_of(game)), seat)
+
+
+def watch_game(code, user):
+    """用房間密碼觀戰（2026-11-08）：記成觀戰者，回傳 (對局, 座位)。本來就坐在這盤的人照樣用自己的座位，
+    座位是 None 表示觀戰。等人中、對戰中、已結束都能看。"""
+    code = code.strip().upper()
+    game = Game.objects.filter(mode="pvp", room_code=code).first() if code else None
+    if game is None:
+        raise ValueError("找不到這個房間密碼，請確認有沒有打錯")
+    seat = game.seat_of(user)
+    if seat is None:
+        GameSpectator.objects.get_or_create(game=game, user=user)
+    return game, seat
 
 
 def join_game(code, user):

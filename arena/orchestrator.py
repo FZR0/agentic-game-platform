@@ -295,6 +295,17 @@ def _join(ctx):
     return {"game": game, "module": module}
 
 
+def _watch(ctx):
+    game, seat = operations.watch_game(ctx["params"]["code"], ctx["user"])
+    return {"game": game, "module": games.get(game.game_type), "seat": seat}
+
+
+def _change_room(ctx):
+    p = ctx["params"]
+    game, frame = operations.change_room(ctx["module"], _game(ctx), ctx["user"], p["seat"], p["settings"])
+    return {"game": game.summary(), "my_seat": p["seat"], "frame": frame}
+
+
 REQUESTS = {r.kind: r for r in [
     OneStep("home", "load_home", "使用者打開了首頁，請載入首頁的資料（未完成的對局、最近對局、戰績）。",
             lambda ctx: operations.home_context(ctx["user"]), game_scoped=False),
@@ -331,6 +342,12 @@ REQUESTS = {r.kind: r for r in [
             lambda ctx: operations.join_context(), game_scoped=False),
     OneStep("join", "join_game", "使用者輸入房間密碼「{code}」要加入真人對戰，請讓他加入。", _join, game_scoped=False,
             params={"code": ("string", "房間密碼", "code")}, summary=lambda data: f"已加入第 {data['game'].id} 盤。"),
+    # 觀戰與房主改房間設定（2026-11-08）
+    OneStep("watch", "watch_game", "使用者輸入房間密碼「{code}」要觀戰，請讓他進去看。", _watch, game_scoped=False,
+            params={"code": ("string", "房間密碼", "code")}, summary=lambda data: f"可以觀戰第 {data['game'].id} 盤。"),
+    OneStep("room_settings", "change_room", "房主在朋友加入前改了第 {game_id} 盤的房間設定（座位 {seat}），請套用到這個房間。",
+            _change_room, params={"game_id": GAME_ID, "seat": ("integer", "房主的座位", "seat")},
+            summary=lambda data: f"第 {data['game']['id']} 盤的設定已更新。"),
     NewGame(), Move(), Ask(),
 ]}
 

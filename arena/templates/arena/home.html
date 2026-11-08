@@ -2,6 +2,21 @@
 {% block content %}
   <h1 class="page-title">今天想玩什麼？</h1>
 
+  {# 真人對戰（2026-11-08 使用者要求：開房間要從首頁一鍵進去）：選遊戲後直接開好房間、打開設定 #}
+  <section class="section room-bar" id="create-room">
+    <details class="room-picker">
+      <summary class="button primary">建立對戰房間</summary>
+      <ul class="room-games">
+        {% for game in games %}
+        <li><a class="button" href="{% url 'arena:play' game.key %}?room=new">
+          <img src="{% static game.icon %}?v={{ asset_version }}" alt="" width="48" height="30">{{ game.name }}</a></li>
+        {% endfor %}
+      </ul>
+    </details>
+    <a class="button" href="{% url 'arena:join' %}">加入或觀戰</a>
+    <span class="hint">開好房間後把房間密碼傳給朋友；朋友加入前都還能改設定。</span>
+  </section>
+
   {% if resume %}
   <section class="section">
     <div class="section-head">
