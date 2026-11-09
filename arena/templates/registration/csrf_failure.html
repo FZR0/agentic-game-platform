@@ -1,0 +1,13 @@
+{% extends "arena/base.html" %}
+{% block title %}頁面已經過期｜益智遊戲 AI 教練{% endblock %}
+{% block content %}
+  {# 表單驗證碼不符時（accounts.csrf_failure，2026-11-09）：取代 Django 的「CSRF 驗證失敗」 #}
+  <h1 class="page-title">這個頁面已經過期</h1>
+  <p>剛才按的按鈕沒有送出，請重新整理再試一次。</p>
+  <p class="muted">常見的原因：登入以後按了「上一頁」，或畫面還在載入時又按了一次。</p>
+  <p class="join-buttons">
+    <a class="button primary" href="{{ retry|default:'/' }}">{% if retry %}重新整理{% else %}回到首頁{% endif %}</a>
+    {% if retry %}<a class="button" href="{% url 'arena:home' %}">回到首頁</a>{% endif %}
+  </p>
+  <p class="muted">如果一直出現這個畫面：請確認瀏覽器允許這個網站使用 cookie。從 LINE 這類 App 裡點連結打開的話，改用 Chrome 或 Safari 打開。</p>
+{% endblock %}

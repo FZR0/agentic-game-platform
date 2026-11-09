@@ -46,6 +46,17 @@
         el.textContent = when.toLocaleString("zh-TW", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
       }
     }
+    // 送出後先停用按鈕（2026-11-09）：網站慢的時候再按一次，第二次送的是登入前的舊驗證碼，會被擋成「頁面已經過期」。
+    // 等一下再停用：同步停用的話，被按的按鈕（例如加入／觀戰的 action）不會跟著表單送出。
+    document.addEventListener("submit", (event) => {
+      if (event.defaultPrevented) return;  // 例如登出的確認框按了取消
+      const buttons = event.target.querySelectorAll("button[type=submit], button:not([type])");
+      setTimeout(() => buttons.forEach((b) => { b.disabled = true; }), 0);
+    });
+    // 按上一頁回到這頁時（瀏覽器保留了整頁），按鈕要能再按
+    window.addEventListener("pageshow", (event) => {
+      if (event.persisted) document.querySelectorAll("form button[disabled]").forEach((b) => { b.disabled = false; });
+    });
   </script>
 </body>
 </html>

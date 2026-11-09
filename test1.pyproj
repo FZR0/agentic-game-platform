@@ -136,6 +136,7 @@
     <Content Include="arena\templates\arena\home.html" />
     <Content Include="arena\templates\arena\join.html" />
     <Content Include="arena\templates\arena\play.html" />
+    <Content Include="arena\templates\registration\csrf_failure.html" />
     <Content Include="arena\templates\registration\login.html" />
     <Content Include="arena\templates\registration\signup.html" />
     <Content Include="arena\templates\registration\upgrade.html" />

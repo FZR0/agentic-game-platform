@@ -1821,6 +1821,44 @@ class GuestTests(TestCase):
         page = client.get("/accounts/upgrade/").content.decode()
         self.assertNotIn(guest.username, page.split('name="username"')[1].split(">")[0])
 
+    def test_opening_the_guest_address_leads_to_the_login_page_without_creating_an_account(self):
+        # 聊天軟體產生連結預覽時也會打開網址：打開網址就建立帳號的話，每傳一次連結就多一個沒人用的遊客。
+        # 但也不能只回看不懂的 405，要帶到登入頁按按鈕，邀請連結的去處也要保留（2026-11-09）
+        response = Client().get("/accounts/guest/", {"next": "/join/ABCDEF/"})
+        self.assertRedirects(response, "/accounts/login/?next=/join/ABCDEF/", fetch_redirect_response=False)
+        self.assertRedirects(Client().get("/accounts/guest/"), "/accounts/login/", fetch_redirect_response=False)
+        self.assertFalse(User.objects.exists())
+
+
+class ExpiredFormTests(TestCase):
+    """表單驗證碼不符（2026-11-09，手機上看到「CSRF 驗證失敗」）：登入會換新的驗證碼，網站慢時再按一次或按上一頁再送，
+    送的就是舊驗證碼。這仍然要擋（防止別的網站替使用者送表單），但要給看得懂的說明和回去重新整理的連結。"""
+
+    def setUp(self):
+        self.client = Client(enforce_csrf_checks=True)
+
+    def test_a_second_press_after_logging_in_gets_a_plain_explanation(self):
+        login_page = self.client.get("/accounts/login/")
+        old_token = str(login_page.context["csrf_token"])
+        self.client.post("/accounts/guest/", {"csrfmiddlewaretoken": old_token})
+        self.assertEqual(User.objects.count(), 1)
+        with self.assertLogs("django.security.csrf", "WARNING") as logs:  # 原因寫進網站紀錄，才查得到
+            again = self.client.post("/accounts/guest/", {"csrfmiddlewaretoken": old_token},
+                                     HTTP_REFERER="http://testserver/accounts/login/")
+        self.assertEqual(again.status_code, 403)
+        self.assertEqual(User.objects.count(), 1)  # 照樣擋下：沒有多建一個帳號
+        self.assertIn("CSRF token", logs.output[0])
+        page = again.content.decode()
+        self.assertIn("這個頁面已經過期", page)
+        self.assertNotIn("CSRF", page)
+        self.assertIn('href="http://testserver/accounts/login/"', page)  # 回到送出表單的那頁重新拿驗證碼
+
+    def test_the_retry_link_never_points_to_another_site(self):
+        with self.assertLogs("django.security.csrf", "WARNING"):
+            page = self.client.post("/accounts/guest/", HTTP_REFERER="https://evil.example.com/").content.decode()
+        self.assertNotIn("evil.example.com", page)
+        self.assertIn("回到首頁", page)
+
 
 class RoomSettingsTests(TestCase):
     """建立對戰房間（使用者要求，2026-11-08）：首頁一鍵開房，朋友加入前房主可以自由改設定。
