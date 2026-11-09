@@ -52,9 +52,11 @@ def _agent_options(data, module):
     return config["name"], steps
 
 
-def _game(request, module, game_id):
-    """這位使用者看得到的對局（自己的；舊對局只給管理員），別人的一律當成不存在。"""
-    return get_object_or_404(Game.visible_to(request.user), pk=game_id, game_type=module.key)
+def _game(request, module, game_id, watch=False):
+    """這位使用者看得到的對局（自己的；舊對局只給管理員），別人的一律當成不存在。
+    watch：也包括觀戰中的對局（只有打開對局用；觀戰的人不能下棋、不能用 AI 教練）。"""
+    found = Game.watchable_by(request.user) if watch else Game.visible_to(request.user)
+    return get_object_or_404(found, pk=game_id, game_type=module.key)
 
 
 def _with_user(request, ctx):
@@ -121,14 +123,19 @@ def join(request, code=""):
     error = ""
     if request.method == "POST":
         code = request.POST.get("code", "")
+        watch = request.POST.get("action") == "watch"  # 「觀戰」按鈕（2026-11-08）；其他都是「加入」
         try:
-            data, handled = orchestrator.handle("join", _with_user(request, {"params": {"code": code.strip().upper()}}))
+            data, handled = orchestrator.handle("watch" if watch else "join",
+                                                _with_user(request, {"params": {"code": code.strip().upper()}}))
         except ValueError as exc:
             error = str(exc)
         else:
             if handled.get("notice"):
                 messages.warning(request, handled["notice"])
-            realtime.notify(data["game"])
+            if watch and data["seat"] is None:
+                return redirect(f"{reverse('arena:play', args=[data['module'].key])}?watch={data['game'].id}")
+            if not watch:
+                realtime.notify(data["game"])
             return redirect(f"{reverse('arena:play', args=[data['module'].key])}?resume={data['game'].id}")
     data, handled = orchestrator.handle("join_page", _with_user(request, {"params": {}}))
     return render(request, "arena/join.html", {**data, "handled": handled, "ai_problem": health.current(),
@@ -174,8 +181,28 @@ def api_games(request, game_key):
 @require_GET
 def api_game_detail(request, game_key, game_id):
     module = _module(game_key)
-    game = _game(request, module, game_id)
+    game = _game(request, module, game_id, watch=True)
     return _json(request, "detail", {"module": module, "game": game, "params": {"game_id": game.id}})
+
+
+@require_POST
+def api_room_settings(request, game_key, game_id):
+    """房主在朋友加入前改房間設定（2026-11-08）：同一個房間、同一組房間密碼，換成新的設定重新開局。"""
+    module = _module(game_key)
+    game = _game(request, module, game_id)
+    try:
+        data = _read_json(request)
+        seat = int(data["seat"])
+        if seat not in module.seat_names:
+            raise ValueError(f"座位必須是 {'、'.join(map(str, module.seat_names))} 其中之一")
+        settings = module.clean_settings(data.get("settings") or {})
+    except (ValueError, KeyError, TypeError) as exc:
+        return _error(exc)
+    response = _json(request, "room_settings", {"module": module, "game": game,
+                                                "params": {"game_id": game.id, "seat": seat, "settings": settings}})
+    if response.status_code == 200:
+        realtime.notify(game)  # 觀戰中的人跟著換成新的棋盤
+    return response
 
 
 @require_POST

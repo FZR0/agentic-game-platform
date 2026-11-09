@@ -43,6 +43,13 @@ class Game(models.Model):
             mine |= models.Q(owner__isnull=True)
         return cls.objects.filter(pk__in=cls.objects.filter(mine).values("pk"))  # 子查詢避免 join 造成重複
 
+    @classmethod
+    def watchable_by(cls, user):
+        """看得到的對局，再加上用房間密碼進來觀戰的（2026-11-08）。只用在打開對局與即時同步：
+        清單、戰績、下棋、AI 教練仍用 visible_to，觀戰的對局不算是自己的。"""
+        watching = cls.objects.filter(spectators__user=user).values("pk") if user.is_authenticated else []
+        return cls.objects.filter(models.Q(pk__in=cls.visible_to(user).values("pk")) | models.Q(pk__in=watching))
+
     @property
     def pvp(self):
         return self.mode == "pvp"
@@ -99,6 +106,18 @@ class GamePlayer(models.Model):
     class Meta:
         ordering = ["seat"]
         constraints = [models.UniqueConstraint(fields=["game", "seat"], name="unique_arena_player_seat")]
+
+
+class GameSpectator(models.Model):
+    """真人對戰的觀戰者（使用者要求，2026-11-08）：有房間密碼或邀請連結的人按「觀戰」就記一筆。
+    沒有座位：畫面只有所有人都看得到的資訊（撲克的底牌要攤牌才看得到），不能下棋，也不能用 AI 教練。"""
+
+    game = models.ForeignKey(Game, on_delete=models.CASCADE, related_name="spectators")
+    user = models.ForeignKey(USER_MODEL, on_delete=models.CASCADE, related_name="watching")
+    joined_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["game", "user"], name="unique_arena_spectator")]
 
 
 class AiNote(models.Model):

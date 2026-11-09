@@ -1,6 +1,7 @@
 """真人對戰的即時同步（WebSocket，Django Channels；2026-11-05，docs/交接.md 4.10）。
 
-- 網頁打開一盤真人對戰時連到 ws/games/<編號>/；只有坐在這盤的真人連得上（沒登入、別人的對局一律拒絕）。
+- 網頁打開一盤真人對戰時連到 ws/games/<編號>/；只有坐在這盤的真人和觀戰的人連得上（沒登入、別人的對局一律拒絕）。
+  觀戰的人座位是 None：畫面只有所有人都看得到的資訊（2026-11-08）。
 - 有人下了一步（或有人加入）時，views 呼叫 notify(game)；每條連線依「自己的座位」重新產生畫面再送出，
   所以撲克每個人只看得到自己的底牌（operations.game_detail 和打開對局時用的是同一個函式）。
 - 推送不是使用者按的請求，不經過 AI 助理；下棋、加入仍然是 HTTP 請求，照樣經過 AI 助理。
@@ -26,18 +27,23 @@ def notify(game):
 
 
 def seat_for(user, game_id):
-    """這位使用者在這盤真人對戰坐的座位；不能連（沒登入、不是真人對戰、不在這盤）時回傳 (None, None)。"""
+    """(對局, 這位使用者在這盤真人對戰坐的座位)；觀戰的人座位是 None。
+    不能連（沒登入、不是真人對戰、沒坐也沒在觀戰）時回傳 (None, None)。"""
     if not user.is_authenticated:
         return None, None
-    game = Game.visible_to(user).filter(pk=game_id, mode="pvp").first()
-    seat = game.seat_of(user) if game else None
-    return (game, seat) if seat is not None else (None, None)
+    game = Game.watchable_by(user).filter(pk=game_id, mode="pvp").first()
+    if game is None:
+        return None, None
+    seat = game.seat_of(user)
+    if seat is None and not game.spectators.filter(user=user).exists():
+        return None, None  # 自己開的對局但不在座位上（不會發生），或管理員看得到的舊對局
+    return game, seat
 
 
 class GameConsumer(JsonWebsocketConsumer):
     def connect(self):
         self.game_id = self.scope["url_route"]["kwargs"]["game_id"]
-        game, self.seat = seat_for(self.scope["user"], self.game_id)
+        game, self.seat = seat_for(self.scope["user"], self.game_id)  # 觀戰的人 seat 是 None
         if game is None:
             self.close()
             return

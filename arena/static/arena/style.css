@@ -788,3 +788,20 @@ details ul { margin: 4px 0 0; padding-left: 18px; }
 .guest-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 20px; padding-top: 16px;
   border-top: 1px solid var(--border); max-width: 520px; }
 .guest-form .hint { color: var(--muted); font-size: 0.9rem; }
+/* 建立對戰房間、觀戰（2026-11-08） */
+.room-bar { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px 12px; }
+.room-bar .hint { color: var(--muted); font-size: 0.9rem; align-self: center; }
+.room-picker > summary { list-style: none; cursor: pointer; display: inline-flex; align-items: center; min-height: 42px;
+  padding: 7px 18px; border: 1px solid var(--accent); border-radius: 8px; background: var(--accent); color: var(--on-accent);
+  font-weight: 600; transition: background-color 0.15s, border-color 0.15s; }
+.room-picker > summary:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
+.room-picker[open] > summary { background: var(--raised); color: var(--text); }
+.room-picker > summary::-webkit-details-marker { display: none; }
+.room-picker { position: relative; }
+/* 下拉面板：展開時不推開旁邊的「加入或觀戰」 */
+.room-games { position: absolute; z-index: 20; top: calc(100% + 6px); left: 0; list-style: none; display: grid; gap: 6px;
+  min-width: 200px; margin: 0; padding: 8px; background: var(--raised); border: 1px solid var(--border-strong);
+  border-radius: 10px; box-shadow: 0 8px 24px rgb(0 0 0 / 0.25); }
+.room-games .button { width: 100%; justify-content: flex-start; }
+.room-games .button { display: inline-flex; align-items: center; gap: 8px; }
+.join-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
