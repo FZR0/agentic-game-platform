@@ -117,7 +117,8 @@ def run(group, port, open_browser=True):
                 print("\n" + "=" * 60)
                 print(f"  對外網址：{m.group(0)}")
                 print("  把這個網址傳給朋友：註冊、登入或以遊客身分進入後，用房間密碼或邀請連結加入對局。")
-                print(f"  管理員後台（登入紀錄、線上訪客）：{m.group(0)}/admin/")
+                # 後台只能在這台電腦打開（arena.accounts.PublicSiteMiddleware；2026-11-09）
+                print(f"  管理員後台（登入紀錄、線上訪客，只能在這台電腦打開）：http://localhost:{port}/admin/")
                 print("=" * 60)
                 print("關掉網站：按 Enter，或直接關閉這個視窗，網站和通道會一起停止。")
                 # 自己也用通道網址玩：邀請連結是用網址列的網址組成的，用 localhost 開的話朋友點不進來

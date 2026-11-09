@@ -10,6 +10,7 @@ import ipaddress
 import secrets
 import time
 
+from django.conf import settings
 from django.contrib.auth import login, update_session_auth_hash
 from django.contrib.auth.models import User
 from django.contrib.auth.decorators import login_not_required
@@ -17,6 +18,7 @@ from django.contrib.auth.forms import UserCreationForm
 from django.contrib.auth.signals import user_logged_in
 from django.contrib.auth.views import LoginView, redirect_to_login
 from django.dispatch import receiver
+from django.http import Http404, HttpResponsePermanentRedirect
 from django.shortcuts import redirect, render
 from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
@@ -24,6 +26,7 @@ from django.utils.http import url_has_allowed_host_and_scheme
 from .models import LoginRecord, Presence
 
 LOOPBACK = {"127.0.0.1", "::1"}
+LOCAL_HOSTS = {"localhost", "127.0.0.1", "[::1]"}
 GUEST_PREFIX = "遊客-"
 GUEST_LETTERS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # 和房間密碼一樣，不用容易看錯的 0／O、1／I／L
 PRESENCE_EVERY = 30  # 同一個瀏覽器幾秒內不重寫，免得每個請求都寫一次資料庫
@@ -50,6 +53,32 @@ def _agent(request):
 def record_login(sender, request, user, **kwargs):
     if request is not None:  # 測試的 force_login 沒有 request
         LoginRecord.objects.create(user=user, ip=client_ip(request), user_agent=_agent(request))
+
+
+def from_this_machine(request):
+    """直接在這台電腦上打開網站，不是經過 Cloudflare 通道。通道的請求也是從本機的 cloudflared 連進來，
+    所以還要看網址（通道是 *.trycloudflare.com，Cloudflare 照網址轉送，外面的人改不了）與 CF-Connecting-IP（Cloudflare 一定會帶）。"""
+    return (request.META.get("REMOTE_ADDR") in LOOPBACK and "HTTP_CF_CONNECTING_IP" not in request.META
+            and request.get_host().rsplit(":", 1)[0] in LOCAL_HOSTS)
+
+
+class PublicSiteMiddleware:
+    """公開模式（settings.PUBLIC，經過通道對外）的兩道保護，只對經過通道的請求（2026-11-09 帳號安全檢查）：
+    - http 一律轉到 https：通道網址用 http 也打得開，登入的 cookie 就沒加密傳出去，在公共 Wi-Fi 上可能被截取冒用；
+      遊客沒有密碼，cookie 就是整個帳號。cookie 另外標成只走 https（settings 的 SESSION_COOKIE_SECURE）。
+    - 管理員後台一律當成不存在：後台登入沒有猜密碼的次數限制。要看登入紀錄、線上訪客，在這台電腦開 http://localhost:<埠>/admin/。
+    放在 SessionMiddleware 前面：轉到 https 時不建立 session、不送 cookie。"""
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        if settings.PUBLIC and not from_this_machine(request):
+            if request.path.startswith("/admin/"):
+                raise Http404
+            if not request.is_secure():
+                return HttpResponsePermanentRedirect(f"https://{request.get_host()}{request.get_full_path()}")
+        return self.get_response(request)
 
 
 class PresenceMiddleware:
