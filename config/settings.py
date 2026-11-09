@@ -178,6 +178,7 @@ DATABASES = {
 
 
 LOGIN_URL = 'login'
+CSRF_FAILURE_VIEW = 'arena.accounts.csrf_failure'  # 表單驗證碼不符時的白話說明頁（2026-11-09）
 LOGIN_REDIRECT_URL = 'arena:home'
 LOGOUT_REDIRECT_URL = 'login'
 
@@ -247,5 +248,7 @@ LOGGING = {
     'loggers': {
         'arena': {'handlers': LOG_HANDLERS, 'level': 'INFO', 'propagate': False},
         'django.request': {'handlers': LOG_HANDLERS[-1:], 'level': 'ERROR'},  # 伺服器錯誤的完整訊息也寫進檔案
+        # 表單來源檢查擋下的原因（公開模式 DEBUG=False 時 Django 不印；2026-11-09 手機 403 查不到原因）
+        'django.security.csrf': {'handlers': LOG_HANDLERS, 'level': 'WARNING', 'propagate': False},
     },
 }

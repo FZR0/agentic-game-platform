@@ -15,12 +15,11 @@ from django.contrib.auth.models import User
 from django.contrib.auth.decorators import login_not_required
 from django.contrib.auth.forms import UserCreationForm
 from django.contrib.auth.signals import user_logged_in
-from django.contrib.auth.views import LoginView
+from django.contrib.auth.views import LoginView, redirect_to_login
 from django.dispatch import receiver
 from django.shortcuts import redirect, render
 from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
-from django.views.decorators.http import require_POST
 
 from .models import LoginRecord, Presence
 
@@ -111,9 +110,13 @@ def _safe_next(request):
 
 
 @login_not_required
-@require_POST
 def guest(request):
     """以遊客身分進入：建立暫時帳號並登入。邀請連結帶來的 next 會保留，朋友可以直接到加入對局的頁面。"""
+    if request.method != "POST":
+        # 直接在網址列打這個網址：轉到登入頁按按鈕（2026-11-09，原本是看不懂的 405）。
+        # 不能用打開網址就建立帳號：聊天軟體產生連結預覽時也會打開網址，每傳一次就多一個沒人用的遊客。
+        next_url = request.GET.get("next")
+        return redirect_to_login(next_url) if next_url else redirect("login")
     if not request.user.is_authenticated:
         while True:
             name = GUEST_PREFIX + "".join(secrets.choice(GUEST_LETTERS) for _ in range(6))
@@ -137,3 +140,15 @@ def upgrade(request):
         update_session_auth_hash(request, user)  # 改了密碼之後保持登入
         return redirect("arena:home")
     return render(request, "registration/upgrade.html", {"form": form, **_page_context()})
+
+
+@login_not_required
+def csrf_failure(request, reason=""):
+    """表單驗證碼不符（settings.CSRF_FAILURE_VIEW）時的白話說明頁，取代 Django 看不懂的「CSRF 驗證失敗」（2026-11-09）。
+    常見原因：登入後按上一頁、在舊頁面再按一次（登入會換新的驗證碼），或瀏覽器擋 cookie（有些 App 內建的瀏覽器）。
+    真正的原因由 CsrfViewMiddleware 寫進網站紀錄（logger django.security.csrf），這裡不顯示技術訊息。
+    「重新整理」回到送出表單的那一頁（Referer）重新拿驗證碼；不能用送出的網址，登出這類網址只接受 POST。"""
+    back = request.META.get("HTTP_REFERER", "")
+    if not url_has_allowed_host_and_scheme(back, allowed_hosts={request.get_host()}):
+        back = ""
+    return render(request, "registration/csrf_failure.html", {"retry": back, **_page_context()}, status=403)
