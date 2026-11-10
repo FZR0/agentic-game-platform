@@ -45,6 +45,10 @@ if PUBLIC:
     ALLOWED_HOSTS = ['.trycloudflare.com', 'localhost', '127.0.0.1']
     CSRF_TRUSTED_ORIGINS = ['https://*.trycloudflare.com']
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    # 登入的 cookie 只走 https（2026-11-09）：通道的 http 網址會轉到 https（arena.accounts.PublicSiteMiddleware），
+    # 這樣之前登入過的瀏覽器打 http 網址時也不會把 cookie 送出去。本機的 localhost 瀏覽器照樣接受這種 cookie。
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
 
 
 # Application definition
@@ -127,6 +131,7 @@ OLLAMA_MODELS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'arena.accounts.PublicSiteMiddleware',  # 公開模式：通道的 http 轉 https、後台只給本機（2026-11-09）
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',

@@ -1830,6 +1830,55 @@ class GuestTests(TestCase):
         self.assertFalse(User.objects.exists())
 
 
+TUNNEL = {"HTTP_HOST": "abc-def.trycloudflare.com", "HTTP_CF_CONNECTING_IP": "198.51.100.7"}  # 經過通道：從本機的 cloudflared 連進來
+
+
+@override_settings(PUBLIC=True, ALLOWED_HOSTS=[".trycloudflare.com", "localhost", "127.0.0.1"],
+                   SECURE_PROXY_SSL_HEADER=("HTTP_X_FORWARDED_PROTO", "https"))
+class PublicSiteTests(TestCase):
+    """公開模式的帳號安全（2026-11-09 檢查）：網址傳出去以後，別人不能因為網址而冒用帳號或碰到後台。
+    - 通道網址用 http 也打得開的話，登入的 cookie 沒加密，在公共 Wi-Fi 上可能被截取；遊客沒有密碼，cookie 就是整個帳號。
+    - 後台登入沒有猜密碼的次數限制，所以不經過通道開放，只能在這台電腦打開。"""
+
+    def test_http_through_the_tunnel_moves_to_https_before_any_cookie_is_set(self):
+        response = Client().get("/join/ABCDEF/?x=1", **TUNNEL, HTTP_X_FORWARDED_PROTO="http")
+        self.assertEqual(response.status_code, 301)
+        self.assertEqual(response["Location"], "https://abc-def.trycloudflare.com/join/ABCDEF/?x=1")  # 邀請連結照樣能用
+        self.assertEqual(dict(response.cookies), {})
+        # https 照常：沒登入就到登入頁
+        https = Client().get("/", **TUNNEL, HTTP_X_FORWARDED_PROTO="https")
+        self.assertRedirects(https, "/accounts/login/?next=/", fetch_redirect_response=False)
+
+    def test_the_admin_site_does_not_exist_through_the_tunnel(self):
+        boss = Client()
+        boss.force_login(User.objects.create_superuser("boss"))
+        self.assertEqual(boss.get("/admin/", **TUNNEL, HTTP_X_FORWARDED_PROTO="https").status_code, 404)
+        self.assertEqual(Client().get("/admin/login/", **TUNNEL, HTTP_X_FORWARDED_PROTO="https").status_code, 404)
+        # 網址寫 localhost 但其實經過 Cloudflare（帶 CF-Connecting-IP）也一樣擋
+        self.assertEqual(boss.get("/admin/", HTTP_HOST="localhost", HTTP_CF_CONNECTING_IP="198.51.100.7").status_code, 404)
+        # 在這台電腦上打開照常
+        self.assertEqual(boss.get("/admin/", HTTP_HOST="localhost:8010").status_code, 200)
+        self.assertEqual(boss.get("/admin/arena/loginrecord/", HTTP_HOST="127.0.0.1:8010").status_code, 200)
+
+    @override_settings(PUBLIC=False)
+    def test_nothing_changes_outside_public_mode(self):
+        boss = Client()
+        boss.force_login(User.objects.create_superuser("boss"))
+        self.assertEqual(boss.get("/admin/", HTTP_HOST="localhost").status_code, 200)
+
+    def test_public_mode_marks_login_cookies_https_only(self):
+        # 設定在 config/settings.py 載入時依 GAME_PUBLIC 決定，所以另開一個 Python 載入設定來看
+        import os
+        import subprocess
+        import sys
+        code = ("import django; django.setup(); from django.conf import settings as s; "
+                "print(s.SESSION_COOKIE_SECURE, s.CSRF_COOKIE_SECURE, s.DEBUG)")
+        env = dict(os.environ, GAME_PUBLIC="1", DJANGO_SETTINGS_MODULE="config.settings")
+        out = subprocess.run([sys.executable, "-c", code], cwd=settings.BASE_DIR, env=env,
+                             capture_output=True, text=True, timeout=60)
+        self.assertEqual(out.stdout.split()[-3:], ["True", "True", "False"], out.stderr)
+
+
 class ExpiredFormTests(TestCase):
     """表單驗證碼不符（2026-11-09，手機上看到「CSRF 驗證失敗」）：登入會換新的驗證碼，網站慢時再按一次或按上一頁再送，
     送的就是舊驗證碼。這仍然要擋（防止別的網站替使用者送表單），但要給看得懂的說明和回去重新整理的連結。"""
