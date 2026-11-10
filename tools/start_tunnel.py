@@ -92,8 +92,10 @@ def ensure_cloudflared():
     return True
 
 
-def run(group, port, open_browser=True):
-    """以公開模式啟動網站並開通道（都放進 group），等使用者按 Enter；回傳結束碼。"""
+def run(group, port, open_browser=True, over_tcp=False):
+    """以公開模式啟動網站並開通道（都放進 group），等使用者按 Enter；回傳結束碼。
+    over_tcp：通道改走 TCP（http2）。連著學校 VPN 時 cloudflared 預設的 QUIC（UDP）一直斷線重連、從沒註冊成功，
+    對外網址只有 Cloudflare 的 Error 1033；TCP 7844 則是通的（2026-11-10 在 momin 上實測）。VPN 版才用，本機 AI 版維持 QUIC（使用者決定）。"""
     site_check = f"http://127.0.0.1:{port}/static/arena/style.css"  # 不經過 AI 助理（每個頁面都會叫模型）
     print("正在以公開模式啟動網站...")
     # --insecure：DEBUG 關閉時 runserver 預設不提供靜態檔（CSS、JS），測試用的網站由它直接提供
@@ -104,7 +106,8 @@ def run(group, port, open_browser=True):
         return 1
 
     print("正在開 Cloudflare 臨時通道...")
-    tunnel = group.start([str(CLOUDFLARED_EXE), "tunnel", "--no-autoupdate", "--url", f"http://127.0.0.1:{port}"],
+    protocol = ["--protocol", "http2"] if over_tcp else []
+    tunnel = group.start([str(CLOUDFLARED_EXE), "tunnel", "--no-autoupdate", *protocol, "--url", f"http://127.0.0.1:{port}"],
                          stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
     found = threading.Event()
 

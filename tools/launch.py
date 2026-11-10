@@ -121,7 +121,8 @@ def main():
         print("提醒：還沒有管理員帳號，後台（/admin/）看不到登入紀錄與線上訪客。")
         print("要建立的話，另開一個視窗在專案資料夾執行：.venv\\Scripts\\python.exe manage.py createsuperuser\n")
     print(f"運行紀錄（AI 伺服器、AI 助理、錯誤）會顯示在這個視窗，也存在 {settings.LOG_FILE}")
-    return start_tunnel.run(group, args.port, open_browser=not args.no_browser)
+    # VPN 版的通道走 TCP：連著學校 VPN 時 QUIC（UDP）連不上 Cloudflare（start_tunnel.run 的說明）
+    return start_tunnel.run(group, args.port, open_browser=not args.no_browser, over_tcp=args.ai == "vpn")
 
 if __name__ == "__main__":
     sys.exit(main())

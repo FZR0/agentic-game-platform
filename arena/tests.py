@@ -229,6 +229,34 @@ class NumCtxTests(SimpleTestCase):
         self.assertEqual(settings.OLLAMA_NUM_CTX, 8192)  # 沒設環境變數 OLLAMA_NUM_CTX 時
 
 
+class TunnelProtocolTests(SimpleTestCase):
+    """連著學校 VPN 時，cloudflared 預設的 QUIC（UDP）一直斷線重連、從沒連上 Cloudflare，朋友打開網址只看到
+    Error 1033；TCP 是通的（2026-11-10）。所以 VPN 版的通道要走 TCP，本機 AI 版維持預設（使用者決定）。
+    不真的開通道：開通道會把這台電腦公開到網路上，只由使用者自己啟動。"""
+
+    def tunnel_command(self, **kwargs):
+        from tools import start_tunnel
+        started = []
+
+        class Group:
+            def start(self, cmd, **_):
+                started.append(cmd)
+                return SimpleNamespace(stderr=iter(["|  https://abc-def.trycloudflare.com  |\n"]))
+
+        with patch.object(start_tunnel, "wait_until", return_value=True), \
+                patch("builtins.input", side_effect=EOFError), patch("sys.stdout", new_callable=StringIO):
+            self.assertEqual(start_tunnel.run(Group(), 8010, open_browser=False, **kwargs), 0)
+        return next(cmd for cmd in started if "tunnel" in cmd)
+
+    def test_vpn_launcher_tunnel_goes_over_tcp(self):
+        cmd = self.tunnel_command(over_tcp=True)
+        self.assertEqual(cmd[cmd.index("--protocol") + 1], "http2")
+        self.assertEqual(cmd[-2:], ["--url", "http://127.0.0.1:8010"])
+
+    def test_local_ai_launcher_keeps_the_default_protocol(self):
+        self.assertNotIn("--protocol", self.tunnel_command())
+
+
 class EngineSetupTests(SimpleTestCase):
     # 新電腦部署時由 tools/setup_engines.py 下載遊戲引擎（2026-10-15）；這些是會直接在使用者電腦上執行的程式。
 
