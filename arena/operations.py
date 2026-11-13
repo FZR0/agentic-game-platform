@@ -130,10 +130,32 @@ def _played_games(user, **filters):
 
     打開對局頁時如果 AI 先行動（例如撲克），對局一建立就存檔；玩家一步都沒下就離開的不列出，
     否則每打開一次撲克頁就多一盤「未完成」。AI 的每一步都有一筆 AiNote，所以行動數多於 AiNote 數就是玩家下過。
+    真人對戰的房間一律列出（2026-11-13）：房間是特地開的或加入的，按「開始」前一步都沒下，
+    不列出的話房主或朋友一離開房間頁就回不去了（使用者回報）。
     """
     qs = Game.visible_to(user).filter(game_type__in=list(games.GAMES), **filters).prefetch_related("players__user")
     ai_counts = dict(AiNote.objects.filter(game__in=qs).values("game").annotate(n=Count("id")).values_list("game", "n"))
-    return [g for g in qs if len(g.actions) > ai_counts.get(g.id, 0)]
+    return [g for g in qs if g.pvp or len(g.actions) > ai_counts.get(g.id, 0)]
+
+
+def active_rooms(user):
+    """這位使用者坐在座位上、還沒結束的真人對戰房間，最近有動靜的在前（2026-11-13 使用者要求：
+    「在其他頁面也要確保能夠回去」，每一頁頂端的「回到房間」用這個）。觀戰中的房間不算自己的。"""
+    if not user.is_authenticated:
+        return []
+    rooms = (Game.objects.filter(mode="pvp", players__user=user, game_type__in=list(games.GAMES), winner__isnull=True,
+                                 draw=False, ended=False).distinct().order_by("-updated_at").prefetch_related("players"))
+    return [{"id": g.id, "name": games.get(g.game_type).name, "status": _room_status(g) or "對戰中",
+             "url": f"{reverse('arena:play', args=[g.game_type])}?resume={g.id}"} for g in rooms]
+
+
+def _room_status(game):
+    """還沒開始的真人對戰房間在清單上的說明；已經開始或不是房間時是空字串。"""
+    if not game.pvp or game.finished or game.started:
+        return ""
+    if game.waiting:
+        return f"等朋友加入（房間密碼 {game.room_code}）"
+    return "等房主按「開始」" if game.started_at is None else "倒數中"
 
 
 def _card(game, user):
@@ -143,12 +165,14 @@ def _card(game, user):
     url = reverse("arena:play", args=[module.key])
     seat = game.seat_of(user)
     opponents = [p.user.username for p in game.players.all() if p.user and p.user_id != user.id] if game.pvp else []
+    room = _room_status(game)
     return {"id": game.id, "module": module, "when": game.updated_at, "steps": len(game.actions),
             # 撲克玩家固定 1 號位，寫「執 1 號位」沒有意義
             "seat": module.seat_names.get(seat, "") if len(module.seat_choices) > 1 else "",
-            "pvp": game.pvp, "opponents": "、".join(opponents),
+            "pvp": game.pvp, "opponents": "、".join(opponents), "room": room,
             "result": result, "result_text": RESULTS[result], "review_url": f"{url}?review={game.id}",
             "resume_url": f"{url}?resume={game.id}" if result == "unfinished" else "",
+            "resume_label": "回到房間" if room else "繼續下",
             # 真人對戰不能單方面「不計勝負」，否則快輸的一方按了就能讓輸棋不算；要結束就認輸
             "end_url": reverse("arena:end_game", args=[game.id]) if result == "unfinished" and not game.pvp else ""}
 

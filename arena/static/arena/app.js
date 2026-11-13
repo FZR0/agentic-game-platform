@@ -446,6 +446,16 @@ async function flushPendingUpdate() {
   if (data) await applyUpdate(data);
 }
 
+// 在真人對戰的房間裡時，網址留著房間編號（2026-11-13 使用者回報回不到自己開的房間）：重新整理、上一頁都回到同一個房間。
+// 和 AI 對戰時網址維持 /<遊戲>/，重新整理照舊開新局
+function rememberRoom() {
+  const query = state.pvp && state.gameId !== null ? `?${state.watching ? "watch" : "resume"}=${state.gameId}` : "";
+  window.history.replaceState(null, "", window.location.pathname + query);
+  // 頂端的「回到房間」（_room_banner.html）指的就是正在看的這間時收起來
+  const banner = $("room-banner");
+  if (banner) banner.hidden = state.gameId !== null && Number(banner.dataset.game) === state.gameId;
+}
+
 // 真人對戰一開房間就要存檔（要有房間密碼給朋友），不像和 AI 下時等第一步才建立
 async function newPvpGame(settings) {
   state.busy = true;
@@ -455,6 +465,7 @@ async function newPvpGame(settings) {
     const data = await api("games/", { seat: state.human, settings, mode: "pvp", ...agentOptions() });
     state.gameId = data.game.id;
     state.owner = true;
+    rememberRoom();
     state.players = data.game.players;
     state.frames = [data.frame];
     showInvite(data.game.room_code);
@@ -668,6 +679,7 @@ async function newGame() {
   const settings = readSettings();
   resetView(Number($("human-seat").value), settings, [], [GameBoard.emptyFrame(settings)], pvpChosen());
   state.gameId = null;
+  rememberRoom(); // 離開原本的房間：網址不再指向它
   renderChat([]);
   updateButtons();
   if (state.pvp) {
@@ -1188,6 +1200,7 @@ async function openGame(id, mode) {
     state.gameId = g.game.id;
     // 自己開、還沒有人加入的房間：回到這頁也能接著改設定
     state.owner = !watching && g.game.mode === "pvp" && g.my_seat === g.game.human_seat && g.actions.length === 0;
+    rememberRoom();
     setStartsIn(g.game.starts_in);
     renderChat(g.chat || []);
     for (const note of g.notes) addNote(note, false);
@@ -1375,7 +1388,8 @@ setCoachOpen(storageGet(COACH_KEY) === "1");
 loadModels();
 const opening = new URLSearchParams(window.location.search);
 const openId = Number(opening.get("resume") || opening.get("review") || opening.get("watch"));
-// 打開後把網址還原：重新整理時開新局，不會又打開同一盤（沒下完的隨時可以從首頁接著下）
+// 打開後把網址還原：重新整理時開新局，不會又打開同一盤（沒下完的隨時可以從首頁接著下）。
+// 真人對戰的房間例外，打開後由 rememberRoom 把房間編號放回網址
 window.history.replaceState(null, "", window.location.pathname);
 if (openId) {
   openGame(openId, opening.has("resume") ? "resume" : opening.has("watch") ? "watch" : "review").then(() => {

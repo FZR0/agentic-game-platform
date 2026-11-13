@@ -1,0 +1,10 @@
+{% comment %}
+每一頁頂端的「回到房間」（2026-11-13 使用者要求）：坐在還沒結束的真人對戰房間裡時顯示。
+對局頁上正在看的就是這間時，由 app.js 的 rememberRoom 收起來（data-game）。
+{% endcomment %}{% if active_room %}
+<div class="room-banner" id="room-banner" data-game="{{ active_room.id }}">
+  <span>你在{{ active_room.name }}的對戰房間（#{{ active_room.id }}）：{{ active_room.status }}</span>
+  <a class="button primary" href="{{ active_room.url }}">回到房間</a>
+  {% if more_rooms %}<a href="{% url 'arena:history' %}?result=unfinished">另外還有 {{ more_rooms }} 間</a>{% endif %}
+</div>
+{% endif %}

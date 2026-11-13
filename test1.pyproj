@@ -47,6 +47,7 @@
     <Compile Include="arena\agent.py" />
     <Compile Include="arena\apps.py" />
     <Compile Include="arena\base.py" />
+    <Compile Include="arena\context_processors.py" />
     <Compile Include="arena\games.py" />
     <Compile Include="arena\health.py" />
     <Compile Include="arena\management\__init__.py" />
@@ -131,6 +132,7 @@
     <Content Include="arena\templates\arena\_ai_problem.html" />
     <Content Include="arena\templates\arena\_game_row.html" />
     <Content Include="arena\templates\arena\_how_to_use.html" />
+    <Content Include="arena\templates\arena\_room_banner.html" />
     <Content Include="arena\templates\arena\base.html" />
     <Content Include="arena\templates\arena\guide.html" />
     <Content Include="arena\templates\arena\history.html" />

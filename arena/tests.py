@@ -2215,6 +2215,43 @@ class RoomStartTests(RefusalAssertions, TestCase):
         self.assertEqual(operations.run_ai_turns(HOLDEM, game, settings.OLLAMA_MODEL, 2, 1), [])
         self.assertEqual(Game.objects.get(pk=game.pk).actions, [])
 
+    def test_the_host_and_the_friend_can_get_back_to_a_room_from_the_home_page(self):
+        # 使用者回報（2026-11-13）：回到首頁後回不到自己開的房間。按開始前一步都沒下，原本的清單只列下過的對局
+        game, _ = operations.start_game(GOMOKU, 1, {}, self.alice, "pvp")
+        home = self.clients["alice"].get("/").content.decode()
+        self.assertIn(f"/gomoku/?resume={game.id}", home)
+        self.assertIn(f"等朋友加入（房間密碼 {game.room_code}）", home)
+        self.assertIn("回到房間", home)
+        operations.join_game(game.room_code, self.bob)
+        home = self.clients["bob"].get("/").content.decode()
+        self.assertIn(f"/gomoku/?resume={game.id}", home)
+        self.assertIn("等房主按「開始」", home)
+        history = self.clients["alice"].get("/history/?result=unfinished").content.decode()
+        self.assertIn(f"/gomoku/?resume={game.id}", history)
+        # 開始以後就是一般的對局列：繼續下、手數
+        game = start_now(game)
+        operations.play_human_move(GOMOKU, game, "H8", 1)
+        card = operations.home_context(self.alice)["resume"][0]
+        self.assertEqual((card["id"], card["resume_label"], card["room"]), (game.id, "繼續下", ""))
+
+    def test_every_page_links_back_to_an_unfinished_room(self):
+        # 使用者要求（2026-11-13）：「在其他頁面也要確保能夠回去」，不只首頁
+        game, _ = operations.start_game(GOMOKU, 1, {}, self.alice, "pvp")
+        back = f'href="/gomoku/?resume={game.id}"'
+        for url in ("/", "/history/", "/guide/", "/join/", "/weiqi/", "/gomoku/"):
+            page = self.clients["alice"].get(url).content.decode()
+            self.assertIn(back, page, url)
+            self.assertNotIn("{#", page, url)  # 多行的模板註解要用 {% comment %}，否則原文會出現在畫面上
+        carol = User.objects.create_user("carol")
+        operations.watch_game(game.room_code, carol)
+        watcher = Client()
+        watcher.force_login(carol)
+        self.assertNotIn(back, watcher.get("/guide/").content.decode())  # 觀戰的房間不算自己的
+        operations.join_game(game.room_code, self.bob)
+        game = start_now(game)
+        operations.play_human_move(GOMOKU, game, "resign", 1)
+        self.assertNotIn(back, self.clients["alice"].get("/guide/").content.decode())  # 結束了就不再提示
+
     def test_rooms_that_were_already_full_before_this_change_keep_going(self):
         # 原本最後一位加入就開始了；不當成已開始的話，進行到一半的對局會卡住、誰都不能下
         migration = importlib.import_module("arena.migrations.0009_room_start_chat")

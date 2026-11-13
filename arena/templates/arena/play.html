@@ -96,6 +96,7 @@
     <span id="assistant-notice" class="status warn" role="status"{% if not handled.notice or ai_problem %} hidden{% endif %}>{{ handled.notice }}</span>
   </header>
   {% include "arena/_ai_problem.html" %}
+  {% include "arena/_room_banner.html" %}
 
   <div id="app" class="app">
     <aside id="coach" class="coach" hidden>

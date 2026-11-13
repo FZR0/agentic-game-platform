@@ -832,3 +832,11 @@ details ul { margin: 4px 0 0; padding-left: 18px; }
   .chat-toggle { right: 12px; bottom: 12px; }
   .chat { right: 12px; bottom: 12px; height: min(420px, calc(100vh - 80px)); }
 }
+.row-meta .room-status { color: var(--accent); font-weight: 600; }
+/* 每一頁頂端的「回到房間」（2026-11-13）：對局頁在 .app 外面，自己留邊距；其他頁在 .page 裡面 */
+.room-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; box-sizing: border-box;
+  width: calc(100% - 40px); max-width: 1200px; margin: 12px auto 0; padding: 10px 14px; border: 1px solid var(--accent);
+  border-radius: var(--radius); background: var(--accent-soft); font-weight: 600; }
+.room-banner[hidden] { display: none; }
+.page .room-banner { width: auto; margin: 0 0 16px; }
+@media (max-width: 640px) { .room-banner { width: calc(100% - 24px); margin-top: 8px; } .page .room-banner { width: auto; margin: 0 0 12px; } }
