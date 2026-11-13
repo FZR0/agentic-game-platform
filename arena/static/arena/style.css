@@ -805,3 +805,50 @@ details ul { margin: 4px 0 0; padding-left: 18px; }
 .room-games .button { width: 100%; justify-content: flex-start; }
 .room-games .button { display: inline-flex; align-items: center; gap: 8px; }
 .join-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+/* 房主按開始、倒數、房間聊天室（2026-11-13） */
+.room-start { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin: 0 0 12px; padding: 12px 14px;
+  border: 1px solid var(--accent); border-radius: var(--radius); background: var(--accent-soft); }
+.room-start p { margin: 0; flex: 1 1 220px; }
+.countdown { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; pointer-events: none;
+  font-size: clamp(5rem, 22vw, 11rem); font-weight: 800; color: var(--accent); text-shadow: 0 2px 16px var(--bg); }
+.countdown[hidden] { display: none; }
+.chat-toggle { position: fixed; right: 20px; bottom: 20px; z-index: 40; box-shadow: var(--shadow); }
+.chat { position: fixed; right: 20px; bottom: 20px; z-index: 41; display: flex; flex-direction: column;
+  width: min(360px, calc(100vw - 24px)); height: min(460px, calc(100vh - 120px)); padding: 12px 14px;
+  border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--panel); box-shadow: var(--shadow); }
+.chat[hidden] { display: none; }
+.chat-head { display: flex; align-items: center; justify-content: space-between; }
+.chat > .muted { margin: 4px 0 8px; font-size: 0.85rem; }
+.chat-log { flex: 1; min-height: 0; overflow-y: auto; margin: 0 0 8px; padding: 0; list-style: none;
+  display: flex; flex-direction: column; gap: 6px; }
+.chat-log li { max-width: 85%; align-self: flex-start; padding: 6px 10px; border-radius: 10px; background: var(--tag-bg);
+  overflow-wrap: anywhere; }
+.chat-log li.mine { align-self: flex-end; background: var(--accent-soft); }
+.chat-log .chat-meta { display: block; font-size: 0.78rem; color: var(--muted); }
+.chat-log .chat-empty { align-self: stretch; max-width: none; background: none; color: var(--muted); text-align: center; }
+.chat-form { display: flex; gap: 8px; }
+.chat-form input { flex: 1; min-width: 0; }
+@media (max-width: 640px) {
+  .chat-toggle { right: 12px; bottom: 12px; }
+  .chat { right: 12px; bottom: 12px; height: min(420px, calc(100vh - 80px)); }
+}
+.row-meta .room-status { color: var(--accent); font-weight: 600; }
+/* 每一頁頂端的「回到房間」（2026-11-13）：對局頁在 .app 外面，自己留邊距；其他頁在 .page 裡面 */
+.room-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; box-sizing: border-box;
+  width: calc(100% - 40px); max-width: 1200px; margin: 12px auto 0; padding: 10px 14px; border: 1px solid var(--accent);
+  border-radius: var(--radius); background: var(--accent-soft); font-weight: 600; }
+.room-banner[hidden] { display: none; }
+.page .room-banner { width: auto; margin: 0 0 16px; }
+@media (max-width: 640px) { .room-banner { width: calc(100% - 24px); margin-top: 8px; } .page .room-banner { width: auto; margin: 0 0 12px; } }
+/* 房間的玩家列表（2026-11-13） */
+.room-players { margin: 0 0 12px; padding: 10px 14px; border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--panel); }
+.room-players[hidden] { display: none; }
+.room-seats { display: flex; flex-wrap: wrap; gap: 6px 10px; margin: 0; padding: 0; list-style: none; }
+.room-seats li { padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--raised); }
+.room-seats li.empty { border-style: dashed; color: var(--muted); }
+.room-seats li.turn { border-color: var(--accent); background: var(--accent-soft); }
+.room-seats .seat-name { font-weight: 700; }
+.room-seats .seat-tags { color: var(--accent); font-size: 0.85rem; font-weight: 600; }
+.room-players > p { margin: 6px 0 0; font-size: 0.88rem; overflow-wrap: anywhere; }
+.room-players > .end-button { margin-top: 8px; }

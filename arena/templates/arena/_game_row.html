@@ -6,13 +6,19 @@
       <time datetime="{{ card.when|date:'c' }}">{{ card.when|date:"Y-m-d H:i" }}</time>
       {% if card.seat %}<span>執{{ card.seat }}</span>{% endif %}
       {% if card.pvp %}<span>真人對戰{% if card.opponents %}：對手 {{ card.opponents }}{% endif %}</span>{% endif %}
-      <span>{{ card.steps }} {{ card.module.step_word }}</span>
+      {% if card.room %}<span class="room-status">{{ card.room }}</span>{% else %}<span>{{ card.steps }} {{ card.module.step_word }}</span>{% endif %}
       <span>#{{ card.id }}</span>
     </div>
   </div>
   <div class="row-actions">
-    {% if card.resume_url %}<a class="button primary" href="{{ card.resume_url }}">繼續下</a>{% endif %}
-    <a class="button" href="{{ card.review_url }}">復盤</a>
+    {% if card.resume_url %}<a class="button primary" href="{{ card.resume_url }}">{{ card.resume_label }}</a>{% endif %}
+    {% if not card.room %}<a class="button" href="{{ card.review_url }}">復盤</a>{% endif %}{# 還沒開始的房間沒有東西可以復盤 #}
+    {% if card.close_url %}{# 房主關閉還沒開始的房間（2026-11-13） #}
+    <form method="post" action="{{ card.close_url }}" onsubmit="return confirm('關閉這個房間？朋友就不能再用房間密碼加入或觀戰，這個房間也會從清單上拿掉。')">
+      {% csrf_token %}<input type="hidden" name="next" value="{{ request.get_full_path }}">
+      <button type="submit" class="end-button">關閉房間</button>
+    </form>
+    {% endif %}
     {% if card.end_url %}
     <form method="post" action="{{ card.end_url }}" onsubmit="return confirm('結束這盤、不計勝負？之後不能再接著下，但還可以復盤。')">
       {% csrf_token %}<input type="hidden" name="next" value="{{ request.get_full_path }}">

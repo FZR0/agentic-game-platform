@@ -156,6 +156,7 @@ TEMPLATES = [
                 'django.template.context_processors.request',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
+                'arena.context_processors.active_room',  # 每一頁頂端的「回到房間」（2026-11-13）
             ],
         },
     },

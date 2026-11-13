@@ -14,7 +14,7 @@ import time
 
 from django.conf import settings
 
-from . import agent, games, narrator, operations
+from . import agent, games, narrator, operations, realtime
 from .models import ModelRun
 
 log = logging.getLogger(__name__)
@@ -287,12 +287,37 @@ def _game(ctx):
     return ctx["game"]
 
 
+def _detail(ctx):
+    game = _game(ctx)
+    return {**operations.game_detail(ctx["module"], game, ctx["seat"]),
+            "chat": operations.chat_messages(game, ctx["seat"], ctx["user"])}
+
+
 def _join(ctx):
-    """用房間密碼加入真人對戰；最後一位真人坐好時，先讓 AI 的座位行動到輪到真人（撲克可能是 AI 先說話）。"""
+    """用房間密碼加入真人對戰；座位坐滿時改成觀戰（seat 是 None）。
+    坐滿了也不會自動開始：由房主按「開始」（_start_room，2026-11-13）。"""
     game, seat = operations.join_game(ctx["params"]["code"], ctx["user"])
-    module = games.get(game.game_type)
-    operations.run_ai_turns(module, game, settings.OLLAMA_MODEL, module.default_steps, seat)
-    return {"game": game, "module": module}
+    return {"game": game, "module": games.get(game.game_type), "seat": seat}
+
+
+def _start_room(ctx):
+    """房主按「開始」：記下開始時間，先通知房間裡每個人（含觀戰）顯示倒數，
+    倒數結束後再讓 AI 的座位行動到輪到真人（撲克可能是 AI 先說話）。"""
+    p = ctx["params"]
+    game = operations.start_room(_game(ctx), ctx["user"])
+    realtime.notify(game)
+    operations.wait_for_start(game)
+    operations.run_ai_turns(ctx["module"], game, p["model"], p["steps"], ctx["seat"])
+    return {"game": game.summary()}
+
+
+def _close_room(ctx):
+    game = operations.close_room(_game(ctx), ctx["user"])
+    return {"game": game.summary()}
+
+
+def _send_chat(ctx):
+    return operations.send_chat(_game(ctx), ctx["user"], ctx["seat"], ctx["params"]["text"])
 
 
 def _watch(ctx):
@@ -326,7 +351,7 @@ REQUESTS = {r.kind: r for r in [
     OneStep("list_games", "list_games", "使用者要看遊戲「{game}」的對局清單，請載入。",
             lambda ctx: operations.list_games(ctx["module"], ctx["user"]), params={"game": GAME_KEY}),
     OneStep("detail", "load_game", "使用者要打開第 {game_id} 盤（復盤或接著下），請載入這盤棋。",
-            lambda ctx: operations.game_detail(ctx["module"], _game(ctx), ctx["seat"]), params={"game_id": GAME_ID}),
+            _detail, params={"game_id": GAME_ID}),
     OneStep("end", "end_game", "使用者在對局頁按了第 {game_id} 盤的「結束（不計勝負）」，請結束這盤。",
             lambda ctx: operations.end_game(_game(ctx)) or {"game": _game(ctx).summary()}, params={"game_id": GAME_ID}),
     OneStep("review", "review_game", "使用者按了第 {game_id} 盤的「復盤」，請檢查這盤棋的問題。",
@@ -348,6 +373,14 @@ REQUESTS = {r.kind: r for r in [
     OneStep("room_settings", "change_room", "房主在朋友加入前改了第 {game_id} 盤的房間設定（座位 {seat}），請套用到這個房間。",
             _change_room, params={"game_id": GAME_ID, "seat": ("integer", "房主的座位", "seat")},
             summary=lambda data: f"第 {data['game']['id']} 盤的設定已更新。"),
+    # 房主按開始、房間聊天室（2026-11-13）
+    OneStep("start", "start_room", "房主按了第 {game_id} 盤的「開始」，請開始這盤真人對戰（倒數後開始，AI 的座位倒數完再行動）。",
+            _start_room, params={"game_id": GAME_ID}, summary=lambda data: f"第 {data['game']['id']} 盤已開始。"),
+    OneStep("close_room", "close_room", "房主要關閉第 {game_id} 盤還沒開始的房間，請關閉。", _close_room,
+            params={"game_id": GAME_ID}, summary=lambda data: f"第 {data['game']['id']} 盤的房間已關閉。"),
+    OneStep("chat", "send_chat", "使用者在第 {game_id} 盤的房間聊天室送出訊息「{text}」，請照原文送出這則訊息。",
+            _send_chat, params={"game_id": GAME_ID, "text": ("string", "訊息原文", "text")},
+            summary=lambda data: "訊息已送出。"),
     NewGame(), Move(), Ask(),
 ]}
 

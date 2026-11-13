@@ -132,11 +132,12 @@ def join(request, code=""):
         else:
             if handled.get("notice"):
                 messages.warning(request, handled["notice"])
-            if watch and data["seat"] is None:
-                return redirect(f"{reverse('arena:play', args=[data['module'].key])}?watch={data['game'].id}")
-            if not watch:
-                realtime.notify(data["game"])
-            return redirect(f"{reverse('arena:play', args=[data['module'].key])}?resume={data['game'].id}")
+            play_url = reverse("arena:play", args=[data["module"].key])
+            # 有人坐下或開始觀戰：房間裡的人馬上看到（玩家列表也列出觀戰的人，2026-11-13）
+            realtime.notify(data["game"])
+            if data["seat"] is None:  # 觀戰；按「加入」但座位已經坐滿也改成觀戰（2026-11-13），網頁據 full 說明原因
+                return redirect(f"{play_url}?watch={data['game'].id}" + ("" if watch else "&full=1"))
+            return redirect(f"{play_url}?resume={data['game'].id}")
     data, handled = orchestrator.handle("join_page", _with_user(request, {"params": {}}))
     return render(request, "arena/join.html", {**data, "handled": handled, "ai_problem": health.current(),
                                                "code": code.strip().upper(), "error": error})
@@ -202,6 +203,74 @@ def api_room_settings(request, game_key, game_id):
                                                 "params": {"game_id": game.id, "seat": seat, "settings": settings}})
     if response.status_code == 200:
         realtime.notify(game)  # 觀戰中的人跟著換成新的棋盤
+    return response
+
+
+@require_POST
+def api_room_start(request, game_key, game_id):
+    """房主按「開始」（2026-11-13）：倒數後開始。AI 助理先通知大家顯示倒數，倒數完 AI 的座位才行動，
+    所以這個請求至少要等倒數的秒數才回來；其他人的畫面靠 WebSocket 更新。"""
+    module = _module(game_key)
+    game = _game(request, module, game_id)
+    try:
+        model, steps = _agent_options(_read_json(request), module)
+    except (ValueError, KeyError, TypeError) as exc:
+        return _error(exc)
+    response = _json(request, "start", {"module": module, "game": game,
+                                        "params": {"game_id": game.id, "model": model, "steps": steps}})
+    if response.status_code == 200:
+        realtime.notify(game)  # AI 的座位在倒數後行動了的話，大家看到那幾步
+    return response
+
+
+def _closed(request, module, game, kind):
+    """關閉房間（2026-11-13）：交給 AI 助理，成功時通知房間裡的人（朋友、觀戰的人看到房間已關閉）。"""
+    result = orchestrator.handle(kind, _with_user(request, {"module": module, "game": game,
+                                                             "params": {"game_id": game.id}}))
+    realtime.notify(game)
+    return result
+
+
+@require_POST
+def api_room_close(request, game_key, game_id):
+    """房間頁的「關閉房間」：只有房主、只在按開始之前。"""
+    module = _module(game_key)
+    game = _game(request, module, game_id)
+    try:
+        data, handled = _closed(request, module, game, "close_room")
+    except ValueError as exc:
+        return _error(exc)
+    return JsonResponse({**data, "handled": handled, "ai_problem": health.current()})
+
+
+@require_POST
+def close_room(request, game_id):
+    """首頁、對局紀錄清單上的「關閉房間」（表單送出）；關閉後回到原本的頁面。"""
+    game = get_object_or_404(Game.visible_to(request.user), pk=game_id)
+    try:
+        _, handled = _closed(request, _module(game.game_type), game, "close_room")
+    except ValueError as exc:
+        handled = {"notice": str(exc)}
+    if handled.get("notice"):
+        messages.warning(request, handled["notice"])
+    target = request.POST.get("next", "")
+    if not url_has_allowed_host_and_scheme(target, allowed_hosts={request.get_host()}):
+        target = reverse("arena:home")
+    return redirect(target)
+
+
+@require_POST
+def api_room_chat(request, game_key, game_id):
+    """房間聊天室發言（2026-11-13）：坐在座位上的人與觀戰的人都能說話（看得到這盤就行，watch=True）。"""
+    module = _module(game_key)
+    game = _game(request, module, game_id, watch=True)
+    try:
+        text = operations.clean_chat_text(_read_json(request)["text"])  # 空的、太長的不必交給 AI 助理
+    except (ValueError, KeyError, TypeError) as exc:
+        return _error(exc)
+    response = _json(request, "chat", {"module": module, "game": game, "params": {"game_id": game.id, "text": text}})
+    if response.status_code == 200:
+        realtime.notify_chat(game)
     return response
 
 

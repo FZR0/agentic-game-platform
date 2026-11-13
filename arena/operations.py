@@ -7,6 +7,7 @@
 import re
 import time
 from collections import Counter
+from datetime import timedelta
 from pathlib import Path
 
 from django.contrib.staticfiles import finders
@@ -18,7 +19,7 @@ from django.utils import timezone
 
 from . import agent, games, narrator
 from .base import ESTIMATE, RULE
-from .models import AiNote, Game, GamePlayer, GameSpectator, ModelRun
+from .models import AiNote, ChatMessage, Game, GamePlayer, GameSpectator, ModelRun
 
 MOVE_REF_RE = re.compile(r"第\s*(\d{1,3})\s*[手步](?!牌)")  # 撲克的「第 3 手牌」不是第 3 步
 
@@ -129,10 +130,32 @@ def _played_games(user, **filters):
 
     打開對局頁時如果 AI 先行動（例如撲克），對局一建立就存檔；玩家一步都沒下就離開的不列出，
     否則每打開一次撲克頁就多一盤「未完成」。AI 的每一步都有一筆 AiNote，所以行動數多於 AiNote 數就是玩家下過。
+    真人對戰的房間一律列出（2026-11-13）：房間是特地開的或加入的，按「開始」前一步都沒下，
+    不列出的話房主或朋友一離開房間頁就回不去了（使用者回報）。房主在開始前關掉的房間不列出（closed_room）。
     """
     qs = Game.visible_to(user).filter(game_type__in=list(games.GAMES), **filters).prefetch_related("players__user")
     ai_counts = dict(AiNote.objects.filter(game__in=qs).values("game").annotate(n=Count("id")).values_list("game", "n"))
-    return [g for g in qs if len(g.actions) > ai_counts.get(g.id, 0)]
+    return [g for g in qs if (g.pvp and not closed_room(g)) or (not g.pvp and len(g.actions) > ai_counts.get(g.id, 0))]
+
+
+def active_rooms(user):
+    """這位使用者坐在座位上、還沒結束的真人對戰房間，最近有動靜的在前（2026-11-13 使用者要求：
+    「在其他頁面也要確保能夠回去」，每一頁頂端的「回到房間」用這個）。觀戰中的房間不算自己的。"""
+    if not user.is_authenticated:
+        return []
+    rooms = (Game.objects.filter(mode="pvp", players__user=user, game_type__in=list(games.GAMES), winner__isnull=True,
+                                 draw=False, ended=False).distinct().order_by("-updated_at").prefetch_related("players"))
+    return [{"id": g.id, "name": games.get(g.game_type).name, "status": _room_status(g) or "對戰中",
+             "url": f"{reverse('arena:play', args=[g.game_type])}?resume={g.id}"} for g in rooms]
+
+
+def _room_status(game):
+    """還沒開始的真人對戰房間在清單上的說明；已經開始或不是房間時是空字串。"""
+    if not game.pvp or game.finished or game.started:
+        return ""
+    if game.waiting:
+        return f"等朋友加入（房間密碼 {game.room_code}）"
+    return "等房主按「開始」" if game.started_at is None else "倒數中"
 
 
 def _card(game, user):
@@ -142,12 +165,17 @@ def _card(game, user):
     url = reverse("arena:play", args=[module.key])
     seat = game.seat_of(user)
     opponents = [p.user.username for p in game.players.all() if p.user and p.user_id != user.id] if game.pvp else []
+    room = _room_status(game)
     return {"id": game.id, "module": module, "when": game.updated_at, "steps": len(game.actions),
             # 撲克玩家固定 1 號位，寫「執 1 號位」沒有意義
             "seat": module.seat_names.get(seat, "") if len(module.seat_choices) > 1 else "",
-            "pvp": game.pvp, "opponents": "、".join(opponents),
+            "pvp": game.pvp, "opponents": "、".join(opponents), "room": room,
             "result": result, "result_text": RESULTS[result], "review_url": f"{url}?review={game.id}",
             "resume_url": f"{url}?resume={game.id}" if result == "unfinished" else "",
+            "resume_label": "回到房間" if room else "繼續下",
+            # 房主可以關閉還沒按開始的房間（2026-11-13）
+            "close_url": reverse("arena:close_room", args=[game.id])
+            if room and game.owner_id == user.id and game.started_at is None else "",
             # 真人對戰不能單方面「不計勝負」，否則快輸的一方按了就能讓輸棋不算；要結束就認輸
             "end_url": reverse("arena:end_game", args=[game.id]) if result == "unfinished" and not game.pvp else ""}
 
@@ -255,18 +283,73 @@ def watch_game(code, user):
     game = Game.objects.filter(mode="pvp", room_code=code).first() if code else None
     if game is None:
         raise ValueError("找不到這個房間密碼，請確認有沒有打錯")
+    if closed_room(game):
+        raise ValueError("房主已經關閉這個房間了")
     seat = game.seat_of(user)
     if seat is None:
         GameSpectator.objects.get_or_create(game=game, user=user)
     return game, seat
 
 
+START_COUNTDOWN = 3  # 房主按「開始」後倒數幾秒才能下（使用者要求，2026-11-13）
+
+
+def start_room(game, user):
+    """房主按「開始」（使用者要求，2026-11-13：建立房間後由房主按開始，而且要等三秒）。
+    座位都坐滿才能按；開始時間記成現在＋倒數，到了那個時間 play_human_move、run_ai_turns 才接受。回傳更新後的對局。"""
+    if not game.pvp or game.owner_id != user.id:
+        raise ValueError("只有開房的人能按「開始」")
+    if game.finished:
+        raise ValueError("這盤已經結束了")
+    if game.started_at is not None:
+        raise ValueError("已經按過開始了")
+    if game.waiting:
+        raise ValueError("還有座位空著，朋友都加入後才能開始")
+    # 條件式更新：同時按兩次（例如兩個分頁）只有一次算數，倒數不會被往後延
+    if not Game.objects.filter(pk=game.pk, started_at__isnull=True, ended=False).update(
+            started_at=timezone.now() + timedelta(seconds=START_COUNTDOWN)):
+        raise ValueError("已經按過開始了")
+    game.refresh_from_db()
+    return game
+
+
+def closed_room(game):
+    """房主在開始前關掉的房間（使用者要求，2026-11-13）：記成「結束（不計勝負）」而且從沒開始過。"""
+    return game.pvp and game.ended and game.started_at is None
+
+
+def close_room(game, user):
+    """房主關閉還沒開始的房間（2026-11-13 使用者要求「房主要能夠關閉房間」）：記成結束（不計勝負），
+    不進戰績，房間密碼與邀請連結都不能再加入或觀戰，清單與頂端的「回到房間」也不再列出。
+    開始以後不能關：快輸的一方關掉就能讓輸棋不算（和真人對戰不能「不計勝負」同一個理由），要結束請認輸。"""
+    if not game.pvp or game.owner_id != user.id:
+        raise ValueError("只有開房的人能關閉房間")
+    if game.finished:
+        raise ValueError("這個房間已經結束了")
+    # 條件式更新：和按「開始」同時發生時只有一個算數
+    if not Game.objects.filter(pk=game.pk, started_at__isnull=True, ended=False).update(ended=True,
+                                                                                       updated_at=timezone.now()):
+        raise ValueError("已經開始了，不能關閉房間；要結束請認輸")
+    game.refresh_from_db()
+    return game
+
+
+def wait_for_start(game):
+    """等到倒數結束（AI 的座位要等倒數完才行動，和真人一樣）。"""
+    left = game.starts_in()
+    if left:
+        time.sleep(left)
+
+
 def join_game(code, user):
-    """用房間密碼加入真人對戰：坐進第一個空的真人座位。回傳 (對局, 座位)。已經在這盤裡就直接回傳原本的座位。"""
+    """用房間密碼加入真人對戰：坐進第一個空的真人座位。回傳 (對局, 座位)。已經在這盤裡就直接回傳原本的座位。
+    座位都坐滿時改成觀戰（使用者要求，2026-11-13），座位是 None。"""
     code = code.strip().upper()
     game = Game.objects.filter(mode="pvp", room_code=code).first() if code else None
     if game is None:
         raise ValueError("找不到這個房間密碼，請確認有沒有打錯")
+    if closed_room(game):
+        raise ValueError("房主已經關閉這個房間了")
     seat = game.seat_of(user)
     if seat is not None:
         return game, seat
@@ -278,7 +361,8 @@ def join_game(code, user):
         if GamePlayer.objects.filter(pk=empty.pk, user__isnull=True).update(user=user, joined_at=timezone.now()):
             game.save(update_fields=["updated_at"])
             return game, empty.seat
-    raise ValueError("這盤的座位已經坐滿了")
+    GameSpectator.objects.get_or_create(game=game, user=user)
+    return game, None
 
 
 def play_human_move(module, game, action, seat):
@@ -287,6 +371,8 @@ def play_human_move(module, game, action, seat):
         raise ValueError("這盤棋已經結束")
     if game.waiting:
         raise ValueError("還在等對手加入，對手加入後才能開始")
+    if not game.started:
+        raise ValueError("房主還沒按「開始」" if game.started_at is None else "倒數還沒結束，請稍等")
     state = module.replay(settings_of(game), game.actions)
     if module.to_move(state) != seat:
         raise ValueError("現在不是你的回合")
@@ -299,8 +385,8 @@ def play_human_move(module, game, action, seat):
 
 def run_ai_turns(module, game, model, steps, seat):
     """由 AI 的座位行動，直到又輪到真人或對局結束；存檔後回傳可以送到網頁的 AI 行動（seat 看到的畫面）。
-    真人對戰還在等對手時不行動：撲克的 AI 要等所有真人坐好才開始。"""
-    if game.waiting:
+    真人對戰在房主按「開始」、倒數結束之前不行動：撲克的 AI 要等所有真人坐好、一起開始。"""
+    if game.waiting or not game.started:
         return []
     state = module.replay(settings_of(game), game.actions)
     state, moves = _ai_turns(module, game, state, model, steps, seat)
@@ -319,6 +405,45 @@ def coach_allowed(game):
     """真人對戰還沒結束時不能用 AI 教練（復盤、提問、AI 說明），否則就是幫其中一方作弊（使用者決定，2026-11-05）。"""
     if game.pvp and not game.finished:
         raise ValueError("真人對戰進行中不能使用 AI 教練，對局結束後就可以復盤")
+
+
+# ---- 房間聊天室（使用者要求，2026-11-13）----
+
+def _chat_room(game, seat):
+    """這位使用者現在發言進哪個聊天室：房主按開始前大家同一個；按了之後玩家與觀戰的人分開。"""
+    if game.started_at is None:
+        return "lobby"
+    return "players" if seat is not None else "spectators"
+
+
+def clean_chat_text(text):
+    text = " ".join(str(text).split())  # 換行、連續空白縮成一個空白
+    if not text:
+        raise ValueError("訊息是空的")
+    if len(text) > ChatMessage.MAX_LENGTH:
+        raise ValueError(f"訊息最多 {ChatMessage.MAX_LENGTH} 個字")
+    return text
+
+
+def chat_messages(game, seat, user):
+    """這位使用者看得到的聊天：開始前的訊息大家都看得到，開始後只看得到自己那一邊（玩家或觀戰者）的。"""
+    if not game.pvp:
+        return []
+    rooms = ["lobby", "players" if seat is not None else "spectators"]
+    return [m.to_dict(user) for m in game.chat.filter(room__in=rooms)]
+
+
+def send_chat(game, user, seat, text):
+    """在房間的聊天室發言：坐在座位上的人與觀戰的人才能說話；對局結束後只能看。回傳這則訊息。"""
+    if not game.pvp:
+        raise ValueError("只有真人對戰的房間有聊天室")
+    if seat is None and not game.spectators.filter(user=user).exists():
+        raise ValueError("你不在這個房間裡")
+    if game.finished:
+        raise ValueError("對局已經結束，聊天室只能看、不能再發言")
+    message = ChatMessage.objects.create(game=game, user=user, name=user.username, room=_chat_room(game, seat),
+                                         text=clean_chat_text(text))
+    return message.to_dict(user)
 
 
 def end_game(game):

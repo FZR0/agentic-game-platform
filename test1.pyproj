@@ -47,6 +47,7 @@
     <Compile Include="arena\agent.py" />
     <Compile Include="arena\apps.py" />
     <Compile Include="arena\base.py" />
+    <Compile Include="arena\context_processors.py" />
     <Compile Include="arena\games.py" />
     <Compile Include="arena\health.py" />
     <Compile Include="arena\management\__init__.py" />
@@ -62,6 +63,7 @@
     <Compile Include="arena\migrations\0006_accounts.py" />
     <Compile Include="arena\migrations\0007_pvp.py" />
     <Compile Include="arena\migrations\0008_gamespectator.py" />
+    <Compile Include="arena\migrations\0009_room_start_chat.py" />
     <Compile Include="arena\migrations\__init__.py" />
     <Compile Include="arena\models.py" />
     <Compile Include="arena\narrator.py" />
@@ -130,6 +132,7 @@
     <Content Include="arena\templates\arena\_ai_problem.html" />
     <Content Include="arena\templates\arena\_game_row.html" />
     <Content Include="arena\templates\arena\_how_to_use.html" />
+    <Content Include="arena\templates\arena\_room_banner.html" />
     <Content Include="arena\templates\arena\base.html" />
     <Content Include="arena\templates\arena\guide.html" />
     <Content Include="arena\templates\arena\history.html" />
@@ -164,6 +167,7 @@
     <Content Include="logs\故障報告\20261107-232026.txt" />
     <Content Include="logs\故障報告\20261108-215248.txt" />
     <Content Include="logs\故障報告\20261108-222047.txt" />
+    <Content Include="logs\故障報告\20261110-150526.txt" />
     <Content Include="README.md" />
     <Content Include="requirements.txt" />
     <Content Include="weiqi\static\weiqi\board.js" />
