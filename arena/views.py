@@ -223,6 +223,42 @@ def api_room_start(request, game_key, game_id):
     return response
 
 
+def _closed(request, module, game, kind):
+    """關閉房間（2026-11-13）：交給 AI 助理，成功時通知房間裡的人（朋友、觀戰的人看到房間已關閉）。"""
+    result = orchestrator.handle(kind, _with_user(request, {"module": module, "game": game,
+                                                             "params": {"game_id": game.id}}))
+    realtime.notify(game)
+    return result
+
+
+@require_POST
+def api_room_close(request, game_key, game_id):
+    """房間頁的「關閉房間」：只有房主、只在按開始之前。"""
+    module = _module(game_key)
+    game = _game(request, module, game_id)
+    try:
+        data, handled = _closed(request, module, game, "close_room")
+    except ValueError as exc:
+        return _error(exc)
+    return JsonResponse({**data, "handled": handled, "ai_problem": health.current()})
+
+
+@require_POST
+def close_room(request, game_id):
+    """首頁、對局紀錄清單上的「關閉房間」（表單送出）；關閉後回到原本的頁面。"""
+    game = get_object_or_404(Game.visible_to(request.user), pk=game_id)
+    try:
+        _, handled = _closed(request, _module(game.game_type), game, "close_room")
+    except ValueError as exc:
+        handled = {"notice": str(exc)}
+    if handled.get("notice"):
+        messages.warning(request, handled["notice"])
+    target = request.POST.get("next", "")
+    if not url_has_allowed_host_and_scheme(target, allowed_hosts={request.get_host()}):
+        target = reverse("arena:home")
+    return redirect(target)
+
+
 @require_POST
 def api_room_chat(request, game_key, game_id):
     """房間聊天室發言（2026-11-13）：坐在座位上的人與觀戰的人都能說話（看得到這盤就行，watch=True）。"""

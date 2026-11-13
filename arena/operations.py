@@ -131,11 +131,11 @@ def _played_games(user, **filters):
     打開對局頁時如果 AI 先行動（例如撲克），對局一建立就存檔；玩家一步都沒下就離開的不列出，
     否則每打開一次撲克頁就多一盤「未完成」。AI 的每一步都有一筆 AiNote，所以行動數多於 AiNote 數就是玩家下過。
     真人對戰的房間一律列出（2026-11-13）：房間是特地開的或加入的，按「開始」前一步都沒下，
-    不列出的話房主或朋友一離開房間頁就回不去了（使用者回報）。
+    不列出的話房主或朋友一離開房間頁就回不去了（使用者回報）。房主在開始前關掉的房間不列出（closed_room）。
     """
     qs = Game.visible_to(user).filter(game_type__in=list(games.GAMES), **filters).prefetch_related("players__user")
     ai_counts = dict(AiNote.objects.filter(game__in=qs).values("game").annotate(n=Count("id")).values_list("game", "n"))
-    return [g for g in qs if g.pvp or len(g.actions) > ai_counts.get(g.id, 0)]
+    return [g for g in qs if (g.pvp and not closed_room(g)) or (not g.pvp and len(g.actions) > ai_counts.get(g.id, 0))]
 
 
 def active_rooms(user):
@@ -173,6 +173,9 @@ def _card(game, user):
             "result": result, "result_text": RESULTS[result], "review_url": f"{url}?review={game.id}",
             "resume_url": f"{url}?resume={game.id}" if result == "unfinished" else "",
             "resume_label": "回到房間" if room else "繼續下",
+            # 房主可以關閉還沒按開始的房間（2026-11-13）
+            "close_url": reverse("arena:close_room", args=[game.id])
+            if room and game.owner_id == user.id and game.started_at is None else "",
             # 真人對戰不能單方面「不計勝負」，否則快輸的一方按了就能讓輸棋不算；要結束就認輸
             "end_url": reverse("arena:end_game", args=[game.id]) if result == "unfinished" and not game.pvp else ""}
 
@@ -280,6 +283,8 @@ def watch_game(code, user):
     game = Game.objects.filter(mode="pvp", room_code=code).first() if code else None
     if game is None:
         raise ValueError("找不到這個房間密碼，請確認有沒有打錯")
+    if closed_room(game):
+        raise ValueError("房主已經關閉這個房間了")
     seat = game.seat_of(user)
     if seat is None:
         GameSpectator.objects.get_or_create(game=game, user=user)
@@ -301,9 +306,30 @@ def start_room(game, user):
     if game.waiting:
         raise ValueError("還有座位空著，朋友都加入後才能開始")
     # 條件式更新：同時按兩次（例如兩個分頁）只有一次算數，倒數不會被往後延
-    if not Game.objects.filter(pk=game.pk, started_at__isnull=True).update(
+    if not Game.objects.filter(pk=game.pk, started_at__isnull=True, ended=False).update(
             started_at=timezone.now() + timedelta(seconds=START_COUNTDOWN)):
         raise ValueError("已經按過開始了")
+    game.refresh_from_db()
+    return game
+
+
+def closed_room(game):
+    """房主在開始前關掉的房間（使用者要求，2026-11-13）：記成「結束（不計勝負）」而且從沒開始過。"""
+    return game.pvp and game.ended and game.started_at is None
+
+
+def close_room(game, user):
+    """房主關閉還沒開始的房間（2026-11-13 使用者要求「房主要能夠關閉房間」）：記成結束（不計勝負），
+    不進戰績，房間密碼與邀請連結都不能再加入或觀戰，清單與頂端的「回到房間」也不再列出。
+    開始以後不能關：快輸的一方關掉就能讓輸棋不算（和真人對戰不能「不計勝負」同一個理由），要結束請認輸。"""
+    if not game.pvp or game.owner_id != user.id:
+        raise ValueError("只有開房的人能關閉房間")
+    if game.finished:
+        raise ValueError("這個房間已經結束了")
+    # 條件式更新：和按「開始」同時發生時只有一個算數
+    if not Game.objects.filter(pk=game.pk, started_at__isnull=True, ended=False).update(ended=True,
+                                                                                       updated_at=timezone.now()):
+        raise ValueError("已經開始了，不能關閉房間；要結束請認輸")
     game.refresh_from_db()
     return game
 
@@ -322,6 +348,8 @@ def join_game(code, user):
     game = Game.objects.filter(mode="pvp", room_code=code).first() if code else None
     if game is None:
         raise ValueError("找不到這個房間密碼，請確認有沒有打錯")
+    if closed_room(game):
+        raise ValueError("房主已經關閉這個房間了")
     seat = game.seat_of(user)
     if seat is not None:
         return game, seat

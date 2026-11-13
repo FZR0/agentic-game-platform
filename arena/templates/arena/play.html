@@ -153,6 +153,8 @@
       <section id="room-players" class="room-players" aria-label="玩家列表" hidden>
         <ul id="room-seats" class="room-seats"></ul>
         <p id="room-spectators" class="muted"></p>
+        {# 房主在按開始前可以關閉房間（2026-11-13） #}
+        <button id="close-room" type="button" class="end-button" hidden>關閉房間</button>
       </section>
       {# 座位都坐滿後由房主按「開始」，倒數三秒才能下（2026-11-13） #}
       <div id="room-start" class="room-start" hidden>

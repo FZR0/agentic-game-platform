@@ -851,3 +851,4 @@ details ul { margin: 4px 0 0; padding-left: 18px; }
 .room-seats .seat-name { font-weight: 700; }
 .room-seats .seat-tags { color: var(--accent); font-size: 0.85rem; font-weight: 600; }
 .room-players > p { margin: 6px 0 0; font-size: 0.88rem; overflow-wrap: anywhere; }
+.room-players > .end-button { margin-top: 8px; }

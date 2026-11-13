@@ -311,6 +311,11 @@ def _start_room(ctx):
     return {"game": game.summary()}
 
 
+def _close_room(ctx):
+    game = operations.close_room(_game(ctx), ctx["user"])
+    return {"game": game.summary()}
+
+
 def _send_chat(ctx):
     return operations.send_chat(_game(ctx), ctx["user"], ctx["seat"], ctx["params"]["text"])
 
@@ -371,6 +376,8 @@ REQUESTS = {r.kind: r for r in [
     # 房主按開始、房間聊天室（2026-11-13）
     OneStep("start", "start_room", "房主按了第 {game_id} 盤的「開始」，請開始這盤真人對戰（倒數後開始，AI 的座位倒數完再行動）。",
             _start_room, params={"game_id": GAME_ID}, summary=lambda data: f"第 {data['game']['id']} 盤已開始。"),
+    OneStep("close_room", "close_room", "房主要關閉第 {game_id} 盤還沒開始的房間，請關閉。", _close_room,
+            params={"game_id": GAME_ID}, summary=lambda data: f"第 {data['game']['id']} 盤的房間已關閉。"),
     OneStep("chat", "send_chat", "使用者在第 {game_id} 盤的房間聊天室送出訊息「{text}」，請照原文送出這則訊息。",
             _send_chat, params={"game_id": GAME_ID, "text": ("string", "訊息原文", "text")},
             summary=lambda data: "訊息已送出。"),

@@ -109,6 +109,7 @@ class Game(models.Model):
             data["waiting"] = self.waiting
             data["room_code"] = self.room_code if self.waiting else ""
             data["starts_in"] = self.starts_in()
+            data["closed"] = self.ended and self.started_at is None  # 房主在開始前關閉了房間（2026-11-13）
         return data
 
 

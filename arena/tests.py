@@ -2264,6 +2264,48 @@ class RoomStartTests(RefusalAssertions, TestCase):
         operations.play_human_move(GOMOKU, game, "resign", 1)
         self.assertNotIn(back, self.clients["alice"].get("/guide/").content.decode())  # 結束了就不再提示
 
+    def test_the_host_can_close_a_room_before_it_starts_and_it_disappears_everywhere(self):
+        # 使用者要求（2026-11-13）：「房主要能夠關閉房間」。沒人來的房間否則會一直留在清單和頂端的「回到房間」
+        from . import realtime
+        game, _ = operations.start_game(GOMOKU, 1, {}, self.alice, "pvp")
+        operations.join_game(game.room_code, self.bob)
+        self.assertRefused(self.post("bob", f"/api/gomoku/games/{game.id}/close/"), "只有開房的人")
+        with patch.object(realtime, "notify") as notify:
+            r = self.post("alice", f"/api/gomoku/games/{game.id}/close/")
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()["game"]["closed"])
+        notify.assert_called_once()  # 房間裡的朋友、觀戰的人馬上看到房間關了
+        game.refresh_from_db()
+        self.assertTrue(game.ended)
+        back = f"/gomoku/?resume={game.id}"
+        for who in ("alice", "bob"):
+            for url in ("/", "/history/", "/guide/"):
+                self.assertNotIn(back, self.clients[who].get(url).content.decode(), (who, url))
+        carol = User.objects.create_user("carol")
+        for join in (operations.join_game, operations.watch_game):
+            with self.assertRaisesMessage(ValueError, "房主已經關閉這個房間"):
+                join(game.room_code, carol)
+        self.assertRefused(self.post("alice", f"/api/gomoku/games/{game.id}/start/"), "已經結束")
+
+    def test_a_started_room_cannot_be_closed_so_the_losing_side_cannot_escape(self):
+        # 開始後還能關的話，快輸的一方關掉房間就能讓輸棋不算；要結束請認輸
+        game = start_now(self.full_room())
+        self.assertRefused(self.post("alice", f"/api/gomoku/games/{game.id}/close/"), "認輸")
+        game.refresh_from_db()
+        self.assertFalse(game.ended)
+
+    def test_the_home_list_offers_closing_only_to_the_host(self):
+        game, _ = operations.start_game(GOMOKU, 1, {}, self.alice, "pvp")
+        operations.join_game(game.room_code, self.bob)
+        close = f"/games/{game.id}/close/"
+        self.assertIn(close, self.clients["alice"].get("/").content.decode())
+        self.assertNotIn(close, self.clients["bob"].get("/").content.decode())
+        response = self.clients["alice"].post(close, {"next": "/history/"})
+        self.assertRedirects(response, "/history/", fetch_redirect_response=False)
+        self.assertTrue(Game.objects.get(pk=game.pk).ended)
+        self.clients["bob"].post(close)  # 不是房主：不會改到任何東西（房間已經關了，也只是回到原頁）
+        self.assertEqual(ModelRun.objects.filter(kind="req_close_room").count(), 2)  # 都經過 AI 助理
+
     def test_rooms_that_were_already_full_before_this_change_keep_going(self):
         # 原本最後一位加入就開始了；不當成已開始的話，進行到一半的對局會卡住、誰都不能下
         migration = importlib.import_module("arena.migrations.0009_room_start_chat")
