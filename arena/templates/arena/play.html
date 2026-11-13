@@ -149,6 +149,11 @@
         <p>把房間密碼 <strong id="room-code" class="room-code"></strong> 或下面的連結傳給朋友，朋友登入後就能加入。</p>
         <div class="invite-link"><input id="invite-link" type="text" readonly aria-label="邀請連結"><button id="copy-invite" type="button">複製連結</button></div>
       </div>
+      {# 房間的玩家列表（2026-11-13）：每個真人座位是誰、還空著的座位、觀戰的人；app.js::renderRoomPlayers #}
+      <section id="room-players" class="room-players" aria-label="玩家列表" hidden>
+        <ul id="room-seats" class="room-seats"></ul>
+        <p id="room-spectators" class="muted"></p>
+      </section>
       {# 座位都坐滿後由房主按「開始」，倒數三秒才能下（2026-11-13） #}
       <div id="room-start" class="room-start" hidden>
         <p>大家都到齊了。準備好就按「開始」，倒數 3 秒後開始。</p>

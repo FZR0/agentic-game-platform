@@ -133,10 +133,10 @@ def join(request, code=""):
             if handled.get("notice"):
                 messages.warning(request, handled["notice"])
             play_url = reverse("arena:play", args=[data["module"].key])
+            # 有人坐下或開始觀戰：房間裡的人馬上看到（玩家列表也列出觀戰的人，2026-11-13）
+            realtime.notify(data["game"])
             if data["seat"] is None:  # 觀戰；按「加入」但座位已經坐滿也改成觀戰（2026-11-13），網頁據 full 說明原因
                 return redirect(f"{play_url}?watch={data['game'].id}" + ("" if watch else "&full=1"))
-            if not watch:
-                realtime.notify(data["game"])
             return redirect(f"{play_url}?resume={data['game'].id}")
     data, handled = orchestrator.handle("join_page", _with_user(request, {"params": {}}))
     return render(request, "arena/join.html", {**data, "handled": handled, "ai_problem": health.current(),

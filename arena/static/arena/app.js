@@ -43,6 +43,8 @@ const state = {
   hiddenNotes: false, // 有被遮住的 AI 思路（撲克的底牌），復盤時要重新載入
   pvp: false, // 真人對戰（2026-11-05）：對手也是真人，對局中不能用 AI 教練
   players: {}, // 真人對戰的 {座位: 帳號名稱}；null 是還在等人加入
+  spectators: [], // 觀戰的人的帳號名稱（玩家列表用，2026-11-13）
+  hostSeat: null, // 房主坐的座位（玩家列表標「房主」）
   watching: false, // 觀戰中（2026-11-08）：沒有座位，不能下、不能用 AI 教練
   owner: false, // 這個房間是自己開的：朋友加入前改設定會套用到同一個房間
   startsAt: null, // 真人對戰的開始時間（這台電腦的時鐘，2026-11-13）；null＝房主還沒按「開始」
@@ -239,6 +241,7 @@ function updateButtons() {
     && !waitingForPlayers() && state.startsAt === null);
   $("start-room").disabled = state.busy || state.starting;
   updateChatAvailability();
+  renderRoomPlayers();
   GameBoard.renderControls?.(currentFrame(), $("game-actions"), !state.busy && humanTurn(), playAction);
   updateAskAvailability();
 }
@@ -286,7 +289,7 @@ function resetView(human, settings, actions, frames, pvp = false, players = {}, 
   Object.assign(state, {
     human, settings, actions, frames, over: false, reviewing: false, viewAt: 0, marks: null,
     hover: null, highlight: null, hoverHighlight: null, hiddenNotes: false, pvp, players, watching, owner: false,
-    startsAt: null, starting: false,
+    startsAt: null, starting: false, spectators: [], hostSeat: null,
   });
   stopCountdown(); // 聊天不清掉：房主改房間設定時仍是同一個房間；開新局時由 newGame 清掉
   $("invite").hidden = true;
@@ -409,7 +412,7 @@ async function applyUpdate(data) {
     openSocket(data.game.id);
   }
   const wasWaiting = waitingForPlayers();
-  state.players = data.game.players || {};
+  setRoomPeople(data.game);
   // 大家到齊後就不能改設定了；開房時自動打開的設定面板會蓋住「開始」按鈕，所以收起來
   if (wasWaiting && !waitingForPlayers()) setPopover("settings-panel", false);
   showInvite(data.game.room_code);
@@ -446,6 +449,45 @@ async function flushPendingUpdate() {
   if (data) await applyUpdate(data);
 }
 
+// ---- 房間的玩家列表（2026-11-13 使用者要求）----
+
+function setRoomPeople(game) {
+  state.players = game.players || {};
+  state.spectators = game.spectators || [];
+  state.hostSeat = game.human_seat ?? null; // 真人對戰的 human_seat 是開房的人坐的座位
+}
+
+function renderRoomPlayers() {
+  const box = $("room-players");
+  box.hidden = !(state.pvp && state.gameId !== null);
+  if (box.hidden) return;
+  const turn = !state.over && roomStarted() && !waitingForPlayers() ? currentFrame()?.to_move : null;
+  $("room-seats").replaceChildren(...Object.entries(state.players).map(([seat, name]) => {
+    const li = document.createElement("li");
+    li.classList.toggle("empty", name === null);
+    li.classList.toggle("turn", Number(seat) === turn);
+    const tags = [Number(seat) === state.hostSeat && "房主", Number(seat) === state.human && !state.watching && "你",
+      Number(seat) === turn && "輪到"].filter(Boolean);
+    const label = document.createElement("span");
+    label.className = "seat-name";
+    label.textContent = seatName(Number(seat));
+    li.append(label, ` ${name ?? "等待加入…"}`);
+    if (tags.length) {
+      const tag = document.createElement("span");
+      tag.className = "seat-tags";
+      tag.textContent = tags.join("・");
+      li.append(" ", tag);
+    }
+    return li;
+  }));
+  // 撲克的其他座位由 AI 坐（開桌時自選哪些座位給朋友）
+  const aiSeats = (Number(state.settings.players) || 0) - Object.keys(state.players).length;
+  const lines = [];
+  if (aiSeats > 0) lines.push(`另外 ${aiSeats} 個座位由 AI 坐`);
+  lines.push(state.spectators.length ? `觀戰（${state.spectators.length}）：${state.spectators.join("、")}` : "目前沒有人觀戰");
+  $("room-spectators").textContent = lines.join("。");
+}
+
 // 在真人對戰的房間裡時，網址留著房間編號（2026-11-13 使用者回報回不到自己開的房間）：重新整理、上一頁都回到同一個房間。
 // 和 AI 對戰時網址維持 /<遊戲>/，重新整理照舊開新局
 function rememberRoom() {
@@ -466,7 +508,7 @@ async function newPvpGame(settings) {
     state.gameId = data.game.id;
     state.owner = true;
     rememberRoom();
-    state.players = data.game.players;
+    setRoomPeople(data.game);
     state.frames = [data.frame];
     showInvite(data.game.room_code);
     openSocket(data.game.id);
@@ -498,6 +540,7 @@ async function changeRoom() {
     const data = await api(`games/${state.gameId}/room/`, { seat, settings });
     const gameId = state.gameId;
     resetView(seat, data.game.settings, [], [data.frame], true, data.game.players);
+    setRoomPeople(data.game);
     Object.assign(state, { gameId, owner: true });
     pendingUpdate = null; // 改設定之前收到的推送是舊設定的棋盤，不能再套用
     showInvite(data.game.room_code);
@@ -1197,6 +1240,7 @@ async function openGame(id, mode) {
     const watching = g.game.mode === "pvp" && g.my_seat === null;
     resetView(watching ? null : g.my_seat ?? g.game.human_seat, g.game.settings, g.actions, g.frames,
       g.game.mode === "pvp", g.game.players || {}, watching);
+    setRoomPeople(g.game);
     state.gameId = g.game.id;
     // 自己開、還沒有人加入的房間：回到這頁也能接著改設定
     state.owner = !watching && g.game.mode === "pvp" && g.my_seat === g.game.human_seat && g.actions.length === 0;

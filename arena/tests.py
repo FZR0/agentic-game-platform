@@ -2089,6 +2089,18 @@ class SpectatorTests(TestCase):
         home = operations.home_context(self.carol)
         self.assertFalse(home["recent"] or home["resume"])
 
+    def test_the_room_lists_players_and_spectators_and_tells_everyone_when_someone_comes_to_watch(self):
+        # 使用者要求（2026-11-13）：房間內要有玩家列表。觀戰的人也列出來，進來時房間裡的人馬上看到
+        from . import realtime
+        detail = self.clients["alice"].get(f"/api/gomoku/games/{self.game.id}/").json()["game"]
+        self.assertEqual((detail["players"], detail["spectators"], detail["human_seat"]),
+                         ({"1": "alice", "2": "bob"}, [], 1))
+        with patch.object(realtime, "notify") as notify:
+            self.watch()
+        notify.assert_called_once()
+        detail = self.clients["bob"].get(f"/api/gomoku/games/{self.game.id}/").json()["game"]
+        self.assertEqual(detail["spectators"], ["carol"])
+
     def test_spectators_get_live_updates_from_no_seat(self):
         from . import realtime
         self.assertEqual(realtime.seat_for(self.carol, self.game.id), (None, None))

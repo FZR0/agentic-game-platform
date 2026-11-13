@@ -104,6 +104,8 @@ class Game(models.Model):
                 "action_count": len(self.actions), "created_at": self.created_at.isoformat()}
         if self.pvp:
             data["players"] = {p.seat: p.user.username if p.user else None for p in self.players.all()}
+            # 房間的玩家列表也列出觀戰的人（2026-11-13 使用者要求「房間內要有玩家列表」），依進來的先後
+            data["spectators"] = [s.user.username for s in self.spectators.select_related("user").order_by("joined_at", "id")]
             data["waiting"] = self.waiting
             data["room_code"] = self.room_code if self.waiting else ""
             data["starts_in"] = self.starts_in()
