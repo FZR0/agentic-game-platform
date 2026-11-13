@@ -29,6 +29,9 @@ class Game(models.Model):
     draw = models.BooleanField(default=False)
     # 玩家按「結束（不計勝負）」：對局停在這裡，不算輸贏、不進戰績、不能再下，仍可復盤（使用者要求，2026-10-21）
     ended = models.BooleanField(default=False)
+    # 真人對戰的開始時間（使用者要求，2026-11-13）：房主按「開始」時記成「現在＋倒數秒數」，到了這個時間才能下。
+    # 空的＝房主還沒按開始；和 AI 的對局不用
+    started_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -71,6 +74,17 @@ class Game(models.Model):
         """真人對戰還有空的真人座位：等對手用房間密碼加入，還不能開始下。"""
         return self.pvp and any(p.user_id is None for p in self.players.all())
 
+    @property
+    def started(self):
+        """可以開始下了：真人對戰要房主按了「開始」而且倒數結束；和 AI 的對局一開局就算開始。"""
+        return not self.pvp or (self.started_at is not None and self.started_at <= timezone.now())
+
+    def starts_in(self):
+        """倒數還剩幾秒（網頁照這個倒數，不用自己的時鐘對伺服器的時間）；還沒按開始時是 None。"""
+        if self.started_at is None:
+            return None
+        return round(max(0.0, (self.started_at - timezone.now()).total_seconds()), 2)
+
     @staticmethod
     def new_room_code():
         """房間密碼：6 個字，不用容易看錯的 0／O、1／I／L。"""
@@ -92,6 +106,7 @@ class Game(models.Model):
             data["players"] = {p.seat: p.user.username if p.user else None for p in self.players.all()}
             data["waiting"] = self.waiting
             data["room_code"] = self.room_code if self.waiting else ""
+            data["starts_in"] = self.starts_in()
         return data
 
 
@@ -118,6 +133,28 @@ class GameSpectator(models.Model):
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=["game", "user"], name="unique_arena_spectator")]
+
+
+class ChatMessage(models.Model):
+    """真人對戰房間的聊天訊息（使用者要求，2026-11-13）。對局結束後留著，打開這盤還看得到，但不能再發言。
+    房主按「開始」之前，玩家和觀戰的人在同一個聊天室（lobby）；按了之後玩家留在 players，
+    觀戰的人換到 spectators，兩邊互相看不到，觀戰的人就不能在聊天室替其中一方出主意。"""
+
+    ROOMS = {"lobby": "開始前", "players": "玩家", "spectators": "觀戰者"}
+    MAX_LENGTH = 200
+    game = models.ForeignKey(Game, on_delete=models.CASCADE, related_name="chat")
+    user = models.ForeignKey(USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    name = models.CharField(max_length=150)  # 發言當時的帳號名稱（遊客升級改名後，舊訊息仍照原本的名稱）
+    room = models.CharField(max_length=10)
+    text = models.CharField(max_length=MAX_LENGTH)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+
+    def to_dict(self, user):
+        return {"id": self.id, "name": self.name, "room": self.room, "text": self.text,
+                "mine": self.user_id == user.id, "time": timezone.localtime(self.created_at).strftime("%H:%M")}
 
 
 class AiNote(models.Model):

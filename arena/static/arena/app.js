@@ -45,6 +45,11 @@ const state = {
   players: {}, // 真人對戰的 {座位: 帳號名稱}；null 是還在等人加入
   watching: false, // 觀戰中（2026-11-08）：沒有座位，不能下、不能用 AI 教練
   owner: false, // 這個房間是自己開的：朋友加入前改設定會套用到同一個房間
+  startsAt: null, // 真人對戰的開始時間（這台電腦的時鐘，2026-11-13）；null＝房主還沒按「開始」
+  starting: false, // 房主按了「開始」、請求還沒回來
+  chat: [], // 房間聊天室看得到的訊息
+  chatSeen: 0, // 聊天室收起時已經看過的最後一則訊息編號，用來算未讀
+  chatSending: false,
 };
 // 說明一次只送一個請求給 Ollama，依序產生
 let narrationQueue = Promise.resolve();
@@ -211,9 +216,11 @@ function setThinkingStatus() {
   }, 1000);
 }
 
-const humanTurn = () => !state.over && !state.reviewing && !waitingForPlayers()
+const humanTurn = () => !state.over && !state.reviewing && !waitingForPlayers() && roomStarted()
   && currentFrame()?.to_move === state.human;
 const waitingForPlayers = () => state.pvp && Object.values(state.players).some((name) => name === null);
+// 真人對戰要房主按「開始」、倒數結束才能下（伺服器也會拒絕，2026-11-13）
+const roomStarted = () => !state.pvp || (state.startsAt !== null && Date.now() >= state.startsAt);
 // 真人對戰還沒結束時不能用 AI 教練（伺服器也會拒絕），否則就是幫其中一方作弊（使用者決定，2026-11-05）
 const coachLocked = () => state.pvp && !state.over;
 
@@ -228,6 +235,10 @@ function updateButtons() {
   // 真人對戰不能不計勝負（快輸的一方按了就能讓輸棋不算），要結束請認輸
   $("end-game").hidden = state.gameId === null || state.over || state.reviewing || state.pvp;
   $("end-game").disabled = state.busy;
+  $("room-start").hidden = !(state.pvp && state.owner && !state.watching && state.gameId !== null && !state.over
+    && !waitingForPlayers() && state.startsAt === null);
+  $("start-room").disabled = state.busy || state.starting;
+  updateChatAvailability();
   GameBoard.renderControls?.(currentFrame(), $("game-actions"), !state.busy && humanTurn(), playAction);
   updateAskAvailability();
 }
@@ -275,7 +286,9 @@ function resetView(human, settings, actions, frames, pvp = false, players = {}, 
   Object.assign(state, {
     human, settings, actions, frames, over: false, reviewing: false, viewAt: 0, marks: null,
     hover: null, highlight: null, hoverHighlight: null, hiddenNotes: false, pvp, players, watching, owner: false,
+    startsAt: null, starting: false,
   });
+  stopCountdown(); // 聊天不清掉：房主改房間設定時仍是同一個房間；開新局時由 newGame 清掉
   $("invite").hidden = true;
   if (pvp) setCoachOpen(false);
   setUnread(0);
@@ -327,8 +340,12 @@ function statusAfterMove(data) {
   if (data.winner || data.draw || data.ended) finishGame(data.winner, data.draw);
   else if (waitingForPlayers()) {
     setStatus(state.owner ? "等朋友加入中…把房間密碼傳給朋友。朋友加入前可以在「設定」改設定，改了馬上套用到這個房間。"
-      : "等朋友加入中…對方加入後就可以開始。");
+      : "等朋友加入中…大家到齊後，由房主按「開始」。");
   }
+  else if (state.pvp && state.startsAt === null) {
+    setStatus(state.owner && !state.watching ? "大家都到齊了，按「開始」開始對局。" : "大家都到齊了，等房主按「開始」…");
+  }
+  else if (!roomStarted()) setStatus("倒數中，馬上開始…");
   else if (currentFrame()?.to_move !== state.human) {
     const name = state.players[currentFrame()?.to_move];
     setStatus(name ? `等 ${name}（${seatName(currentFrame().to_move)}）下…` : "其他玩家行動中…");
@@ -367,6 +384,10 @@ function openSocket(gameId) {
   socket.onmessage = (event) => {
     if (round !== state.round) return;
     const data = JSON.parse(event.data);
+    if (data.type === "chat") {
+      renderChat(data.chat); // 聊天不會加步數，不必等自己的請求回來
+      return;
+    }
     if (data.type !== "update") return;
     if (state.busy) pendingUpdate = data;
     else applyUpdate(data);
@@ -387,8 +408,12 @@ async function applyUpdate(data) {
     if (owner) syncSettingsForm(data.my_seat, data.game.settings);
     openSocket(data.game.id);
   }
+  const wasWaiting = waitingForPlayers();
   state.players = data.game.players || {};
+  // 大家到齊後就不能改設定了；開房時自動打開的設定面板會蓋住「開始」按鈕，所以收起來
+  if (wasWaiting && !waitingForPlayers()) setPopover("settings-panel", false);
   showInvite(data.game.room_code);
+  setStartsIn(data.game.starts_in);
   // 每一步都重新看目前有幾步：前一次推送還在一步一步播時又收到新的推送，兩邊都不會重複加同一步
   while (state.actions.length < data.actions.length) {
     const i = state.actions.length;
@@ -476,6 +501,149 @@ async function changeRoom() {
   }
 }
 
+// ---- 房主按「開始」與倒數（使用者要求，2026-11-13）----
+
+// 伺服器給的是「還剩幾秒」（不是時間點），換成這台電腦的時鐘，兩邊的時鐘不準也沒關係。
+// 按過開始之後時間點不再變（每次推送都重算的話會因為傳送延遲一直往後跳）
+function setStartsIn(seconds) {
+  if (seconds === null || seconds === undefined || state.startsAt !== null) return;
+  state.startsAt = Date.now() + seconds * 1000;
+  if (seconds > 0) runCountdown();
+}
+
+let countdownTimer = null;
+
+function stopCountdown() {
+  clearInterval(countdownTimer);
+  countdownTimer = null;
+  $("countdown").hidden = true;
+}
+
+function runCountdown() {
+  stopCountdown();
+  const round = state.round;
+  const tick = () => {
+    const left = Math.ceil((state.startsAt - Date.now()) / 1000);
+    if (round !== state.round) return stopCountdown();
+    if (left > 0) {
+      $("countdown").hidden = false;
+      $("countdown").textContent = String(left);
+      return;
+    }
+    stopCountdown();
+    statusAfterMove({});
+    updateButtons();
+  };
+  tick();
+  statusAfterMove({});
+  updateButtons();
+  countdownTimer = setInterval(tick, 100);
+}
+
+async function startRoom() {
+  state.starting = true;
+  updateButtons();
+  try {
+    // 倒數由伺服器的推送開始；請求要等倒數完（AI 的座位倒數後才行動）才回來
+    const data = await api(`games/${state.gameId}/start/`, agentOptions());
+    setStartsIn(data.game.starts_in); // 推送沒收到（例如即時連線斷了）時，至少知道已經開始
+  } catch (err) {
+    setStatus(`無法開始：${err.message}`);
+  } finally {
+    state.starting = false;
+    updateButtons();
+  }
+}
+
+// ---- 房間聊天室（使用者要求，2026-11-13）----
+// 房主按開始前，玩家和觀戰的人在同一個聊天室；按了之後觀戰的人換到觀戰者專屬的聊天室，兩邊互相看不到
+
+const chatOpen = () => !$("chat").hidden;
+
+function setChatOpen(open) {
+  $("chat").hidden = !open;
+  $("chat-toggle").hidden = open || !(state.pvp && state.gameId !== null);
+  $("chat-toggle").setAttribute("aria-expanded", String(open));
+  if (open) {
+    markChatSeen();
+    $("chat-log").scrollTop = $("chat-log").scrollHeight;
+    $("chat-input").focus();
+  }
+}
+
+function markChatSeen() {
+  state.chatSeen = state.chat.at(-1)?.id || 0;
+  $("chat-badge").hidden = true;
+}
+
+function renderChat(messages) {
+  state.chat = messages;
+  const log = $("chat-log");
+  const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+  const started = state.startsAt !== null;
+  log.replaceChildren(...messages.map((m) => {
+    const li = document.createElement("li");
+    li.classList.toggle("mine", m.mine);
+    const meta = document.createElement("span");
+    meta.className = "chat-meta";
+    meta.textContent = `${m.mine ? "你" : m.name}・${m.time}${started && m.room === "lobby" ? "・開始前" : ""}`;
+    li.append(meta, m.text);
+    return li;
+  }));
+  if (!messages.length) {
+    const li = document.createElement("li");
+    li.className = "chat-empty";
+    li.textContent = "還沒有人說話。";
+    log.append(li);
+  }
+  if (atBottom || messages.at(-1)?.mine) log.scrollTop = log.scrollHeight;
+  if (chatOpen()) markChatSeen();
+  else {
+    const unread = messages.filter((m) => m.id > state.chatSeen && !m.mine).length;
+    $("chat-badge").hidden = !unread;
+    $("chat-badge").textContent = String(unread);
+  }
+  updateChatAvailability();
+}
+
+function updateChatAvailability() {
+  const room = state.pvp && state.gameId !== null;
+  if (!room) {
+    $("chat").hidden = true;
+    $("chat-toggle").hidden = true;
+  } else if ($("chat").hidden) $("chat-toggle").hidden = false;
+  const started = state.startsAt !== null;
+  $("chat-title").textContent = !started ? "聊天室" : state.watching ? "聊天室（觀戰者）" : "聊天室（玩家）";
+  $("chat-note").textContent = !started ? "開始前，房間裡的每個人（包括觀戰的人）都在這裡聊天。"
+    : state.watching ? "對局開始後，觀戰的人在這個專屬聊天室聊天，玩家看不到。"
+      : "對局開始後只有玩家在這裡，觀戰的人在另一個聊天室。";
+  const closed = state.over;
+  $("chat-input").disabled = closed || state.chatSending;
+  $("chat-input").placeholder = closed ? "對局已經結束，只能看" : "說點什麼…";
+  $("chat-form").querySelector("button").disabled = closed || state.chatSending;
+}
+
+async function sendChat(event) {
+  event.preventDefault();
+  const text = $("chat-input").value.trim();
+  if (!text || state.chatSending) return;
+  state.chatSending = true;
+  updateChatAvailability();
+  $("chat-note").textContent = "送出中…";
+  let error = "";
+  try {
+    const message = await api(`games/${state.gameId}/chat/`, { text });
+    $("chat-input").value = "";
+    if (!state.chat.some((m) => m.id === message.id)) renderChat([...state.chat, message]);
+  } catch (err) {
+    error = `沒有送出：${err.message}`;
+  }
+  state.chatSending = false;
+  updateChatAvailability();
+  if (error) $("chat-note").textContent = error;
+  if (!$("chat-input").disabled) $("chat-input").focus();
+}
+
 // 設定面板跟著伺服器的房間設定（另一個分頁改過、或重新打開房間時）
 function syncSettingsForm(seat, settings) {
   $("opponent").value = "pvp";
@@ -500,6 +668,7 @@ async function newGame() {
   const settings = readSettings();
   resetView(Number($("human-seat").value), settings, [], [GameBoard.emptyFrame(settings)], pvpChosen());
   state.gameId = null;
+  renderChat([]);
   updateButtons();
   if (state.pvp) {
     await newPvpGame(settings);
@@ -1019,6 +1188,8 @@ async function openGame(id, mode) {
     state.gameId = g.game.id;
     // 自己開、還沒有人加入的房間：回到這頁也能接著改設定
     state.owner = !watching && g.game.mode === "pvp" && g.my_seat === g.game.human_seat && g.actions.length === 0;
+    setStartsIn(g.game.starts_in);
+    renderChat(g.chat || []);
     for (const note of g.notes) addNote(note, false);
     if (!g.notes.length && g.actions.length) {
       $("thoughts-empty").textContent = "這盤棋沒有保存 AI 思路（可能是加入這個功能之前下的）。";
@@ -1164,6 +1335,10 @@ for (const id of POPOVERS) {
 }
 document.addEventListener("click", () => closePopovers());
 
+$("start-room").addEventListener("click", startRoom);
+$("chat-toggle").addEventListener("click", () => setChatOpen(true));
+$("chat-close").addEventListener("click", () => setChatOpen(false));
+$("chat-form").addEventListener("submit", sendChat);
 $("new-game").addEventListener("click", newGame);
 $("end-game").addEventListener("click", endGame);
 $("start-review").addEventListener("click", startReview);
@@ -1202,6 +1377,12 @@ const opening = new URLSearchParams(window.location.search);
 const openId = Number(opening.get("resume") || opening.get("review") || opening.get("watch"));
 // 打開後把網址還原：重新整理時開新局，不會又打開同一盤（沒下完的隨時可以從首頁接著下）
 window.history.replaceState(null, "", window.location.pathname);
-if (openId) openGame(openId, opening.has("resume") ? "resume" : opening.has("watch") ? "watch" : "review");
+if (openId) {
+  openGame(openId, opening.has("resume") ? "resume" : opening.has("watch") ? "watch" : "review").then(() => {
+    // 按「加入」時座位已經坐滿，伺服器改成觀戰（2026-11-13）
+    // 狀態列會被即時同步的第一次推送蓋掉，所以放在頂端的提示（10 秒後收起）
+    if (opening.has("full") && state.watching) showNotice("座位已經坐滿，改成觀戰。開始前可以在聊天室和大家聊天。");
+  });
+}
 else if (opening.get("room") === "new") createRoom();
 else newGame();

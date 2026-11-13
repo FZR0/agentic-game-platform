@@ -549,6 +549,9 @@ class PvpTableTests(TestCase):
                           {"seat": 1, "mode": "pvp", "settings": {"players": 4, "humans": [1, 3]}}).json()
         game = Game.objects.get(pk=r["game"]["id"])
         self.clients["bob"].post("/join/", {"code": game.room_code})
+        # 坐滿後由開桌的人按「開始」（2026-11-13）；AI 的座位在倒數後才行動，測試不等三秒
+        with patch("arena.operations.START_COUNTDOWN", 0):
+            self.assertEqual(self.post("alice", f"/api/holdem/games/{game.id}/start/", {}).status_code, 200)
         game.refresh_from_db()
         return game
 

@@ -148,6 +148,11 @@
         <p>把房間密碼 <strong id="room-code" class="room-code"></strong> 或下面的連結傳給朋友，朋友登入後就能加入。</p>
         <div class="invite-link"><input id="invite-link" type="text" readonly aria-label="邀請連結"><button id="copy-invite" type="button">複製連結</button></div>
       </div>
+      {# 座位都坐滿後由房主按「開始」，倒數三秒才能下（2026-11-13） #}
+      <div id="room-start" class="room-start" hidden>
+        <p>大家都到齊了。準備好就按「開始」，倒數 3 秒後開始。</p>
+        <button id="start-room" type="button" class="primary">開始</button>
+      </div>
       <canvas id="board" width="640" height="640" aria-label="{{ module.name }}棋盤"></canvas>
       <div id="review-nav" class="review-nav" hidden>
         <button id="nav-first" title="第一手（Home）">⏮</button>
@@ -168,6 +173,26 @@
       </div>
     </main>
   </div>
+
+  {# 倒數（2026-11-13）：房主按「開始」後，房間裡每個人（含觀戰）都看到 #}
+  <div id="countdown" class="countdown" role="status" aria-live="assertive" hidden></div>
+
+  {# 真人對戰的房間聊天室（2026-11-13）：開始前大家一起，開始後玩家與觀戰的人各一個 #}
+  <button id="chat-toggle" class="chat-toggle" type="button" aria-expanded="false" aria-controls="chat" hidden>
+    聊天室 <span id="chat-badge" class="badge" hidden></span>
+  </button>
+  <section id="chat" class="chat" aria-label="聊天室" hidden>
+    <div class="chat-head">
+      <strong id="chat-title">聊天室</strong>
+      <button id="chat-close" class="icon-button" type="button" aria-label="收起聊天室">✕</button>
+    </div>
+    <p id="chat-note" class="muted"></p>
+    <ol id="chat-log" class="chat-log"></ol>
+    <form id="chat-form" class="chat-form">
+      <input id="chat-input" type="text" maxlength="200" autocomplete="off" placeholder="說點什麼…" aria-label="聊天訊息">
+      <button type="submit" class="primary">送出</button>
+    </form>
+  </section>
 
   {{ config|json_script:"game-config" }}
   <script src="{% static module.board_script %}?v={{ asset_version }}"></script>
