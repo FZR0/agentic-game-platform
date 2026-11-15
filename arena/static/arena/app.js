@@ -244,8 +244,12 @@ function updateButtons() {
   // 房主在開始前關掉的房間一步都沒下，沒有東西可以復盤
   review.disabled = !inRoom() && (state.busy || state.reviewing || state.gameId === null || coachLocked()
     || state.watching || state.closed || returnTimer !== null);
-  $("coach-toggle").disabled = coachLocked();
+  // 房間裡（真人對戰的頁面，從「對戰紀錄」打開的復盤除外）完全不出現 AI 教練（2026-11-16 使用者要求「隱藏＋停用，到非房間才能打開」）
+  const roomPage = state.pvp && !state.reviewing;
+  $("coach-toggle").hidden = roomPage;
+  $("coach-toggle").disabled = roomPage || coachLocked();
   $("coach-toggle").title = coachLocked() ? "真人對戰中不能使用 AI 教練，對局結束後就可以復盤" : "";
+  if (roomPage && !$("coach").hidden) setCoachOpen(false);
   document.querySelectorAll("#game-actions button").forEach((b) => { b.disabled = state.busy || !humanTurn(); });
   // 「結束（不計勝負）」只在有存檔、還沒結束的對局顯示；玩家先下而還沒下第一步時沒有存檔，不必結束。
   // 真人對戰不能不計勝負（快輸的一方按了就能讓輸棋不算），要結束請認輸
