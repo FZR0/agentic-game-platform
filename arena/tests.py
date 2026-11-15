@@ -1718,11 +1718,12 @@ class RealtimeTests(TestCase):
         sent = []
         consumer = realtime.GameConsumer()
         consumer.game_id, consumer.seat = self.game.id, 2
+        consumer.scope = {"user": self.bob}  # 每次推送都依這個帳號現在的座位重算（房間裡可以換座位，2026-11-15）
         consumer.send_json = sent.append
         with patch.object(orchestrator, "handle", side_effect=AssertionError("推送不經過 AI 助理")):
             consumer.game_changed({"type": "game.changed"})
         self.game.refresh_from_db()
-        self.assertEqual(sent, [{"type": "update", **operations.game_detail(GOMOKU, self.game, 2)}])
+        self.assertEqual(sent, [{"type": "update", **operations.game_detail(GOMOKU, self.game, 2, self.bob)}])
 
 
 class OpponentObservationTests(TestCase):
@@ -1957,8 +1958,9 @@ class ExpiredFormTests(TestCase):
 
 
 class RoomSettingsTests(TestCase):
-    """建立對戰房間（使用者要求，2026-11-08）：首頁一鍵開房，朋友加入前房主可以自由改設定。
-    改的是同一個房間（房間密碼不變，已經傳出去的邀請照樣能用）；朋友加入後就不能改，因為對方是看了設定才加入的。"""
+    """建立對戰房間（使用者要求，2026-11-08）：首頁一鍵開房，房主可以自由改設定。
+    改的是同一個房間（房間密碼不變，已經傳出去的邀請照樣能用）。原本朋友加入後就鎖住，
+    2026-11-15 使用者要求「房主可以自由選擇」：按「開始」之前都能改（朋友照樣坐著），開始後才不能改。"""
 
     def setUp(self):
         self.alice = User.objects.create_user("alice", password="x")
@@ -1997,14 +1999,21 @@ class RoomSettingsTests(TestCase):
         game.refresh_from_db()
         self.assertEqual((game.seat_of(self.alice), game.seat_of(self.bob)), (2, 1))
 
-    def test_settings_are_locked_once_a_friend_has_joined(self):
+    def test_the_host_can_still_change_settings_after_a_friend_sits_down(self):
+        # 原本朋友加入後就鎖住設定；2026-11-15 使用者決定房主在開始前都能自由改，朋友照樣坐著
         game = self.open_room(settings={"size": 9})
         self.clients["bob"].post("/join/", {"code": game.room_code})
         r = self.post("alice", f"/api/weiqi/games/{game.id}/room/", {"seat": 1, "settings": {"size": 19}})
+        self.assertEqual(r.status_code, 200)
+        game.refresh_from_db()
+        self.assertEqual(game.settings["size"], 19)
+        self.assertEqual(game.seat_of(self.bob), 2)  # 朋友的座位還在
+        # 按了開始就不能再改
+        start_now(game)
+        r = self.post("alice", f"/api/weiqi/games/{game.id}/room/", {"seat": 1, "settings": {"size": 9}})
         self.assertEqual(r.status_code, 400)
         game.refresh_from_db()
-        self.assertEqual(game.settings["size"], 9)
-        self.assertEqual(game.seat_of(self.bob), 2)  # 朋友的座位還在
+        self.assertEqual(game.settings["size"], 19)
 
     def test_only_the_host_can_change_the_room(self):
         game = self.open_room()
@@ -2424,3 +2433,202 @@ class RoomChatTests(RefusalAssertions, TestCase):
             with patch.object(orchestrator, "handle", side_effect=AssertionError("推送不經過 AI 助理")):
                 consumer.chat_changed({"type": "chat.changed"})
             self.assertEqual([m["text"] for m in sent[0]["chat"]], [expected])
+
+
+class RoomLobbyTests(RefusalAssertions, TestCase):
+    """打完回到房間（使用者要求，2026-11-15：「完成遊戲後應該是要回到房間，而不是只有復盤然後遊戲結束」）。
+    房間＝房間密碼相同的一串對局：每一盤打完，同樣的人回到房間大廳（下一盤，還沒按開始），房主再按開始打下一盤。
+    每一盤各自是一筆對局（戰績、復盤一盤一盤算，到對局紀錄找）；聊天跨盤保留。
+    在大廳裡（只有開始前）每個人能自己坐下或起身觀戰、離開房間；房主還能改設定、換遊戲、幫人換座位、請人離開（可以再回來）、
+    轉讓房主。對局中這些都不行，否則快輸的一方換座位或離開就能逃掉。"""
+
+    def setUp(self):
+        self.users = {name: User.objects.create_user(name, password="x") for name in ("alice", "bob", "carol", "dave")}
+        self.clients = {}
+        for name, user in self.users.items():
+            self.clients[name] = Client()
+            self.clients[name].force_login(user)
+        for patcher in (patch.object(orchestrator, "_chat", side_effect=OSError("測試不連模型")),
+                        patch.object(agent, "_chat", side_effect=OSError("測試不連模型"))):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def post(self, who, url, body=None):
+        return self.clients[who].post(url, json.dumps(body or {}), content_type="application/json")
+
+    def room(self, module=GOMOKU, settings=None, watcher="carol"):
+        """alice 開房、bob 坐下、carol 觀戰（還沒按開始）。"""
+        game, _ = operations.start_game(module, 1, settings or {}, self.users["alice"], "pvp")
+        operations.join_game(game.room_code, self.users["bob"])
+        if watcher:
+            operations.watch_game(game.room_code, self.users[watcher])
+        game.refresh_from_db()
+        return game
+
+    def finish(self, game):
+        """按開始後 alice（黑棋先下）認輸，回傳認輸的回應。"""
+        start_now(game)
+        return self.post("alice", f"/api/gomoku/games/{game.id}/move/", {"action": "resign"})
+
+    def seats(self, game):
+        game.refresh_from_db()
+        return {p.seat: p.user.username if p.user else None for p in game.players.all()}
+
+    def heard(self, who, game_id):
+        return [m["text"] for m in self.clients[who].get(f"/api/gomoku/games/{game_id}/").json()["chat"]]
+
+    def test_after_a_game_everyone_is_back_in_the_room_for_the_next_one(self):
+        game = self.room()
+        r = self.finish(game)
+        nxt = Game.objects.get(pk=r.json()["next_round"])
+        game.refresh_from_db()
+        self.assertEqual(game.winner, 2)
+        self.assertEqual(game.summary()["next_round"], nxt.id)
+        # 同一個房間：同一組密碼、房主、設定、座位、觀戰的人；還沒開始，由房主再按開始
+        self.assertEqual((nxt.room_code, nxt.owner, nxt.game_type, nxt.actions),
+                         (game.room_code, game.owner, "gomoku", []))
+        self.assertEqual(self.seats(nxt), {1: "alice", 2: "bob"})
+        self.assertEqual(nxt.summary()["spectators"], ["carol"])
+        self.assertIsNone(nxt.started_at)
+        self.assertEqual(nxt.summary()["room_code"], game.room_code)  # 座位坐滿了，別人仍可用密碼進來觀戰
+        # 每一盤是各自的一筆：打完的那盤在對局紀錄可以復盤，下一盤是「回到房間」
+        history = self.clients["alice"].get("/history/").content.decode()
+        self.assertIn(f"/gomoku/?review={game.id}", history)
+        self.assertIn(f"/gomoku/?resume={nxt.id}", history)
+        self.assertEqual(operations._result(game, self.users["bob"]), "win")
+        # 用房間密碼進來的人到的是現在這一盤（座位坐滿 → 觀戰）
+        self.assertEqual(operations.join_game(game.room_code, self.users["dave"]), (nxt, None))
+        # 第二盤打完再開第三盤，房間一直延續
+        r = self.finish(nxt)
+        self.assertEqual(Game.objects.get(pk=r.json()["next_round"]).room_code, game.room_code)
+
+    def test_a_room_closed_by_the_host_does_not_come_back(self):
+        game = self.room()
+        operations.close_room(game, self.users["alice"])
+        game.refresh_from_db()
+        self.assertIsNone(operations._open_next_round(game))
+        self.assertEqual(Game.objects.filter(room_code=game.room_code).count(), 1)
+
+    def test_chat_carries_over_between_games_and_each_saved_game_keeps_its_own(self):
+        game = self.room()
+        url = f"/api/gomoku/games/{game.id}"
+        self.post("alice", f"{url}/chat/", {"text": "開始前"})
+        start_now(game)
+        self.post("bob", f"{url}/chat/", {"text": "玩家說"})
+        self.post("carol", f"{url}/chat/", {"text": "觀戰說"})
+        nxt = Game.objects.get(pk=self.post("alice", f"{url}/move/", {"action": "resign"}).json()["next_round"])
+        self.post("carol", f"/api/gomoku/games/{nxt.id}/chat/", {"text": "下一盤"})
+        # 回到房間後，上一盤兩邊的聊天都看得到（打完了，不會再替誰出主意）
+        for who in ("alice", "carol"):
+            self.assertEqual(self.heard(who, nxt.id), ["開始前", "玩家說", "觀戰說", "下一盤"])
+        # 從對局紀錄打開上一盤：看得到到那一盤為止的聊天
+        self.assertEqual(self.heard("bob", game.id), ["開始前", "玩家說", "觀戰說"])
+        # 下一盤開始後，兩邊又分開
+        start_now(nxt)
+        self.post("bob", f"/api/gomoku/games/{nxt.id}/chat/", {"text": "第二盤玩家"})
+        self.assertNotIn("第二盤玩家", self.heard("carol", nxt.id))
+
+    def test_people_sit_down_or_watch_by_themselves_only_in_the_room(self):
+        game = self.room()
+        url = f"/api/gomoku/games/{game.id}"
+        self.assertEqual(self.post("bob", f"{url}/seat/", {"seat": 0}).status_code, 200)  # 起身觀戰
+        self.assertEqual(self.seats(game), {1: "alice", 2: None})
+        self.assertEqual(sorted(game.summary()["spectators"]), ["bob", "carol"])
+        self.assertEqual(self.post("carol", f"{url}/seat/", {"seat": 2}).status_code, 200)  # 觀戰的人坐下
+        self.assertEqual(self.seats(game), {1: "alice", 2: "carol"})
+        self.assertEqual(game.summary()["spectators"], ["bob"])
+        self.assertRefused(self.post("bob", f"{url}/seat/", {"seat": 2}), "已經有人")
+        self.assertRefused(self.post("bob", f"{url}/seat/", {"seat": 1, "player": "carol"}), "只有房主")
+        self.assertRefused(self.post("alice", f"{url}/seat/", {"seat": 0}), "房主要坐在座位上")
+        self.assertEqual(ModelRun.objects.filter(kind="req_room_seat").count(), 5)  # 每個操作都經過 AI 助理
+        # 開始後不能換座位、起身（不然快輸的一方就能逃掉）
+        start_now(game)
+        self.assertRefused(self.post("carol", f"{url}/seat/", {"seat": 0}), "已經開始")
+        self.assertEqual(self.seats(game), {1: "alice", 2: "carol"})
+
+    def test_the_host_moves_people_kicks_and_hands_over_the_room(self):
+        game = self.room()
+        url = f"/api/gomoku/games/{game.id}"
+        # 房主把 bob 換到自己的座位：兩人交換，房主的座位跟著換
+        self.assertEqual(self.post("alice", f"{url}/seat/", {"player": "bob", "seat": 1}).status_code, 200)
+        self.assertEqual(self.seats(game), {1: "bob", 2: "alice"})
+        self.assertEqual(game.human_seat, 2)
+        # 房主把觀戰的 carol 換進 bob 的座位：bob 改成觀戰
+        self.post("alice", f"{url}/seat/", {"player": "carol", "seat": 1})
+        self.assertEqual(self.seats(game), {1: "carol", 2: "alice"})
+        self.assertEqual(game.summary()["spectators"], ["bob"])
+        # 請人離開：只有房主能請；被請出去的人可以再用密碼回來（使用者決定）
+        self.assertRefused(self.post("carol", f"{url}/kick/", {"player": "alice"}), "只有房主")
+        self.assertEqual(self.post("alice", f"{url}/kick/", {"player": "carol"}).status_code, 200)
+        self.assertEqual(self.seats(game), {1: None, 2: "alice"})
+        self.assertEqual(self.clients["carol"].get(f"{url}/").status_code, 404)
+        self.assertEqual(operations.join_game(game.room_code, self.users["carol"]), (game, 1))
+        # 轉讓房主：只能交給坐在座位上的人；交出去之後原房主就不能再管房間
+        self.assertRefused(self.post("alice", f"{url}/host/", {"player": "bob"}), "在觀戰")
+        self.assertEqual(self.post("alice", f"{url}/host/", {"player": "carol"}).status_code, 200)
+        game.refresh_from_db()
+        self.assertEqual((game.owner.username, game.human_seat), ("carol", 1))
+        self.assertRefused(self.post("alice", f"{url}/kick/", {"player": "bob"}), "只有房主")
+        self.assertTrue(self.clients["carol"].get(f"{url}/").json()["is_owner"])
+        self.assertFalse(self.clients["alice"].get(f"{url}/").json()["is_owner"])
+
+    def test_the_host_can_switch_games_and_whoever_does_not_fit_watches(self):
+        from holdem.module import MODULE as HOLDEM
+        game = self.room(watcher="")
+        operations.join_game(game.room_code, self.users["carol"])  # 座位滿了：觀戰
+        r = self.post("alice", f"/api/gomoku/games/{game.id}/room/",
+                      {"game_type": "holdem", "seat": 1, "settings": {"players": 4, "humans": [1, 2, 3]}})
+        self.assertEqual(r.status_code, 200)
+        game.refresh_from_db()
+        self.assertEqual(game.game_type, "holdem")
+        self.assertEqual(r.json()["game"]["id"], game.id)
+        self.assertEqual(self.seats(game), {1: "alice", 2: "bob", 3: None})  # 坐著的人照順序坐進新的座位
+        self.assertEqual(self.clients["bob"].get(f"/api/holdem/games/{game.id}/").status_code, 200)
+        # 真人座位變少：坐不下的人改成觀戰，不會被趕出房間
+        self.post("carol", f"/api/holdem/games/{game.id}/seat/", {"seat": 3})
+        self.post("alice", f"/api/holdem/games/{game.id}/room/", {"seat": 1, "settings": {"players": 4, "humans": [1, 2]}})
+        self.assertEqual(self.seats(game), {1: "alice", 2: "bob"})
+        self.assertEqual(game.summary()["spectators"], ["carol"])
+        # 撲克的房主固定 1 號位：換座位不能動 1 號位，轉讓房主時新房主換過去
+        self.assertRefused(self.post("alice", f"/api/holdem/games/{game.id}/seat/", {"player": "bob", "seat": 1}),
+                           "固定坐 1 號位")
+        self.post("alice", f"/api/holdem/games/{game.id}/host/", {"player": "bob"})
+        self.assertEqual(self.seats(game), {1: "bob", 2: "alice"})
+        self.assertEqual((game.owner.username, game.human_seat), ("bob", 1))
+        self.assertEqual(HOLDEM.pvp_seats(game.settings), [1, 2])
+
+    def test_leaving_the_room(self):
+        game = self.room()
+        url = f"/api/gomoku/games/{game.id}"
+        self.assertEqual(self.post("carol", f"{url}/leave/").status_code, 200)  # 觀戰的人離開
+        self.assertEqual(game.summary()["spectators"], [])
+        # 房主離開：房主交給還坐著的人
+        self.assertEqual(self.post("alice", f"{url}/leave/").status_code, 200)
+        game.refresh_from_db()
+        self.assertEqual((game.owner.username, game.human_seat, self.seats(game)), ("bob", 2, {1: None, 2: "bob"}))
+        self.assertNotIn(game, Game.visible_to(self.users["alice"]))
+        # 最後一個人離開：房間關閉，清單上也不再列出
+        self.post("bob", f"{url}/leave/")
+        game.refresh_from_db()
+        self.assertTrue(operations.closed_room(game))
+        self.assertEqual(operations.active_rooms(self.users["bob"]), [])
+        # 對局中不能離開（要認輸）
+        other = self.room(watcher="")
+        start_now(other)
+        self.assertRefused(self.post("bob", f"/api/gomoku/games/{other.id}/leave/"), "認輸")
+
+    def test_a_kicked_player_is_told_through_the_live_connection(self):
+        from . import realtime
+        game = self.room()
+        sent = []
+        consumer = realtime.GameConsumer()
+        consumer.game_id, consumer.seat, consumer.scope = game.id, 2, {"user": self.users["bob"]}
+        consumer.send_json = sent.append
+        consumer.close = lambda *args, **kwargs: sent.append("closed")
+        # 房主幫 bob 換到觀戰：推送依 bob 現在的身分（觀戰，座位 None）重算
+        operations.move_player(GOMOKU, game, self.users["alice"], "bob", None)
+        consumer.game_changed(None)
+        self.assertIsNone(sent[-1]["my_seat"])
+        operations.kick_player(game, self.users["alice"], "bob")
+        consumer.game_changed(None)
+        self.assertEqual(sent[-2:], [{"type": "left"}, "closed"])

@@ -128,6 +128,7 @@ class OneStep(Request):
 
 GAME_ID = ("integer", "棋局編號", "game_id")
 GAME_KEY = ("string", "遊戲代號", "game")
+PLAYER = ("string", "房間裡的帳號名稱", "player")
 
 
 class NewGame(Request):
@@ -236,7 +237,8 @@ class Move(Request):
     def respond(self, ctx):
         game = ctx["game"]
         return {"action": ctx["params"]["action"], "frame": ctx["frame"], "ai_moves": ctx["ai_moves"],
-                "winner": game.winner, "draw": game.draw}
+                "winner": game.winner, "draw": game.draw,
+                "next_round": game.next_round_id() if game.finished else None}  # 真人對戰打完回到房間（2026-11-15）
 
 
 class Ask(Request):
@@ -289,7 +291,7 @@ def _game(ctx):
 
 def _detail(ctx):
     game = _game(ctx)
-    return {**operations.game_detail(ctx["module"], game, ctx["seat"]),
+    return {**operations.game_detail(ctx["module"], game, ctx["seat"], ctx["user"]),
             "chat": operations.chat_messages(game, ctx["seat"], ctx["user"])}
 
 
@@ -327,8 +329,28 @@ def _watch(ctx):
 
 def _change_room(ctx):
     p = ctx["params"]
-    game, frame = operations.change_room(ctx["module"], _game(ctx), ctx["user"], p["seat"], p["settings"])
+    module = games.get(p["game_type"])  # 房主可以換別的遊戲（2026-11-15）
+    game, frame = operations.change_room(module, _game(ctx), ctx["user"], p["seat"], p["settings"])
     return {"game": game.summary(), "my_seat": p["seat"], "frame": frame}
+
+
+# 房間大廳（2026-11-15）：換座位、請人離開、轉讓房主、離開房間
+def _move_player(ctx):
+    p = ctx["params"]
+    game = operations.move_player(ctx["module"], _game(ctx), ctx["user"], p["player"], p["seat"] or None)
+    return {"game": game.summary()}
+
+
+def _kick(ctx):
+    return {"game": operations.kick_player(_game(ctx), ctx["user"], ctx["params"]["player"]).summary()}
+
+
+def _transfer_host(ctx):
+    return {"game": operations.transfer_host(ctx["module"], _game(ctx), ctx["user"], ctx["params"]["player"]).summary()}
+
+
+def _leave_room(ctx):
+    return {"game": operations.leave_room(ctx["module"], _game(ctx), ctx["user"]).summary()}
 
 
 REQUESTS = {r.kind: r for r in [
@@ -370,9 +392,21 @@ REQUESTS = {r.kind: r for r in [
     # 觀戰與房主改房間設定（2026-11-08）
     OneStep("watch", "watch_game", "使用者輸入房間密碼「{code}」要觀戰，請讓他進去看。", _watch, game_scoped=False,
             params={"code": ("string", "房間密碼", "code")}, summary=lambda data: f"可以觀戰第 {data['game'].id} 盤。"),
-    OneStep("room_settings", "change_room", "房主在朋友加入前改了第 {game_id} 盤的房間設定（座位 {seat}），請套用到這個房間。",
-            _change_room, params={"game_id": GAME_ID, "seat": ("integer", "房主的座位", "seat")},
+    OneStep("room_settings", "change_room",
+            "房主在開始前改了第 {game_id} 盤的房間設定（遊戲 {game_type}，座位 {seat}），請套用到這個房間。",
+            _change_room, params={"game_id": GAME_ID, "seat": ("integer", "房主的座位", "seat"),
+                                  "game_type": ("string", "遊戲代號", "game_type")},
             summary=lambda data: f"第 {data['game']['id']} 盤的設定已更新。"),
+    # 房間大廳（2026-11-15）
+    OneStep("room_seat", "move_player", "第 {game_id} 盤的房間裡，要把 {player} 換到座位 {seat}（0 是改成觀戰），請照做。",
+            _move_player, params={"game_id": GAME_ID, "player": PLAYER, "seat": ("integer", "座位，0 是改成觀戰", "seat")},
+            summary=lambda data: "座位已更新。"),
+    OneStep("kick", "kick_player", "房主要請 {player} 離開第 {game_id} 盤的房間，請照做。", _kick,
+            params={"game_id": GAME_ID, "player": PLAYER}, summary=lambda data: "已經請他離開房間。"),
+    OneStep("transfer_host", "transfer_host", "房主要把第 {game_id} 盤房間的房主交給 {player}，請照做。", _transfer_host,
+            params={"game_id": GAME_ID, "player": PLAYER}, summary=lambda data: "房主已經轉讓。"),
+    OneStep("leave_room", "leave_room", "使用者要離開第 {game_id} 盤的房間，請照做。", _leave_room,
+            params={"game_id": GAME_ID}, summary=lambda data: "已經離開房間。"),
     # 房主按開始、房間聊天室（2026-11-13）
     OneStep("start", "start_room", "房主按了第 {game_id} 盤的「開始」，請開始這盤真人對戰（倒數後開始，AI 的座位倒數完再行動）。",
             _start_room, params={"game_id": GAME_ID}, summary=lambda data: f"第 {data['game']['id']} 盤已開始。"),

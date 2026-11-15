@@ -98,6 +98,14 @@ class Game(models.Model):
     def finished(self):
         return bool(self.winner or self.draw or self.ended)
 
+    def next_round_id(self):
+        """同一個房間的下一盤（使用者要求，2026-11-15：打完回到房間）。房間＝房間密碼相同的一串對局，
+        每一盤打完由 operations._open_next_round 用同一組密碼開下一盤。沒有下一盤時是 None。"""
+        if not self.pvp or not self.room_code:
+            return None
+        return (Game.objects.filter(mode="pvp", room_code=self.room_code, id__gt=self.id).order_by("id")
+                .values_list("id", flat=True).first())
+
     def summary(self):
         data = {"id": self.id, "game_type": self.game_type, "human_seat": self.human_seat, "mode": self.mode,
                 "settings": self.settings, "winner": self.winner, "draw": self.draw, "ended": self.ended,
@@ -107,7 +115,9 @@ class Game(models.Model):
             # 房間的玩家列表也列出觀戰的人（2026-11-13 使用者要求「房間內要有玩家列表」），依進來的先後
             data["spectators"] = [s.user.username for s in self.spectators.select_related("user").order_by("joined_at", "id")]
             data["waiting"] = self.waiting
-            data["room_code"] = self.room_code if self.waiting else ""
+            # 開始前都顯示（2026-11-15）：座位坐滿了，別人還是可以用密碼進來觀戰、等下一盤
+            data["room_code"] = self.room_code if self.started_at is None and not self.ended else ""
+            data["next_round"] = self.next_round_id() if self.finished else None
             data["starts_in"] = self.starts_in()
             data["closed"] = self.ended and self.started_at is None  # 房主在開始前關閉了房間（2026-11-13）
         return data
@@ -196,7 +206,10 @@ class ModelRun(models.Model):
              "req_list_games": "請求：對局清單", "req_detail": "請求：打開對局", "req_end": "請求：結束對局",
              "req_review": "請求：復盤", "req_note": "請求：AI 思路說明", "req_narrate": "請求：說明",
              "req_new_game": "請求：新對局", "req_move": "請求：下棋", "req_ask": "請求：提問",
-             "req_join_page": "請求：加入對戰頁", "req_join": "請求：加入對戰"}  # 真人對戰（2026-11-05）
+             "req_join_page": "請求：加入對戰頁", "req_join": "請求：加入對戰",  # 真人對戰（2026-11-05）
+             # 房間大廳（2026-11-15）
+             "req_room_seat": "請求：換座位", "req_kick": "請求：請人離開房間", "req_transfer_host": "請求：轉讓房主",
+             "req_leave_room": "請求：離開房間"}
     # ok：模型完成了（Agent 自己決定、說明通過檢查）；fallback：模型有回應但沒完成（次數內沒決定、說明沒通過檢查）；
     # error：呼叫不到模型（連不上、逾時、伺服器暫停呼叫、HTTP 錯誤）。error 反映的是伺服器，不算進模型的成功率與秒數。
     OUTCOMES = {"ok": "成功", "fallback": "沒完成", "error": "呼叫失敗"}

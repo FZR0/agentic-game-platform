@@ -3,7 +3,7 @@
 - 網頁打開一盤真人對戰時連到 ws/games/<編號>/；只有坐在這盤的真人和觀戰的人連得上（沒登入、別人的對局一律拒絕）。
   觀戰的人座位是 None：畫面只有所有人都看得到的資訊（2026-11-08）。
 - 聊天室有新訊息時 views 呼叫 notify_chat(game)，每條連線送自己看得到的訊息（玩家、觀戰者開始後各一個聊天室，2026-11-13）。
-- 有人下了一步（或有人加入）時，views 呼叫 notify(game)；每條連線依「自己的座位」重新產生畫面再送出，
+- 有人下了一步（或有人加入、換座位）時，views 呼叫 notify(game)；每條連線依「自己現在的座位」重新產生畫面再送出，
   所以撲克每個人只看得到自己的底牌（operations.game_detail 和打開對局時用的是同一個函式）。
 - 推送不是使用者按的請求，不經過 AI 助理；下棋、加入仍然是 HTTP 請求，照樣經過 AI 助理。
 - 通道層是 InMemoryChannelLayer（settings.CHANNEL_LAYERS）：只在同一個程序裡有效，runserver 只有一個程序，夠用；
@@ -62,9 +62,14 @@ class GameConsumer(JsonWebsocketConsumer):
         async_to_sync(self.channel_layer.group_discard)(_group(self.game_id), self.channel_name)
 
     def game_changed(self, event):
-        game = Game.objects.get(pk=self.game_id)
+        # 每次都重新查座位：房間大廳裡可以換座位、坐下或起身觀戰（2026-11-15）
+        game, self.seat = seat_for(self.scope["user"], self.game_id)
+        if game is None:  # 被房主請出房間（或自己離開了）
+            self.send_json({"type": "left"})
+            self.close()
+            return
         module = games.get(game.game_type)
-        self.send_json({"type": "update", **operations.game_detail(module, game, self.seat)})
+        self.send_json({"type": "update", **operations.game_detail(module, game, self.seat, self.scope["user"])})
 
     def chat_changed(self, event):
         game = Game.objects.get(pk=self.game_id)

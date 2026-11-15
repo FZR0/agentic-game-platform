@@ -53,6 +53,10 @@
         <button id="settings-toggle" aria-expanded="false" aria-controls="settings-panel">設定</button>
         <div id="settings-panel" class="popover settings" hidden>
           <h2>設定</h2>
+          {% comment %}房主在房間大廳換遊戲（2026-11-15）：同一個房間、同一組密碼；選項由 app.js 依 CONFIG.games 產生{% endcomment %}
+          <label id="room-game-field" hidden>房間的遊戲
+            <select id="room-game"></select>
+          </label>
           <label>對手
             <select id="opponent">
               <option value="ai">AI</option>
@@ -76,7 +80,7 @@
             <legend>朋友坐哪些座位（你固定 1 號位，其他由 AI 坐）</legend>
             <div id="human-seat-boxes"></div>
           </fieldset>
-          <p class="muted">還沒開始下時改了立即生效；對局中改的話，從下一局開始。真人對戰按「新對局」開房間；朋友加入前改設定，會直接套用到同一個房間。</p>
+          <p class="muted">還沒開始下時改了立即生效；對局中改的話，從下一局開始。真人對戰按「新對局」開房間；按「開始」之前改設定，會直接套用到同一個房間。</p>
           <details class="advanced">
             <summary>進階設定</summary>
             <label>AI 模型
@@ -155,6 +159,8 @@
         <p id="room-spectators" class="muted"></p>
         {# 房主在按開始前可以關閉房間（2026-11-13） #}
         <button id="close-room" type="button" class="end-button" hidden>關閉房間</button>
+        {# 離開房間（2026-11-15）：觀戰的人隨時可以走，坐著的人只在開始前 #}
+        <button id="leave-room" type="button" class="end-button" hidden>離開房間</button>
       </section>
       {# 座位都坐滿後由房主按「開始」，倒數三秒才能下（2026-11-13） #}
       <div id="room-start" class="room-start" hidden>

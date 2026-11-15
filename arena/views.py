@@ -188,19 +188,22 @@ def api_game_detail(request, game_key, game_id):
 
 @require_POST
 def api_room_settings(request, game_key, game_id):
-    """房主在朋友加入前改房間設定（2026-11-08）：同一個房間、同一組房間密碼，換成新的設定重新開局。"""
+    """房主在開始前改房間設定（2026-11-08）：同一個房間、同一組房間密碼，換成新的設定重新開局。
+    game_type 換成別的遊戲時（2026-11-15），設定與座位照新遊戲檢查。"""
     module = _module(game_key)
     game = _game(request, module, game_id)
     try:
         data = _read_json(request)
+        target = _module(data.get("game_type") or module.key)
         seat = int(data["seat"])
-        if seat not in module.seat_names:
-            raise ValueError(f"座位必須是 {'、'.join(map(str, module.seat_names))} 其中之一")
-        settings = module.clean_settings(data.get("settings") or {})
+        if seat not in target.seat_names:
+            raise ValueError(f"座位必須是 {'、'.join(map(str, target.seat_names))} 其中之一")
+        settings = target.clean_settings(data.get("settings") or {})
     except (ValueError, KeyError, TypeError) as exc:
         return _error(exc)
     response = _json(request, "room_settings", {"module": module, "game": game,
-                                                "params": {"game_id": game.id, "seat": seat, "settings": settings}})
+                                                "params": {"game_id": game.id, "seat": seat, "settings": settings,
+                                                           "game_type": target.key}})
     if response.status_code == 200:
         realtime.notify(game)  # 觀戰中的人跟著換成新的棋盤
     return response
@@ -257,6 +260,44 @@ def close_room(request, game_id):
     if not url_has_allowed_host_and_scheme(target, allowed_hosts={request.get_host()}):
         target = reverse("arena:home")
     return redirect(target)
+
+
+def _room_action(request, game_key, game_id, kind, seat=False):
+    """房間大廳的操作（2026-11-15）：換座位、請人離開、轉讓房主、離開房間。觀戰的人也要能坐下、離開，所以用 watch=True；
+    player 沒填就是自己。成功後通知房間裡的人（被請出去的人的即時連線會收到 left）。"""
+    module = _module(game_key)
+    game = _game(request, module, game_id, watch=True)
+    try:
+        data = _read_json(request)
+        params = {"game_id": game.id, "player": str(data.get("player") or request.user.username)}
+        if seat:
+            params["seat"] = int(data.get("seat") or 0)  # 0＝改成觀戰
+    except (ValueError, KeyError, TypeError) as exc:
+        return _error(exc)
+    response = _json(request, kind, {"module": module, "game": game, "params": params})
+    if response.status_code == 200:
+        realtime.notify(game)
+    return response
+
+
+@require_POST
+def api_room_seat(request, game_key, game_id):
+    return _room_action(request, game_key, game_id, "room_seat", seat=True)
+
+
+@require_POST
+def api_room_kick(request, game_key, game_id):
+    return _room_action(request, game_key, game_id, "kick")
+
+
+@require_POST
+def api_room_host(request, game_key, game_id):
+    return _room_action(request, game_key, game_id, "transfer_host")
+
+
+@require_POST
+def api_room_leave(request, game_key, game_id):
+    return _room_action(request, game_key, game_id, "leave_room")
 
 
 @require_POST
