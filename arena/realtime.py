@@ -40,10 +40,9 @@ def seat_for(user, game_id):
     game = Game.watchable_by(user).filter(pk=game_id, mode="pvp").first()
     if game is None:
         return None, None
-    seat = game.seat_of(user)
-    if seat is None and not game.spectators.filter(user=user).exists():
-        return None, None  # 自己開的對局但不在座位上（不會發生），或管理員看得到的舊對局
-    return game, seat
+    if not game.in_room(user):
+        return None, None  # 不在房間裡（撲克牌桌打過牌後離開房間的人、管理員看得到的舊對局）
+    return game, game.seat_of(user)
 
 
 class GameConsumer(JsonWebsocketConsumer):

@@ -11,8 +11,8 @@ from arena.base import CONDITIONAL
 from arena.models import AiNote, Game
 
 from . import cards
-from .module import EQUITY_FILE, MODULE, HoldemModule
-from .rules import HUMAN, Table
+from .module import EQUITY_FILE, MODULE, STYLES, HoldemModule
+from .rules import HUMAN, MEMBER, Table
 
 
 def settings_for(players=2, stack=1000, seed=1, ai_mode="agent_bots"):
@@ -524,13 +524,15 @@ class GameApiTests(TestCase):
 
 @override_settings(OLLAMA_URL="http://127.0.0.1:9", OLLAMA_TIMEOUT=2)
 class PvpTableTests(TestCase):
-    """真人對戰的牌桌（2026-11-05）：開桌的人（1 號位）自選哪些座位是真人，其他座位由 AI 坐。
-    每位真人只能看到自己的底牌：網頁、復盤、提問都從請求的人的座位算，不再假設真人一定在 1 號位。"""
+    """真人對戰的開放牌桌（使用者要求「補入式」，2026-11-16；取代 2026-11-05 開桌的人自選真人座位）：
+    牌桌一開始是空的，大家自己上桌（座位隨機）、房主補 AI；開始後要排隊，一手結束才補進去；
+    「觀眾」這手結束才下桌、「離場」先棄牌放棄籌碼，兩種都還在房間裡；不計勝負，房主結束。
+    每位真人只看得到自己的底牌：畫面、復盤都從請求的人「當時」坐的座位算。"""
 
     def setUp(self):
         from django.contrib.auth.models import User
         from django.test import Client
-        self.users = {name: User.objects.create_user(name, password="x") for name in ("alice", "bob")}
+        self.users = {name: User.objects.create_user(name, password="x") for name in ("alice", "bob", "carol")}
         self.clients = {}
         for name, user in self.users.items():
             self.clients[name] = Client()
@@ -543,90 +545,226 @@ class PvpTableTests(TestCase):
     def post(self, who, url, body):
         return self.clients[who].post(url, json.dumps(body), content_type="application/json")
 
-    def open_table(self, seed=3):
+    def table(self, who, game, op, **extra):
+        return self.post(who, f"/api/holdem/games/{game.id}/table/", {"op": op, **extra})
+
+    def token(self, name):
+        return MODULE.member_token(self.users[name])
+
+    def state(self, game):
+        game.refresh_from_db()
+        return MODULE.replay({**game.settings, "secret": game.secret}, game.actions)
+
+    def open_room(self, seed=3, players=4, sit=("alice", "bob")):
+        """alice 開房（撲克），bob 用密碼進來；sit 裡的人上桌。"""
         with patch.object(MODULE, "new_secret", return_value={"seed": seed}):
-            r = self.post("alice", "/api/holdem/games/",
-                          {"seat": 1, "mode": "pvp", "settings": {"players": 4, "humans": [1, 3]}}).json()
-        game = Game.objects.get(pk=r["game"]["id"])
+            r = self.post("alice", "/api/holdem/games/", {"seat": 1, "mode": "pvp", "settings": {"players": players}})
+        self.assertEqual(r.status_code, 200, r.content)
+        game = Game.objects.get(pk=r.json()["game"]["id"])
         self.clients["bob"].post("/join/", {"code": game.room_code})
-        # 坐滿後由開桌的人按「開始」（2026-11-13）；AI 的座位在倒數後才行動，測試不等三秒
+        for name in sit:
+            self.assertEqual(self.table(name, game, "sit").status_code, 200)
+        return game
+
+    def start(self, game):
+        # 房主按「開始」；測試不等三秒倒數。倒數完伺服器發第一手
         with patch("arena.operations.START_COUNTDOWN", 0):
-            self.assertEqual(self.post("alice", f"/api/holdem/games/{game.id}/start/", {}).status_code, 200)
+            r = self.post("alice", f"/api/holdem/games/{game.id}/start/", {})
+        self.assertEqual(r.status_code, 200, r.content)
         game.refresh_from_db()
         return game
 
-    def test_the_host_chooses_human_seats_and_ai_fills_the_rest(self):
-        game = self.open_table()
-        self.assertEqual(game.human_seats(), {1, 3})
-        t = MODULE.new_state({**game.settings, "secret": game.secret})
-        self.assertEqual(t.roles[1], "human")
-        self.assertEqual(t.roles[3], "human")
-        self.assertNotEqual(t.roles[2], "human")
-        self.assertNotEqual(t.roles[4], "human")
+    def finish_hand(self, game, bodies=None):
+        """桌上的真人一直過牌或跟注，打完這一手。bodies 收集每個人看到的回應。"""
+        names = {self.token(n): n for n in self.users}
+        for _ in range(60):
+            state = self.state(game)
+            if state.hand_over:
+                return state
+            who = names[MODULE.to_move(state)]
+            body = self.post(who, f"/api/holdem/games/{game.id}/move/",
+                             {"action": "check" if state.legal()["check"] else "call"})
+            self.assertEqual(body.status_code, 200, body.content)
+            if bodies is not None:
+                bodies.append((who, body.content.decode() + self.clients[who].get(f"/api/holdem/games/{game.id}/").content.decode()))
+        self.fail("這一手沒有打完")
+
+    def test_the_table_starts_empty_and_people_sit_at_random_seats(self):
+        with patch.object(MODULE, "new_secret", return_value={"seed": 3}):
+            game = Game.objects.get(pk=self.post("alice", "/api/holdem/games/",
+                                                 {"seat": 1, "mode": "pvp", "settings": {"players": 4}}).json()["game"]["id"])
+        self.assertEqual(self.state(game).occupant, {})  # 開房時牌桌是空的，開房的人在觀戰席
+        self.assertTrue(game.in_room(self.users["alice"]))
+        self.assertIsNone(game.seat_of(self.users["alice"]))
+        self.assertEqual(self.post("alice", f"/api/holdem/games/{game.id}/start/", {}).status_code, 400)
+        self.clients["bob"].post("/join/", {"code": game.room_code})
+        with patch("arena.operations.secrets.choice", side_effect=lambda seats: seats[-1]):  # 座位由伺服器隨機挑
+            self.table("alice", game, "sit")
+            self.table("bob", game, "sit")
+        self.assertEqual(self.state(game).occupant, {4: self.token("alice"), 3: self.token("bob")})
+        self.assertEqual(self.table("bob", game, "sit").status_code, 400)  # 已經在桌上
+        self.table("bob", game, "stand")  # 開始前下桌：回到觀戰席，不留成員紀錄
+        self.assertEqual(self.state(game).occupant, {4: self.token("alice")})
+        self.assertIsNone(game.seat_of(self.users["bob"]))
+        self.assertTrue(game.in_room(self.users["bob"]))
+
+    def test_only_the_host_adds_ai_and_the_table_starts_with_two(self):
+        game = self.open_room(sit=("alice",))
+        self.assertEqual(self.post("alice", f"/api/holdem/games/{game.id}/start/", {}).status_code, 400)  # 一個人不能開始
+        self.assertEqual(self.table("bob", game, "add_ai", kind="agent").status_code, 400)
+        self.assertEqual(self.table("alice", game, "add_ai", kind="agent").status_code, 200)
+        self.assertEqual(self.table("alice", game, "add_ai", kind="bot").status_code, 200)
+        roles = list(self.state(game).roles.values())
+        self.assertIn("agent", roles)
+        self.assertTrue(any(r in STYLES for r in roles))
+        ai_seat = next(s for s, w in self.state(game).occupant.items() if w == "agent")
+        self.assertEqual(self.table("alice", game, "remove_ai", seat=ai_seat).status_code, 200)
+        self.assertNotIn(ai_seat, self.state(game).occupant)
+
+    def test_a_human_never_sees_the_other_humans_hole_cards_during_the_hand(self):
+        game = self.start(self.open_room())
+        bodies = []
+        state = self.finish_hand(game, bodies)
+        seat_of = {n: state.seat_of_token(self.token(n)) for n in ("alice", "bob")}
+        for who, body in bodies:
+            other = seat_of["bob" if who == "alice" else "alice"]
+            if other not in state.shown:  # 攤牌亮出的牌大家都看得到
+                for c in state.hole[other]:
+                    self.assertNotIn(f'"{c}"', body, (who, other, c))
+
+    def test_after_the_start_people_queue_and_are_seated_when_the_hand_ends(self):
+        game = self.start(self.open_room())
+        self.clients["carol"].post("/join/", {"code": game.room_code})
+        self.assertEqual(self.table("carol", game, "sit").status_code, 200)  # 開始後不能直接上桌：排隊
+        self.assertIsNone(self.state(game).seat_of_token(self.token("carol")))
+        self.table("carol", game, "unqueue")
+        game.refresh_from_db()
+        self.assertEqual(game.table["queue"], [])
+        self.table("carol", game, "sit")
+        state = self.finish_hand(game)
+        self.assertIsNone(state.seat_of_token(self.token("carol")))  # 這手還在打時不補
+        r = self.post("bob", f"/api/holdem/games/{game.id}/deal/", {"hand": state.hand_no})
+        self.assertEqual(r.status_code, 200, r.content)
+        state = self.state(game)
+        self.assertIsNotNone(state.seat_of_token(self.token("carol")))
+        self.assertEqual((state.hand_no, state.stacks[state.seat_of_token(self.token("carol"))] + state.total[
+            state.seat_of_token(self.token("carol"))]), (2, 2000))  # 補進去拿起始籌碼，馬上發下一手
+        actions = len(game.actions)
+        self.post("alice", f"/api/holdem/games/{game.id}/deal/", {"hand": 1})  # 別人的網頁晚到：不會再發一次
+        game.refresh_from_db()
+        self.assertEqual(len(game.actions), actions)
+
+    def test_the_watch_button_leaves_the_table_only_after_the_hand(self):
+        game = self.start(self.open_room())
+        self.assertEqual(self.table("bob", game, "stand").status_code, 200)  # 按「觀眾」：這手照打
+        bob = self.state(game).seat_of_token(self.token("bob"))
+        game.refresh_from_db()
+        self.assertEqual(game.table["leaving"], [bob])
+        state = self.finish_hand(game)
+        self.post("alice", f"/api/holdem/games/{game.id}/deal/", {"hand": state.hand_no})
+        state = self.state(game)
+        self.assertIsNone(state.seat_of_token(self.token("bob")))  # 下一手前離開牌桌
+        self.assertEqual(state.hand_no, 1)  # 只剩一人：不發牌，等人補進來
+        self.assertTrue(game.in_room(self.users["bob"]))  # 還在房間（觀戰席）
+        self.assertTrue(Game.visible_to(self.users["bob"]).filter(pk=game.pk).exists())  # 打過的牌留著給他看
+        r = self.table("bob", game, "sit")  # 牌桌在等人：排進來就馬上補進去、發牌
+        self.assertEqual(r.status_code, 200, r.content)
+        state = self.state(game)
+        self.assertIsNotNone(state.seat_of_token(self.token("bob")))
+        self.assertEqual(state.hand_no, 2)
+
+    def test_leaving_mid_hand_folds_gives_up_the_chips_and_stays_in_the_room(self):
+        game = self.start(self.open_room())
+        state = self.state(game)
+        names = {self.token(n): n for n in ("alice", "bob")}
+        who = names[MODULE.to_move(state)]
+        other = "bob" if who == "alice" else "alice"
+        mine, theirs = state.seat_of_token(self.token(who)), state.seat_of_token(self.token(other))
+        self.assertEqual(self.post(who, f"/api/holdem/games/{game.id}/move/", {"action": f"leave {theirs}"}).status_code, 400)
+        self.assertEqual(self.post(other, f"/api/holdem/games/{game.id}/move/", {"action": f"leave {theirs}"}).status_code,
+                         400)  # 一手牌進行中要輪到自己才能離場
+        r = self.post(who, f"/api/holdem/games/{game.id}/move/", {"action": f"leave {mine}"})
+        self.assertEqual(r.status_code, 200, r.content)
+        state = self.state(game)
+        self.assertEqual(state.stacks[mine], 0)
+        self.assertTrue(state.hand_over)  # 單挑時離場的人棄牌，這手由對方拿下
+        self.post(other, f"/api/holdem/games/{game.id}/deal/", {"hand": state.hand_no})
+        self.assertIsNone(self.state(game).seat_of_token(self.token(who)))
+        self.assertTrue(game.in_room(self.users[who]))
+        self.assertFalse(game.finished)  # 不計勝負：牌局不會因為只剩一人就結束
+
+    def test_the_host_ends_the_table_without_a_result_and_everyone_returns_to_the_room(self):
+        game = self.start(self.open_room())
+        self.clients["carol"].post("/join/", {"code": game.room_code})
+        self.assertEqual(self.post("bob", f"/api/holdem/games/{game.id}/end_table/", {}).status_code, 400)
+        self.assertEqual(self.post("alice", f"/api/holdem/games/{game.id}/end_table/", {}).status_code, 200)
+        game.refresh_from_db()
+        self.assertTrue(game.ended)
+        self.assertIsNone(game.winner)  # 不計勝負，不進戰績
+        nxt = Game.objects.get(pk=game.next_round_id())
+        self.assertEqual(nxt.room_code, game.room_code)
+        seated = set(self.state(nxt).occupant.values())
+        self.assertEqual(seated, {self.token("alice"), self.token("bob")})  # 桌上的人照樣坐著
+        self.assertTrue(nxt.in_room(self.users["carol"]))
+        self.assertIsNone(nxt.started_at)
+
+    def test_a_member_who_left_the_room_can_still_review(self):
+        game = self.start(self.open_room())
+        self.table("bob", game, "stand")
+        state = self.finish_hand(game)
+        self.post("alice", f"/api/holdem/games/{game.id}/deal/", {"hand": state.hand_no})
+        self.assertEqual(self.post("bob", f"/api/holdem/games/{game.id}/leave/", {}).status_code, 200)
+        game.refresh_from_db()
+        self.assertFalse(game.in_room(self.users["bob"]))
+        from arena import operations
+        self.assertFalse([r for r in operations.active_rooms(self.users["bob"]) if r["id"] == game.id])
+        self.post("alice", f"/api/holdem/games/{game.id}/end_table/", {})
+        r = self.clients["bob"].get(f"/api/holdem/games/{game.id}/review/")
+        self.assertEqual(r.status_code, 200, r.content)
 
     def test_ai_mode_rejects_extra_human_seats(self):
         r = self.post("alice", "/api/holdem/games/", {"seat": 1, "settings": {"players": 4, "humans": [1, 3]}})
         self.assertEqual(r.status_code, 400)
 
-    def test_a_human_never_sees_the_other_humans_hole_cards_during_the_hand(self):
-        game = self.open_table()
-        seats = {"alice": 1, "bob": 3}
-        for _ in range(40):
-            game.refresh_from_db()
-            state = MODULE.replay({**game.settings, "secret": game.secret}, game.actions)
-            if state.hand_over or game.finished:
-                break
-            who = next(name for name, seat in seats.items() if seat == state.to_act)
-            action = "check" if state.legal()["check"] else "call"
-            body = self.post(who, f"/api/holdem/games/{game.id}/move/", {"action": action}).content.decode()
-            body += self.clients[who].get(f"/api/holdem/games/{game.id}/").content.decode()
-            game.refresh_from_db()
-            state = MODULE.replay({**game.settings, "secret": game.secret}, game.actions)
-            other = 4 - seats[who]  # 1 ↔ 3
-            if other not in state.shown:  # 攤牌亮出的牌大家都看得到
-                for c in state.hole[other]:
-                    self.assertNotIn(f'"{c}"', body, (who, other, c))
-        self.assertTrue(state.hand_over)
 
-    def test_only_the_host_can_leave_the_table(self):
-        game = self.open_table()
-        for _ in range(20):  # 等到輪到 bob（3 號位）
-            game.refresh_from_db()
-            state = MODULE.replay({**game.settings, "secret": game.secret}, game.actions)
-            if state.to_act == 3:
-                break
-            self.post("alice", f"/api/holdem/games/{game.id}/move/",
-                      {"action": "check" if state.legal()["check"] else "call"})
-        self.assertEqual(state.to_act, 3)
-        r = self.post("bob", f"/api/holdem/games/{game.id}/move/", {"action": "leave"})
-        self.assertEqual(r.status_code, 400)
-        self.assertIn("開桌的人", r.json()["error"])
+class OpenTableViewTests(SimpleTestCase):
+    """開放牌桌換過位子的人（2026-11-16）：畫面、復盤都看他「當時」坐的座位。
+    同一個座位前一手是別人坐的，新坐下的人看那一手時不能看到別人的底牌，反過來也一樣。"""
 
-    def test_the_other_humans_can_leave_by_giving_up_their_chips(self):
-        # 2026-11-16 使用者要求「德州撲克則是離場沒有就要補上」：之前只有開桌的人有「離場」，其他真人走不了。
-        # 其他真人離場＝放棄剩下的籌碼（跟認輸一樣），牌局由其他人繼續；誰都不能替別人離場
-        game = self.open_table()
-        for _ in range(20):  # 等到輪到 bob（3 號位）
-            game.refresh_from_db()
-            state = MODULE.replay({**game.settings, "secret": game.secret}, game.actions)
-            if state.to_act == 3:
-                break
-            self.post("alice", f"/api/holdem/games/{game.id}/move/",
-                      {"action": "check" if state.legal()["check"] else "call"})
-        self.assertEqual(state.to_act, 3)
-        frame = self.clients["bob"].get(f"/api/holdem/games/{game.id}/").json()["frames"][-1]
-        self.assertEqual((frame["leave_action"], frame["leave_now"]), ("leave 3", True))
-        self.assertEqual(self.post("bob", f"/api/holdem/games/{game.id}/move/", {"action": "leave 1"}).status_code, 400)
-        r = self.post("bob", f"/api/holdem/games/{game.id}/move/", {"action": "leave 3"})
-        self.assertEqual(r.status_code, 200, r.content)
-        game.refresh_from_db()
-        self.assertIn("leave 3", game.actions)
-        self.assertFalse(game.finished)  # 1 號位和 AI 繼續打
-        state = MODULE.replay({**game.settings, "secret": game.secret}, game.actions)
-        self.assertEqual(state.stacks[3], 0)
-        self.assertIn(3, state.folded)
-        frame = self.clients["bob"].get(f"/api/holdem/games/{game.id}/").json()["frames"][-1]
-        self.assertIsNone(frame["leave_action"])  # 已經離場，沒有按鈕了
+    def test_changing_seats_never_reveals_someone_elses_hole_cards(self):
+        a, b, c = MEMBER + 1, MEMBER + 2, MEMBER + 3
+        settings = {**MODULE.clean_settings({"players": 3, "table": True}), "secret": {"seed": 11}}
+        t, states = MODULE.new_state(settings), []
+        for action in (f"sit 1 {a}", f"sit 2 {c}", "deal"):
+            t = MODULE.apply(t, action)
+        states.append(t)
+        while not t.hand_over:
+            t = MODULE.apply(t, "fold" if not t.legal()["check"] else "check")
+        hand1_a = list(states[0].hole[1])
+        for action in ("stand 1", f"sit 1 {b}", "deal"):
+            t = MODULE.apply(t, action)
+        hand2_b = list(t.hole[1])
+        for code in hand1_a:  # b 看第一手（1 號位當時是 a）：看不到 a 的牌
+            self.assertNotIn(code, MODULE.frame(states[0], b)["seats"][0]["cards"])
+        self.assertEqual(MODULE.frame(states[0], a)["seats"][0]["cards"], hand1_a)  # a 看得到自己當時的牌
+        self.assertEqual(MODULE.frame(t, b)["seats"][0]["cards"], hand2_b)
+        self.assertNotEqual(MODULE.frame(t, a)["seats"][0]["cards"], hand2_b)  # a 已經下桌，看不到 b 的牌
+        self.assertIsNone(MODULE.frame(t, a)["my_table_seat"])
+
+    def test_the_seat_changes_between_hands_only(self):
+        a = MEMBER + 1
+        settings = {**MODULE.clean_settings({"players": 3, "table": True}), "secret": {"seed": 11}}
+        t = MODULE.new_state(settings)
+        for action in (f"sit 1 {a}", "sit 2 agent", "deal"):
+            t = MODULE.apply(t, action)
+        with self.assertRaises(ValueError):
+            MODULE.apply(t, "sit 3 tag")  # 一手牌進行中不能補人
+        with self.assertRaises(ValueError):
+            MODULE.apply(t, "stand 2")
+        self.assertIsNone(t.result())  # 開放牌桌不計勝負
+        self.assertFalse(MODULE.may_act(t, "sit 3 agent", a))  # 入座只由伺服器的牌桌操作送出
+        self.assertEqual(MODULE.rejection(t, "stand 1"), "AI 不能換座位")
+
 
 
 class PvpLeaveRuleTests(SimpleTestCase):

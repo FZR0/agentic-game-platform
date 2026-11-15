@@ -8,6 +8,7 @@ import socket
 import tempfile
 import urllib.error
 import zipfile
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from io import StringIO
 from pathlib import Path
@@ -41,6 +42,23 @@ class AdminClient(Client):
             user = User.objects.filter(username="tester").first() or User.objects.create_superuser("tester")
             self.force_login(user)
         return super().request(**request)
+
+
+def poker_table(owner, others=(), ai=(), players=4, seed=None):
+    """撲克開放牌桌（2026-11-16）：owner 開房，others 用密碼進來，大家上桌、房主補 AI（ai 裡是 "agent"／"bot"）。
+    座位照空位順序坐（真的網站是隨機），測試才固定。還沒按開始。"""
+    from holdem.module import MODULE as HOLDEM
+    secret = patch.object(HOLDEM, "new_secret", return_value={"seed": seed}) if seed is not None else nullcontext()
+    with secret, patch("arena.operations.secrets.choice", side_effect=lambda seats: seats[0]):
+        game, _ = operations.start_game(HOLDEM, 1, {"players": players}, owner, "pvp")
+        for user in others:
+            operations.join_game(game.room_code, user)
+        for user in (owner, *others):
+            game, _ = operations.table_action(HOLDEM, game, user, "sit")
+        for kind in ai:
+            game, _ = operations.table_action(HOLDEM, game, owner, "add_ai", kind)
+    game.refresh_from_db()
+    return game
 
 
 def start_now(game):
@@ -2030,19 +2048,22 @@ class RoomSettingsTests(TestCase):
         with self.assertRaises(ValueError):
             operations.change_room(WEIQI, game, self.bob, 1, {"size": 9})
 
-    def test_poker_host_can_change_the_table_size_and_the_seats_for_friends(self):
+    def test_poker_host_can_change_the_table_size_and_who_still_fits_stays_seated(self):
+        # 撲克開放牌桌（2026-11-16）：改人數時，座位號碼還在新人數內的人（真人、AI）照樣坐著，其他人改成觀戰
         from holdem.module import MODULE as HOLDEM
-        game = self.open_room("holdem", settings={"players": 4, "humans": [1, 2]})
+        game = self.open_room("holdem", settings={"players": 4})
         old_seed = game.secret["seed"]
-        r = self.post("alice", f"/api/holdem/games/{game.id}/room/",
-                      {"seat": 1, "settings": {"players": 6, "humans": [1, 3, 5]}})
+        with patch("arena.operations.secrets.choice", side_effect=lambda seats: seats[-1]):
+            self.post("alice", f"/api/holdem/games/{game.id}/table/", {"op": "sit"})  # 4 號位
+            self.post("alice", f"/api/holdem/games/{game.id}/table/", {"op": "add_ai", "kind": "agent"})  # 3 號位
+        r = self.post("alice", f"/api/holdem/games/{game.id}/room/", {"seat": 1, "settings": {"players": 3}})
         self.assertEqual(r.status_code, 200)
         game.refresh_from_db()
-        self.assertEqual(sorted(game.human_seats()), [1, 3, 5])
-        self.assertEqual(game.settings["players"], 6)
+        self.assertEqual(game.settings["players"], 3)
+        self.assertEqual(HOLDEM.replay(operations.settings_of(game), game.actions).occupant, {3: "agent"})
+        self.assertIn("alice", game.summary()["spectators"])
         self.assertNotEqual(game.secret["seed"], old_seed)  # 新的牌局，洗牌種子也換掉
-        self.assertNotIn("seed", json.dumps(r.json()))  # 洗牌種子絕不送到網頁
-        self.assertEqual(HOLDEM.pvp_seats(game.settings), [1, 3, 5])
+        self.assertNotIn("seed", json.dumps(r.json()))  # 洗牌種子不能送到網頁
 
 
 class SpectatorTests(TestCase):
@@ -2128,12 +2149,12 @@ class SpectatorTests(TestCase):
 
     def test_poker_spectators_never_see_hole_cards_before_showdown(self):
         from holdem.module import MODULE as HOLDEM
-        game, _ = operations.start_game(HOLDEM, 1, {"players": 4, "humans": [1, 2]}, self.alice, "pvp")
-        operations.join_game(game.room_code, self.bob)
+        game = poker_table(self.alice, [self.bob], ai=("agent", "bot"))
         game = start_now(game)
         with patch.object(agent, "_chat", side_effect=OSError("測試不連模型")):
-            operations.run_ai_turns(HOLDEM, game, settings.OLLAMA_MODEL, HOLDEM.default_steps, 1)
+            operations.table_advance(HOLDEM, game, 0, settings.OLLAMA_MODEL, HOLDEM.default_steps, None)
         operations.watch_game(game.room_code, self.carol)
+        game.refresh_from_db()
         detail = self.clients["carol"].get(f"/api/holdem/games/{game.id}/").json()
         state = HOLDEM.replay(operations.settings_of(game), game.actions)
         self.assertFalse(state.hand_over)  # 牌局進行中
@@ -2213,16 +2234,16 @@ class RoomStartTests(RefusalAssertions, TestCase):
         self.assertEqual(Game.objects.get(pk=game.pk).started_at, first)
 
     def test_everyone_sees_the_countdown_before_any_ai_seat_acts(self):
-        # 撲克的 AI 座位可能先說話：要先通知大家開始倒數，倒數完 AI 才行動，不能趁倒數先下
+        # 撲克有 AI 座位可能先行動：要先通知大家開始倒數，倒數完 AI 才行動，不能趕在倒數前下
         from holdem.module import MODULE as HOLDEM
         from . import realtime
-        game = self.full_room(HOLDEM, {"players": 4, "humans": [1, 2]})
+        game = poker_table(self.alice, [self.bob], ai=("agent",))
         events = []
         real_ai = operations.run_ai_turns
 
         def countdown_passes(seconds):
             events.append(("sleep", seconds))
-            # sleep 被換掉了，時間沒有真的過去：把開始時間撥到現在，讓 AI 在「倒數結束」後能行動
+            # sleep 被換掉了，時間沒有真的過去：把開始時間改成現在，讓 AI 在「倒數結束」後行動
             Game.objects.filter(pk=game.pk).update(started_at=django_timezone.now())
 
         def ai_turns(module, g, *args):
@@ -2239,14 +2260,20 @@ class RoomStartTests(RefusalAssertions, TestCase):
         self.assertEqual(ModelRun.objects.filter(kind="req_start").count(), 1)  # 經過 AI 助理
 
     def test_the_ai_seats_act_as_soon_as_the_countdown_ends(self):
-        # 使用者回報（2026-11-15）：撲克開房間、按開始後輪到 AI 的座位卻一直不動，牌局卡住（第 140 盤）。
+        # 使用者回報（2026-11-15）：撲克開房間、按開始後輪到 AI 的座位卻一直不行動，牌局卡住（第 140 盤）。
         # 原因：倒數的等待照四捨五入到小數兩位的秒數睡，早醒幾毫秒時 run_ai_turns 以為還沒開始就不行動。
-        # 用假的時鐘重現：按開始到開始等待之間經過 0.006 秒，剩 2.994 秒，四捨五入成 2.99 就會早醒
+        # 用假時鐘重現：按開始到開始等待之間經過 0.006 秒，剩 2.994 秒，四捨五入成 2.99 就會早醒
         from holdem.module import MODULE as HOLDEM
         from . import realtime
-        with patch.object(HOLDEM, "new_secret", return_value={"seed": 0}):  # 這個種子由 3 號位（AI）先說話
-            game = self.full_room(HOLDEM, {"players": 6, "humans": [1, 2]})
-        self.assertNotIn(HOLDEM.to_move(HOLDEM.replay(operations.settings_of(game), [])), game.human_seats())
+        # 找一個發第一手後由 AI 先說話的洗牌種子（座位照空位順序：alice 1、bob 2、AI 3、4 號位）
+        tokens = [HOLDEM.member_token(self.alice), HOLDEM.member_token(self.bob)]
+        def first_actor(seed):
+            t = HOLDEM.new_state({**HOLDEM.clean_settings({"players": 4, "table": True}), "secret": {"seed": seed}})
+            for a in (f"sit 1 {tokens[0]}", f"sit 2 {tokens[1]}", "sit 3 agent", "sit 4 tag", "deal"):
+                t = HOLDEM.apply(t, a)
+            return t.to_act
+        seed = next(n for n in range(50) if first_actor(n) in (3, 4))
+        game = poker_table(self.alice, [self.bob], ai=("agent", "bot"), seed=seed)
         clock = [django_timezone.now()]
 
         def tick(seconds):
@@ -2258,7 +2285,7 @@ class RoomStartTests(RefusalAssertions, TestCase):
             self.assertEqual(self.post("alice", f"/api/holdem/games/{game.id}/start/").status_code, 200)
         game.refresh_from_db()
         state = HOLDEM.replay(operations.settings_of(game), game.actions)
-        self.assertTrue(game.actions, "倒數結束後輪到 AI 的座位要馬上行動")
+        self.assertGreater(len(game.actions), game.actions.index("deal") + 1, "倒數結束後輪到 AI 的座位要馬上行動")
         self.assertIn(HOLDEM.to_move(state), game.human_seats())  # 行動到輪到真人為止，不會卡在 AI
 
     def test_the_ai_seats_never_act_before_the_start(self):
@@ -2620,29 +2647,34 @@ class RoomLobbyTests(RefusalAssertions, TestCase):
         self.assertFalse(self.clients["alice"].get(f"{url}/").json()["is_owner"])
 
     def test_the_host_can_switch_games_and_whoever_does_not_fit_watches(self):
+        # 換成撲克（2026-11-16 起是開放牌桌）：牌桌是空的，房間裡的人都到觀戰席，自己上桌
         from holdem.module import MODULE as HOLDEM
         game = self.room(watcher="")
         operations.join_game(game.room_code, self.users["carol"])  # 座位滿了：觀戰
         r = self.post("alice", f"/api/gomoku/games/{game.id}/room/",
-                      {"game_type": "holdem", "seat": 1, "settings": {"players": 4, "humans": [1, 2, 3]}})
+                      {"game_type": "holdem", "seat": 1, "settings": {"players": 3}})
         self.assertEqual(r.status_code, 200)
         game.refresh_from_db()
         self.assertEqual(game.game_type, "holdem")
         self.assertEqual(r.json()["game"]["id"], game.id)
-        self.assertEqual(self.seats(game), {1: "alice", 2: "bob", 3: None})  # 坐著的人照順序坐進新的座位
+        self.assertEqual(HOLDEM.replay(operations.settings_of(game), game.actions).occupant, {})
+        self.assertEqual(sorted(game.summary()["spectators"]), ["alice", "bob", "carol"])
         self.assertEqual(self.clients["bob"].get(f"/api/holdem/games/{game.id}/").status_code, 200)
-        # 真人座位變少：坐不下的人改成觀戰，不會被趕出房間
-        self.post("carol", f"/api/holdem/games/{game.id}/seat/", {"seat": 3})
-        self.post("alice", f"/api/holdem/games/{game.id}/room/", {"seat": 1, "settings": {"players": 4, "humans": [1, 2]}})
-        self.assertEqual(self.seats(game), {1: "alice", 2: "bob"})
-        self.assertEqual(game.summary()["spectators"], ["carol"])
-        # 撲克的房主固定 1 號位：換座位不能動 1 號位，轉讓房主時新房主換過去
-        self.assertRefused(self.post("alice", f"/api/holdem/games/{game.id}/seat/", {"player": "bob", "seat": 1}),
-                           "固定坐 1 號位")
+        with patch("arena.operations.secrets.choice", side_effect=lambda seats: seats[-1]):
+            for who in ("bob", "carol"):
+                self.post(who, f"/api/holdem/games/{game.id}/table/", {"op": "sit"})  # bob 3 號位、carol 2 號位
+        # 座位變少：坐不下的人（3 號位的 bob）改成觀戰，不會被移出房間
+        self.post("alice", f"/api/holdem/games/{game.id}/room/", {"seat": 1, "settings": {"players": 2}})
+        game.refresh_from_db()
+        occupant = HOLDEM.replay(operations.settings_of(game), game.actions).occupant
+        self.assertEqual(occupant, {2: HOLDEM.member_token(self.users["carol"])})
+        self.assertIn("bob", game.summary()["spectators"])
+        # 撲克的座位是隨機的，房主不能幫人換座位；房主可以交給觀戰席的人（開放牌桌的房主不一定在桌上）
+        self.assertRefused(self.post("alice", f"/api/holdem/games/{game.id}/seat/", {"player": "carol", "seat": 1}),
+                           "隨機")
         self.post("alice", f"/api/holdem/games/{game.id}/host/", {"player": "bob"})
-        self.assertEqual(self.seats(game), {1: "bob", 2: "alice"})
-        self.assertEqual((game.owner.username, game.human_seat), ("bob", 1))
-        self.assertEqual(HOLDEM.pvp_seats(game.settings), [1, 2])
+        game.refresh_from_db()
+        self.assertEqual(game.owner.username, "bob")
 
     def test_leaving_the_room(self):
         game = self.room()

@@ -6,6 +6,14 @@
 - "deal"：這手牌結束後開下一手（輪到玩家按）
 - "leave"：玩家離場，牌局結束；一手牌進行中離場等於先棄牌（使用者要求，2026-10-11）
 - "leave N"：真人對戰時 1 號位以外的真人（N 號位）離場，放棄剩下的籌碼，牌局由其他人繼續（2026-11-16）
+
+開放牌桌（table=True，真人對戰的補入式牌桌，2026-11-16 使用者要求）：牌桌一開始是空的，座位的變動也寫進行動，
+重播才知道每一手是誰坐哪裡。只在兩手牌之間（或還沒開始時）能換座位：
+- "sit N 誰"：N 號位入座，拿起始籌碼。「誰」是真人的成員代號（MEMBER＋帳號編號）、"agent" 或機器人風格
+- "stand N"：N 號位下桌（籌碼不保留，回桌一律重新拿起始籌碼）
+- "deal"：發下一手，要有兩個以上有籌碼的座位；不分誰按（由伺服器在一手結束後自動送出）
+- "leave N"：N 號位的真人離場：一手牌進行中要輪到他，先棄牌；籌碼放棄，這手結束後由伺服器讓他下桌
+開放牌桌沒有勝負（result 一律 None），由房主結束。
 每手牌用 secret 的種子加上第幾手洗牌，所以從行動序列可以完整重建，牌序只存在伺服器。
 """
 import random
@@ -13,6 +21,7 @@ import random
 from . import cards
 
 HUMAN = 1  # 玩家固定坐 1 號位；位置靠按鈕輪轉，坐哪裡都一樣
+MEMBER = 1000  # 開放牌桌的真人成員代號從這裡開始（MEMBER＋帳號編號），和座位號碼（1–10）分開
 STREETS = ["翻牌前", "翻牌", "轉牌", "河牌"]
 ACTION_WORDS = {"fold": "棄牌", "check": "過牌", "call": "跟注", "allin": "All in", "deal": "下一手", "leave": "離場"}  # 使用者要求全下顯示成 All in
 
@@ -31,8 +40,11 @@ def action_text(action):
 class Table:
     """牌局狀態。apply 產生新的狀態，不就地修改（copy 後再改）。"""
 
-    def __init__(self, players, stack, sb, bb, seed):
+    def __init__(self, players, stack, sb, bb, seed, table=False):
         self.players, self.sb, self.bb, self.seed = players, sb, bb, seed
+        self.table = table  # 開放牌桌（真人對戰的補入式牌桌，2026-11-16）
+        self.occupant = {}  # 開放牌桌：座位 → 真人成員代號（int）、"agent" 或機器人風格
+        self.dealt = {}  # 開放牌桌：這一手發牌時誰坐哪裡（兩手之間換人坐的座位，上一手的底牌不是新來的人的）
         self.seats = list(range(1, players + 1))
         self.stacks = {s: stack for s in self.seats}  # 桌上還沒投入底池的籌碼
         self.start_stack = stack
@@ -43,12 +55,58 @@ class Table:
         self.hand_no = 0
         self.button = random.Random(f"{seed}:button").choice(self.seats)
         self.actions = []
-        self.start_hand(first=True)
+        if table:  # 牌桌一開始是空的，坐了兩個人以上才由 "deal" 發第一手
+            self.stacks = {s: 0 for s in self.seats}
+            self._idle()
+        else:
+            self.start_hand(first=True)
+
+    def _idle(self):
+        """開放牌桌還沒發過牌時的狀態：沒有人在牌局裡，等 "deal"。"""
+        self.hand_start, self.hole, self.deck, self.board, self.history = 0, {}, [], [], []
+        self.last_seat, self.street, self.pre, self.winnings = None, 0, {}, {}
+        self.folded, self.allin, self.shown = set(self.seats), set(), set()
+        self.bet = {s: 0 for s in self.seats}
+        self.total = {s: 0 for s in self.seats}
+        self.hand_over, self.hand_result, self.to_act = True, "", None
+        self.sb_seat = self.bb_seat = None
+        self.current, self.min_raise, self.full_level, self.acted = 0, self.bb, 0, {}
+
+    # 復盤、提問、畫面從誰的角度看（module.new_state 設定）。開放牌桌時存的是成員代號，
+    # 讀出來是他「在這個局面」坐的座位（沒坐在桌上是 None），換過位子的人看舊的手牌時不會看到別人的底牌
+    @property
+    def viewer(self):
+        v = self.__dict__.get("_viewer")
+        if self.table and v is not None and v >= MEMBER:
+            return self.seat_of_token(v)
+        return v
+
+    @viewer.setter
+    def viewer(self, value):
+        self._viewer = value
+
+    @property
+    def roles(self):
+        """每個座位是誰：human、agent 或機器人風格。開放牌桌由目前入座的人算出。"""
+        if self.table:
+            return {s: "human" if isinstance(w, int) else w for s, w in self.occupant.items()}
+        return self.__dict__.get("_roles", {})
+
+    @roles.setter
+    def roles(self, value):
+        self._roles = value
+
+    def seat_of_token(self, token):
+        return next((s for s, w in self.occupant.items() if w == token), None)
+
+    def live(self):
+        """有籌碼、下一手會拿到牌的座位。"""
+        return [s for s in self.seats if self.stacks[s] > 0]
 
     def copy(self):
         t = Table.__new__(Table)
         t.__dict__.update(self.__dict__)
-        for name in ("stacks", "bet", "total", "acted", "hole", "pre"):
+        for name in ("stacks", "bet", "total", "acted", "hole", "pre", "occupant", "dealt"):
             setattr(t, name, dict(getattr(self, name)))
         for name in ("actions", "board", "deck", "history"):
             setattr(t, name, list(getattr(self, name)))
@@ -61,6 +119,7 @@ class Table:
 
     def start_hand(self, first=False):
         self.hand_no += 1
+        self.dealt = dict(self.occupant)
         self.hand_start = len(self.actions)  # 這手牌第一個行動在 actions 中的位置
         live = [s for s in self.seats if self.stacks[s] > 0]
         if not first:
@@ -151,6 +210,23 @@ class Table:
                 "raise": raise_range, "allin": stack > 0 and (to_call >= stack or raise_range is not None)}
 
     def apply(self, action):
+        if self.table:
+            head = action.split()[0] if action else ""
+            if head in ("sit", "stand"):
+                self._seat_change(action)
+                return
+            if action == "deal":
+                if not self.hand_over:
+                    raise ValueError("這手牌還沒結束")
+                if len(self.live()) < 2:
+                    raise ValueError("牌桌上要有兩個人以上才能發牌")
+                self.actions.append(action)
+                self.start_hand(first=self.hand_no == 0)
+                return
+            if action == "leave":
+                raise ValueError("看不懂的行動：leave（請用 leave N）")
+            if self.hand_over and not action.startswith("leave "):
+                raise ValueError("這手牌已經結束，等下一手發牌")
         if self.left:
             raise ValueError("你已經離場，牌局結束了")
         if action == "leave":
@@ -233,6 +309,37 @@ class Table:
         self.left = True
         self.actions.append("leave")
 
+    def _seat_change(self, action):
+        """開放牌桌的入座（sit N 誰）與下桌（stand N）：只在兩手牌之間。"""
+        parts = action.split()
+        if not self.hand_over:
+            raise ValueError("一手牌進行中不能上桌或下桌，要等這手牌結束")
+        try:
+            seat = int(parts[1])
+        except (IndexError, ValueError):
+            raise ValueError(f"看不懂的行動：{action}")
+        if seat not in self.seats:
+            raise ValueError(f"沒有 {seat} 號位")
+        if parts[0] == "sit":
+            if len(parts) != 3:
+                raise ValueError(f"看不懂的行動：{action}")
+            if seat in self.occupant:
+                raise ValueError(f"{seat} 號位已經有人了")
+            who = int(parts[2]) if parts[2].isdigit() else parts[2]
+            if isinstance(who, int) and (who < MEMBER or who in self.occupant.values()):
+                raise ValueError("已經在牌桌上了" if who >= MEMBER else f"看不懂的行動：{action}")
+            self.occupant[seat] = who
+            self.stacks[seat] = self.start_stack
+        else:
+            if len(parts) != 2:
+                raise ValueError(f"看不懂的行動：{action}")
+            if seat not in self.occupant:
+                raise ValueError(f"{seat} 號位沒有人")
+            del self.occupant[seat]
+            self.stacks[seat] = 0
+        self.gone.discard(seat)
+        self.actions.append(action)
+
     def _forfeit(self, action):
         """真人對戰 1 號位以外的真人離場（2026-11-16 使用者要求補上；之前只有開桌的人能離場，其他人走不了）：
         放棄剩下的籌碼、之後不再發牌給他，牌局由其他人繼續。跟棋類的認輸一樣算輸，不能靠離場保住領先的籌碼。
@@ -241,7 +348,15 @@ class Table:
             seat = int(action.split()[1])
         except (IndexError, ValueError):
             raise ValueError(f"看不懂的行動：{action}")
-        if not self.pvp or seat == HUMAN or seat not in self.humans:
+        if self.table:
+            if not isinstance(self.occupant.get(seat), int):
+                raise ValueError("只有牌桌上的真人能離場")
+            if self.hand_over:  # 兩手牌之間：直接下桌
+                del self.occupant[seat]
+                self.stacks[seat] = 0
+                self.actions.append(action)
+                return
+        elif not self.pvp or seat == HUMAN or seat not in self.humans:
             raise ValueError("只有真人對戰裡 1 號位以外的真人能這樣離場")
         if seat in self.gone:
             raise ValueError(f"{seat} 號位已經離場了")
@@ -316,9 +431,9 @@ class Table:
         self.hand_over, self.to_act = True, None
         if by_fold:
             (s, amount), = won.items()
-            self.hand_result = f"其他人都棄牌，{seat_label(s)}贏得 {amount}。"
+            self.hand_result = f"其他人都棄牌，{self.label(s)}贏得 {amount}。"
         else:
-            parts = [f"{seat_label(s)}以{cards.describe(ranks[s])} 贏得 {won[s]}" for s in sorted(won, key=lambda x: -won[x])]
+            parts = [f"{self.label(s)}以{cards.describe(ranks[s])} 贏得 {won[s]}" for s in sorted(won, key=lambda x: -won[x])]
             self.hand_result = "攤牌：" + "；".join(parts) + "。"
 
     # ---- 牌局結束 ----
@@ -330,9 +445,16 @@ class Table:
     def _leader(self, seats):
         return max(seats, key=lambda s: self.stacks[s])
 
+    def label(self, seat):
+        """畫面上的座位名稱：開放牌桌沒有固定的「玩家」，一律寫座位號碼。"""
+        return f"{seat} 號位" if self.table else seat_label(seat)
+
     def result(self):
         """玩家離場、輸光或其他人都輸光時結束：(勝方座位或 None（不輸不贏）, 說明)；還沒結束回傳 None。
-        真人對戰時每位真人看到同一句話，所以不寫「你」；離場或開桌的人輸光時，籌碼最多的座位獲勝。"""
+        真人對戰時每位真人看到同一句話，所以不寫「你」；離場或開桌的人輸光時，籌碼最多的座位獲勝。
+        開放牌桌不計勝負（使用者決定，2026-11-16），只剩一人時等人補進來，由房主結束。"""
+        if self.table:
+            return None
         if self.pvp and (self.left or (self.hand_over and self.stacks[HUMAN] == 0)):
             leader = self._leader(self.seats)
             why = "開桌的人（1 號位）離場" if self.left else "開桌的人（1 號位）籌碼輸光"

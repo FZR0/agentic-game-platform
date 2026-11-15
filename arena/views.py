@@ -282,6 +282,42 @@ def _room_action(request, game_key, game_id, kind, seat=False):
     return response
 
 
+def _table_request(request, game_key, game_id, kind):
+    """撲克開放牌桌（2026-11-16）：table＝上桌／排隊、下桌／觀眾、補 AI；table_deal＝一手結束後補人發牌（房間裡的網頁送）；
+    table_end＝房主結束牌局。觀戰的人也要能排隊、送發牌，所以用 watch=True。成功後通知房間裡的人。"""
+    module = _module(game_key)
+    game = _game(request, module, game_id, watch=True)
+    try:
+        data = _read_json(request)
+        model, steps = _agent_options(data, module)
+        params = {"game_id": game.id, "model": model, "steps": steps}
+        if kind == "table":
+            params.update(op=str(data.get("op", "")), kind=str(data.get("kind") or ""), seat=int(data.get("seat") or 0))
+        elif kind == "table_deal":
+            params["hand"] = int(data.get("hand", 0))
+    except (ValueError, KeyError, TypeError) as exc:
+        return _error(exc)
+    response = _json(request, kind, {"module": module, "game": game, "params": params})
+    if response.status_code == 200:
+        realtime.notify(game)
+    return response
+
+
+@require_POST
+def api_table(request, game_key, game_id):
+    return _table_request(request, game_key, game_id, "table")
+
+
+@require_POST
+def api_table_deal(request, game_key, game_id):
+    return _table_request(request, game_key, game_id, "table_deal")
+
+
+@require_POST
+def api_table_end(request, game_key, game_id):
+    return _table_request(request, game_key, game_id, "table_end")
+
+
 @require_POST
 def api_room_seat(request, game_key, game_id):
     return _room_action(request, game_key, game_id, "room_seat", seat=True)

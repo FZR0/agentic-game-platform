@@ -309,7 +309,10 @@ def _start_room(ctx):
     game = operations.start_room(_game(ctx), ctx["user"])
     realtime.notify(game)
     operations.wait_for_start(game)
-    operations.run_ai_turns(ctx["module"], game, p["model"], p["steps"], ctx["seat"])
+    if operations.open_table(game):  # 撲克開放牌桌：倒數完發第一手（2026-11-16）
+        operations.table_advance(ctx["module"], game, 0, p["model"], p["steps"], ctx["seat"])
+    else:
+        operations.run_ai_turns(ctx["module"], game, p["model"], p["steps"], ctx["seat"])
     return {"game": game.summary()}
 
 
@@ -331,7 +334,8 @@ def _change_room(ctx):
     p = ctx["params"]
     module = games.get(p["game_type"])  # 房主可以換別的遊戲（2026-11-15）
     game, frame = operations.change_room(module, _game(ctx), ctx["user"], p["seat"], p["settings"])
-    return {"game": game.summary(), "my_seat": p["seat"], "frame": frame}
+    seat = game.seat_of(ctx["user"]) if operations.open_table(game) else p["seat"]  # 撲克牌桌的房主可能在觀戰席
+    return {"game": game.summary(), "my_seat": seat, "frame": frame}
 
 
 # 房間大廳（2026-11-15）：換座位、請人離開、轉讓房主、離開房間
@@ -347,6 +351,25 @@ def _kick(ctx):
 
 def _transfer_host(ctx):
     return {"game": operations.transfer_host(ctx["module"], _game(ctx), ctx["user"], ctx["params"]["player"]).summary()}
+
+
+# 撲克開放牌桌（2026-11-16）：上桌／排隊、下桌／觀眾、補 AI、一手結束後補人發牌、房主結束牌局
+def _table(ctx):
+    p = ctx["params"]
+    game, advance = operations.table_action(ctx["module"], _game(ctx), ctx["user"], p["op"], p["kind"], p["seat"])
+    if advance:  # 牌桌在等人時排進來的人馬上補進去、發牌
+        operations.table_advance(ctx["module"], game, None, p["model"], p["steps"], ctx["seat"])
+    return {"game": game.summary()}
+
+
+def _table_deal(ctx):
+    p = ctx["params"]
+    operations.table_advance(ctx["module"], _game(ctx), p["hand"], p["model"], p["steps"], ctx["seat"])
+    return {"game": _game(ctx).summary()}
+
+
+def _table_end(ctx):
+    return {"game": operations.table_end(_game(ctx), ctx["user"]).summary()}
 
 
 def _leave_room(ctx):
@@ -409,6 +432,17 @@ REQUESTS = {r.kind: r for r in [
             params={"game_id": GAME_ID, "player": PLAYER}, summary=lambda data: "房主已經轉讓。"),
     OneStep("leave_room", "leave_room", "使用者要離開第 {game_id} 盤的房間，請照做。", _leave_room,
             params={"game_id": GAME_ID}, summary=lambda data: "已經離開房間。"),
+    OneStep("table", "table_action",
+            "第 {game_id} 盤的德州撲克牌桌，使用者要做牌桌操作「{op}」（AI 種類「{kind}」、座位或隊列第幾個 {seat}），請照做。",
+            _table, params={"game_id": GAME_ID, "op": ("string", "牌桌操作：sit、unqueue、stand、add_ai、remove_ai", "op"),
+                            "kind": ("string", "補哪種 AI：agent 或 bot，沒有就填空字串", "kind"),
+                            "seat": ("integer", "座位或隊列第幾個，沒有就填 0", "seat")},
+            summary=lambda data: "牌桌已更新。"),
+    OneStep("table_deal", "deal_next_hand", "第 {game_id} 盤的德州撲克第 {hand} 手牌結束了，請補人並發下一手。",
+            _table_deal, params={"game_id": GAME_ID, "hand": ("integer", "剛結束的是第幾手", "hand")},
+            summary=lambda data: "已經補人、發牌。"),
+    OneStep("table_end", "end_table", "房主要結束第 {game_id} 盤的德州撲克牌局（不計勝負），請照做。", _table_end,
+            params={"game_id": GAME_ID}, summary=lambda data: "牌局已結束。"),
     # 房主按開始、房間聊天室（2026-11-13）
     OneStep("start", "start_room", "房主按了第 {game_id} 盤的「開始」，請開始這盤真人對戰（倒數後開始，AI 的座位倒數完再行動）。",
             _start_room, params={"game_id": GAME_ID}, summary=lambda data: f"第 {data['game']['id']} 盤已開始。"),

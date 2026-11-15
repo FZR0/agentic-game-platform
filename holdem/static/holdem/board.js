@@ -67,6 +67,10 @@ window.GameBoard = (() => {
     }
   }
 
+  // 自己坐的座位（畫在正下方、底牌畫大）：開放牌桌（2026-11-16）是 frame.my_table_seat，觀戰的人沒有；
+  // 其他情況是名稱寫「你」的座位（和 AI 對戰時是 1 號位），找不到時 1 號位在下方
+  const mySeat = (frame) => (frame?.table ? frame.my_table_seat : frame?.seats?.find((s) => s.name === "你")?.seat) ?? null;
+
   function seatPosition(i, n) {
     const angle = Math.PI / 2 + (i * 2 * Math.PI) / n; // 1 號位（玩家）在正下方，順時針排列
     return [CENTER[0] + RADIUS[0] * Math.cos(angle), CENTER[1] + RADIUS[1] * Math.sin(angle)];
@@ -225,11 +229,27 @@ window.GameBoard = (() => {
     const [bw, bh] = n > 6 ? [124, 52] : [132, 60];
     const places = {};
     const won = frame.hand_over && !(before && before.hand_over); // 這一步剛結束這手牌
+    const me = mySeat(frame);
+    const offset = Math.max(0, frame.seats.findIndex((s) => s.seat === me)); // 自己的座位轉到正下方
     frame.seats.forEach((s, i) => {
-      const [x, y] = seatPosition(i, n);
+      const [x, y] = seatPosition((i - offset + n) % n, n);
       places[s.seat] = [x, y];
+      if (s.empty) { // 開放牌桌的空位
+        ctx.globalAlpha = 0.45;
+        roundRect(ctx, x - bw / 2, y - bh / 2, bw, bh, 10);
+        ctx.setLineDash([5, 4]);
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = "#9aa0a6";
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = "#f1f3f4";
+        ctx.font = `${n > 6 ? 12 : 13}px system-ui, sans-serif`;
+        ctx.fillText(`${s.seat} 號位　空位`, x, y, bw - 8);
+        ctx.globalAlpha = 1;
+        return;
+      }
       const old = before?.seats.find((o) => o.seat === s.seat);
-      const turn = frame.to_move === s.seat && !frame.hand_over;
+      const turn = (frame.acting ?? frame.to_move) === s.seat && !frame.hand_over;
       const fading = s.folded && old && !old.folded ? 1 - 0.4 * ease(elapsed / 300) : s.folded ? 0.6 : 1;
       ctx.globalAlpha = s.out ? 0.35 : fading;
       roundRect(ctx, x - bw / 2, y - bh / 2, bw, bh, 10);
@@ -247,7 +267,7 @@ window.GameBoard = (() => {
       ctx.fillText(s.out ? "籌碼輸光" : `籌碼 ${s.stack}${s.allin ? "（All in）" : ""}`, x, y, bw - 8);
       // 狀態列：這一輪的動作（過牌、跟注、加注…）；這一輪還沒動作就寫這手牌已經下注的總額；All in 的人一律寫 All in。
       // 攤牌時亮出的別人的牌，直接寫牌型
-      const shownHand = s.seat !== 1 && s.hand_name ? s.hand_name : "";
+      const shownHand = s.seat !== me && s.hand_name ? s.hand_name : "";
       let status = s.total ? `已下注 ${s.total}` : "";
       if (s.won) status = [`贏得 ${s.won}`, shownHand].filter(Boolean).join("・");
       else if (s.folded) status = "已棄牌";
@@ -258,12 +278,12 @@ window.GameBoard = (() => {
         ctx.fillStyle = s.won ? "#e37400" : turn ? "#5f6368" : "#fde68a";
         ctx.fillText(status, x, y + line, bw - 8);
       }
-      const scale = s.seat === 1 ? 1 : n > 6 ? 0.6 : 0.75; // 別人的牌畫小一點
+      const scale = s.seat === me ? 1 : n > 6 ? 0.6 : 0.75; // 別人的牌畫小一點
       const [w, h] = [40 * scale, 56 * scale];
       const top = y - bh / 2 - 3 - h;
       s.cards.forEach((code, k) => card(ctx, x - w - 2 + k * (w + 4), top, code, code && code === spot, scale));
       ctx.globalAlpha = 1;
-      if (s.seat === 1 && s.hand_name) {
+      if (s.seat === me && s.hand_name) {
         // 自己目前的牌型：寫在自己的底牌上方
         const label = `目前：${s.hand_name}`;
         ctx.font = "bold 13px system-ui, sans-serif";
@@ -344,13 +364,16 @@ window.GameBoard = (() => {
       const ask = host
         ? (frame.hand_over ? "確定要離場嗎？會帶走目前的籌碼，結束這場牌局。"
           : "確定要離場嗎？這手牌會直接棄牌，已經下的注不會退回。")
-        : "確定要離場嗎？剩下的籌碼會放棄、這場牌局算你輸，其他人會繼續玩。"
+        : (frame.table ? "確定要離場嗎？你會下桌到觀戰席，剩下的籌碼放棄（再上桌時重新拿起始籌碼）。"
+          : "確定要離場嗎？剩下的籌碼會放棄、這場牌局算你輸，其他人會繼續玩。")
           + (frame.hand_over || !frame.legal ? "" : "這手牌會直接棄牌。");
       if (window.confirm(ask)) playAction(frame.leave_action);
     }, live && Boolean(frame.leave_now), "leave");
     leave.hidden = !frame.leave_action;
     if (frame.hand_over) {
-      if (frame.to_move === 1) container.append(button("下一手", () => playAction("deal"), enabled, "primary"), leave);
+      // 開放牌桌（2026-11-16）下一手由伺服器自動發，沒有「下一手」按鈕
+      if (frame.table) container.append(leave);
+      else if (frame.to_move === 1) container.append(button("下一手", () => playAction("deal"), enabled, "primary"), leave);
       return;
     }
     const legal = frame.legal;
@@ -402,7 +425,7 @@ window.GameBoard = (() => {
   // 勝率表用：玩家目前起手牌的代號，例如 AA、AKs（同花）、AKo（不同花）
   const ORDER = "23456789TJQKA";
   function referenceKey(frame) {
-    const cards = frame?.seats?.find((s) => s.seat === 1)?.cards;
+    const cards = frame?.seats?.find((s) => s.seat === mySeat(frame))?.cards;
     if (!cards || cards.length !== 2 || cards.includes(null)) return null;
     const [a, b] = [...cards].sort((x, y) => ORDER.indexOf(y[0]) - ORDER.indexOf(x[0]));
     if (a[0] === b[0]) return a[0] + b[0];
@@ -410,8 +433,10 @@ window.GameBoard = (() => {
   }
 
   const turnHint = (frame) => {
-    if (frame.hand_over) return `${frame.hand_result}按「下一手」繼續，或按「離場」結束牌局。`;
-    const mine = frame.seats?.find((s) => s.seat === 1)?.hand_name;
+    if (frame.hand_over) {
+      return frame.table ? `${frame.hand_result}幾秒後自動發下一手。` : `${frame.hand_result}按「下一手」繼續，或按「離場」結束牌局。`;
+    }
+    const mine = frame.seats?.find((s) => s.seat === mySeat(frame))?.hand_name;
     const parts = [frame.legal?.call ? `要跟注 ${frame.legal.to_call}（底池 ${frame.pot}）` : "", mine ? `你目前是${mine}` : ""];
     return parts.filter(Boolean).join("；");
   };
