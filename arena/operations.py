@@ -335,10 +335,15 @@ def close_room(game, user):
 
 
 def wait_for_start(game):
-    """等到倒數結束（AI 的座位要等倒數完才行動，和真人一樣）。"""
-    left = game.starts_in()
-    if left:
-        time.sleep(left)
+    """等到倒數結束（AI 的座位要等倒數完才行動，和真人一樣）。
+    原本睡 starts_in() 的秒數，那是給網頁看的、四捨五入到小數兩位的值，約四成會早醒幾毫秒，
+    接著 run_ai_turns 看到還沒開始就不行動，撲克由 AI 先說話的牌桌就整個卡住（2026-11-15 修正）。
+    所以用沒有四捨五入的剩餘時間，再多等一點，醒來時一定已經開始。"""
+    if game.started_at is None:
+        return
+    left = (game.started_at - timezone.now()).total_seconds()
+    if left > 0:
+        time.sleep(left + 0.05)
 
 
 def join_game(code, user):

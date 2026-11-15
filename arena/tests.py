@@ -2221,6 +2221,29 @@ class RoomStartTests(RefusalAssertions, TestCase):
         self.assertGreater(events[0][1], 0)  # 通知時還在倒數
         self.assertEqual(ModelRun.objects.filter(kind="req_start").count(), 1)  # 經過 AI 助理
 
+    def test_the_ai_seats_act_as_soon_as_the_countdown_ends(self):
+        # 使用者回報（2026-11-15）：撲克開房間、按開始後輪到 AI 的座位卻一直不動，牌局卡住（第 140 盤）。
+        # 原因：倒數的等待照四捨五入到小數兩位的秒數睡，早醒幾毫秒時 run_ai_turns 以為還沒開始就不行動。
+        # 用假的時鐘重現：按開始到開始等待之間經過 0.006 秒，剩 2.994 秒，四捨五入成 2.99 就會早醒
+        from holdem.module import MODULE as HOLDEM
+        from . import realtime
+        with patch.object(HOLDEM, "new_secret", return_value={"seed": 0}):  # 這個種子由 3 號位（AI）先說話
+            game = self.full_room(HOLDEM, {"players": 6, "humans": [1, 2]})
+        self.assertNotIn(HOLDEM.to_move(HOLDEM.replay(operations.settings_of(game), [])), game.human_seats())
+        clock = [django_timezone.now()]
+
+        def tick(seconds):
+            clock[0] += timedelta(seconds=seconds)
+
+        with patch("django.utils.timezone.now", side_effect=lambda: clock[0]), \
+                patch.object(realtime, "notify", side_effect=lambda g: tick(0.006)), \
+                patch.object(operations.time, "sleep", side_effect=tick):
+            self.assertEqual(self.post("alice", f"/api/holdem/games/{game.id}/start/").status_code, 200)
+        game.refresh_from_db()
+        state = HOLDEM.replay(operations.settings_of(game), game.actions)
+        self.assertTrue(game.actions, "倒數結束後輪到 AI 的座位要馬上行動")
+        self.assertIn(HOLDEM.to_move(state), game.human_seats())  # 行動到輪到真人為止，不會卡在 AI
+
     def test_the_ai_seats_never_act_before_the_start(self):
         from holdem.module import MODULE as HOLDEM
         game = self.full_room(HOLDEM, {"players": 4, "humans": [1, 2]})
