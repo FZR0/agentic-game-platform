@@ -5,6 +5,7 @@
 - "raise N"：把自己這一輪的下注加到 N（下注與加注都用這個；N 是這一輪的總額，不是增加的量）
 - "deal"：這手牌結束後開下一手（輪到玩家按）
 - "leave"：玩家離場，牌局結束；一手牌進行中離場等於先棄牌（使用者要求，2026-10-11）
+- "leave N"：真人對戰時 1 號位以外的真人（N 號位）離場，放棄剩下的籌碼，牌局由其他人繼續（2026-11-16）
 每手牌用 secret 的種子加上第幾手洗牌，所以從行動序列可以完整重建，牌序只存在伺服器。
 """
 import random
@@ -38,6 +39,7 @@ class Table:
         self.left = False  # 玩家離場了，牌局結束
         # 真人坐的座位（module.new_state 設定）；真人對戰（2026-11-05）時不只 1 號位。1 號位是開桌的人，只有他開下一手、離場
         self.humans = {HUMAN}
+        self.gone = set()  # 真人對戰中用 "leave N" 離場的座位
         self.hand_no = 0
         self.button = random.Random(f"{seed}:button").choice(self.seats)
         self.actions = []
@@ -50,7 +52,7 @@ class Table:
             setattr(t, name, dict(getattr(self, name)))
         for name in ("actions", "board", "deck", "history"):
             setattr(t, name, list(getattr(self, name)))
-        for name in ("folded", "allin", "shown"):
+        for name in ("folded", "allin", "shown", "gone"):
             setattr(t, name, set(getattr(self, name)))
         t.winnings = dict(self.winnings)
         return t
@@ -156,6 +158,9 @@ class Table:
                 raise ValueError("真人對戰只有開桌的人（1 號位）能離場、結束牌局")
             self._leave()
             return
+        if action.startswith("leave "):
+            self._forfeit(action)
+            return
         if self.hand_over:
             if action != "deal":
                 raise ValueError("這手牌已經結束，請開下一手")
@@ -227,6 +232,36 @@ class Table:
             self.last_seat = HUMAN
         self.left = True
         self.actions.append("leave")
+
+    def _forfeit(self, action):
+        """真人對戰 1 號位以外的真人離場（2026-11-16 使用者要求補上；之前只有開桌的人能離場，其他人走不了）：
+        放棄剩下的籌碼、之後不再發牌給他，牌局由其他人繼續。跟棋類的認輸一樣算輸，不能靠離場保住領先的籌碼。
+        兩手牌之間、或這手牌已經沒有他的事（棄牌了）時隨時可以；還在這手牌裡就要輪到他，先棄牌（已經下的注留在底池）。"""
+        try:
+            seat = int(action.split()[1])
+        except (IndexError, ValueError):
+            raise ValueError(f"看不懂的行動：{action}")
+        if not self.pvp or seat == HUMAN or seat not in self.humans:
+            raise ValueError("只有真人對戰裡 1 號位以外的真人能這樣離場")
+        if seat in self.gone:
+            raise ValueError(f"{seat} 號位已經離場了")
+        playing = not self.hand_over and seat in self.in_hand()
+        if playing and self.to_act != seat:
+            raise ValueError("這手牌還在進行，輪到你的時候才能離場")
+        self.gone.add(seat)
+        self.stacks[seat] = 0
+        self.actions.append(action)
+        if not playing:
+            return
+        self.folded.add(seat)
+        self.history.append((seat, "leave", self.street, "fold"))
+        self.last_seat = seat
+        if len(self.in_hand()) == 1:
+            self._award({self.in_hand()[0]: self.pot()}, by_fold=True)
+            return
+        self.to_act = self._next_to_act(seat)
+        if self.to_act is None:
+            self._finish_round()
 
     def _finish_round(self):
         """這一輪下注結束：發下一條街，或攤牌。只剩一人能行動時直接把牌發完。"""

@@ -106,6 +106,15 @@ class Game(models.Model):
         return (Game.objects.filter(mode="pvp", room_code=self.room_code, id__gt=self.id).order_by("id")
                 .values_list("id", flat=True).first())
 
+    def current_round(self):
+        """同一個房間現在的那一盤（最新開的，可能已經換了遊戲）：{"id", "game_type"}；這一盤就是最新的時是 None。
+        房間頁的網址停在打完的那一盤時（打完到回到房間之間重新整理、上一頁），網頁據此回到房間現在的那一盤，
+        而不是把打完的那盤當成復盤打開（2026-11-16 使用者回報：AI 教練出現在房間裡）。"""
+        if not self.pvp or not self.room_code:
+            return None
+        return (Game.objects.filter(mode="pvp", room_code=self.room_code, id__gt=self.id).order_by("-id")
+                .values("id", "game_type").first())
+
     def summary(self):
         data = {"id": self.id, "game_type": self.game_type, "human_seat": self.human_seat, "mode": self.mode,
                 "settings": self.settings, "winner": self.winner, "draw": self.draw, "ended": self.ended,
@@ -118,6 +127,7 @@ class Game(models.Model):
             # 開始前都顯示（2026-11-15）：座位坐滿了，別人還是可以用密碼進來觀戰、等下一盤
             data["room_code"] = self.room_code if self.started_at is None and not self.ended else ""
             data["next_round"] = self.next_round_id() if self.finished else None
+            data["current_round"] = self.current_round() if self.finished else None
             data["starts_in"] = self.starts_in()
             data["closed"] = self.ended and self.started_at is None  # 房主在開始前關閉了房間（2026-11-13）
         return data

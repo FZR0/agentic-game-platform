@@ -1980,11 +1980,19 @@ class RoomSettingsTests(TestCase):
         r = self.post("alice", f"/api/{game}/games/", {"seat": 1, "mode": "pvp", **body}).json()
         return Game.objects.get(pk=r["game"]["id"])
 
-    def test_the_home_page_links_to_creating_a_room_for_every_game(self):
+    def test_the_home_page_creates_a_room_in_one_click_and_the_host_picks_the_game_inside(self):
+        # 2026-11-16 使用者要求「建立對戰改成按下後直接建立對戰」：不先跳出選遊戲的選單，
+        # 一按就用第一個遊戲開房；要玩別的遊戲，房主在房間裡（按開始前）換
         page = self.clients["alice"].get("/").content.decode()
-        self.assertIn("建立對戰房間", page)
-        for key in games.GAMES:
-            self.assertIn(f"/{key}/?room=new", page)
+        first = next(iter(games.GAMES))
+        self.assertIn(f'href="/{first}/?room=new">建立對戰房間</a>', page)
+        self.assertEqual(page.count("?room=new"), 1)
+        game = self.open_room(game=first)
+        r = self.post("alice", f"/api/{first}/games/{game.id}/room/",
+                      {"seat": 1, "game_type": "weiqi", "settings": {"size": 9}})
+        self.assertEqual(r.status_code, 200)
+        game.refresh_from_db()
+        self.assertEqual(game.game_type, "weiqi")
 
     def test_the_host_changes_settings_in_the_same_room_before_anyone_joins(self):
         game = self.open_room(settings={"size": 9})
@@ -2508,6 +2516,45 @@ class RoomLobbyTests(RefusalAssertions, TestCase):
         game.refresh_from_db()
         self.assertIsNone(operations._open_next_round(game))
         self.assertEqual(Game.objects.filter(room_code=game.room_code).count(), 1)
+
+    def test_both_players_find_every_finished_game_of_the_room_and_review_their_own_side(self):
+        # 2026-11-16 使用者要求：房間裡的「復盤」改成「對戰紀錄」，雙方都能復盤。
+        # 對戰紀錄＝對局紀錄只列這個房間打完的每一盤；每一盤照舊只給坐過的人看，所以雙方都看得到、
+        # 觀戰的人和外人看不到（不能拿別人房間的編號探出別人的對局）
+        first = self.room()
+        second = Game.objects.get(pk=self.finish(first).json()["next_round"])
+        lobby = Game.objects.get(pk=self.finish(second).json()["next_round"])
+        other, _ = operations.start_game(GOMOKU, 1, {}, self.users["alice"], "pvp")  # alice 的另一個房間
+        for who, seat in (("alice", 1), ("bob", 2)):
+            page = self.clients[who].get(f"/history/?room={lobby.id}").content.decode()
+            self.assertIn("這個房間的對戰紀錄", page)
+            for game in (first, second):
+                self.assertIn(f"/gomoku/?review={game.id}", page)
+                r = self.clients[who].get(f"/api/gomoku/games/{game.id}/review/")
+                self.assertEqual(r.status_code, 200)
+                self.assertEqual(r.json()["moments"], GOMOKU.review(game.settings, game.actions, seat))
+            # 還沒打的這一盤、別的房間都不在這個房間的紀錄裡（頂端的「回到房間」不算，只看清單）
+            listed = page[page.index('class="row-list"'):]
+            self.assertNotIn(f"={lobby.id}\"", listed)
+            self.assertNotIn(f"={other.id}\"", listed)
+        for who in ("carol", "dave"):  # 觀戰的人、外人
+            page = self.clients[who].get(f"/history/?room={lobby.id}").content.decode()
+            self.assertIn("這個房間還沒有打完的對局", page)
+            self.assertNotIn("?review=", page)
+
+    def test_a_finished_game_points_back_to_the_room_s_current_game(self):
+        # 2026-11-16 使用者回報 bug：AI 教練出現在房間裡。打完到回到房間之間重新整理（或按上一頁），
+        # 網址還是打完的那一盤，網頁把它當成復盤打開。打完的那一盤要告訴網頁房間現在是哪一盤（換了遊戲也一樣），
+        # 網頁才能回到房間；房間現在的那一盤沒有這個欄位，所以不會一直跳
+        first = self.room()
+        second = Game.objects.get(pk=self.finish(first).json()["next_round"])
+        third = Game.objects.get(pk=self.finish(second).json()["next_round"])
+        r = self.post("alice", f"/api/gomoku/games/{third.id}/room/", {"seat": 1, "game_type": "weiqi", "settings": {}})
+        self.assertEqual(r.status_code, 200)
+        for game in (first, second):
+            detail = self.clients["bob"].get(f"/api/gomoku/games/{game.id}/").json()
+            self.assertEqual(detail["game"]["current_round"], {"id": third.id, "game_type": "weiqi"})
+        self.assertIsNone(self.clients["bob"].get(f"/api/weiqi/games/{third.id}/").json()["game"]["current_round"])
 
     def test_chat_carries_over_between_games_and_each_saved_game_keeps_its_own(self):
         game = self.room()

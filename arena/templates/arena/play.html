@@ -19,7 +19,7 @@
     </h1>
     <nav class="actions">
       <button id="new-game" class="primary">新對局</button>
-      <button id="start-review" disabled>復盤</button>
+      <button id="start-review" disabled data-room-history="{% url 'arena:history' %}">復盤</button>
       <span class="divider" aria-hidden="true"></span>
       <div class="menu">
         <button id="rules-toggle" aria-expanded="false" aria-controls="rules-panel">規則</button>

@@ -112,6 +112,7 @@ class HoldemModule(GameModule):
         {"title": "這個牌桌", "items": ["你固定坐 1 號位，按鈕每手輪流移動，所以每個位置都會輪到。",
                                      "可以設定人數 2–10 人、起始籌碼、AI 組成（1 位會查證思考的 Agent 加上不同風格的機器人，或全部都是 Agent）。",
                                      "你輸光、其他人都輸光，或你按「離場」時，牌局結束。離場會帶走目前的籌碼；一手牌進行中離場等於先棄牌。",
+                                     "和朋友真人對戰時，1 號位以外的人也能按「離場」：放棄剩下的籌碼、算輸，牌局由其他人繼續；一手牌進行中要輪到你才能離場，先棄牌。",
                                      "AI 看不到你的底牌，它只知道自己的牌、公共牌和大家做過的動作。"]},
     ]
     settings_fields = [
@@ -223,6 +224,9 @@ class HoldemModule(GameModule):
                  "leave": "leave", "離場": "leave"}
         if t in words:
             return words[t]
+        leave = re.match(r"^leave\s+(\d+)$", t)  # 真人對戰其他真人離場（2026-11-16）
+        if leave:
+            return f"leave {int(leave.group(1))}"
         m = re.match(r"^(?:raise|bet|加注|下注)\s*(?:to|到)?\s*(\d+)$", t)
         return f"raise {int(m.group(1))}" if m else None
 
@@ -233,6 +237,13 @@ class HoldemModule(GameModule):
 
     def to_move(self, state):
         return HUMAN if state.hand_over else state.to_act
+
+    def may_act(self, state, action, seat):
+        # 真人對戰其他真人離場（2026-11-16）：兩手之間也輪不到他們，所以不看輪到誰；行動帶自己的座位號碼，
+        # 重播才知道是誰離場。別人的號碼一律拒絕（否則開桌的人能替別人離場）；其餘條件由 Table._forfeit 檢查
+        if action.startswith("leave "):
+            return action == f"leave {seat}"
+        return super().may_act(state, action, seat)
 
     def outcome(self, state):
         r = state.result()
@@ -269,7 +280,19 @@ class HoldemModule(GameModule):
         return {"hand": t.hand_no, "street": STREETS[t.street], "board": t.board, "pot": t.pot(), "seats": seats,
                 "to_move": self.to_move(t), "legal": legal, "hand_over": t.hand_over, "hand_result": t.hand_result,
                 "result": r[1] if r else None, "last": t.actions[-1] if t.actions else None,
-                "last_seat": t.last_seat, "can_leave": seat == HUMAN}  # 真人對戰只有開桌的人能離場
+                "last_seat": t.last_seat, "leave_action": self._leave_action(t, seat),
+                # 現在按得了「離場」嗎：兩手之間、這手牌已經沒他的事，或輪到他（一手牌進行中要先棄牌）
+                "leave_now": t.hand_over or seat not in t.in_hand() or t.to_act == seat}
+
+    @staticmethod
+    def _leave_action(t, seat):
+        """這個座位按「離場」送出的行動：開桌的人（1 號位）結束牌局；真人對戰其他真人放棄籌碼離開（2026-11-16）；
+        已經離場、觀戰的人、AI 座位沒有。"""
+        if seat == HUMAN:
+            return "leave"
+        if t.pvp and seat in t.humans and seat not in t.gone:
+            return f"leave {seat}"
+        return None
 
     # ---- 分析（只用 seat 看得到的資訊） ----
 
@@ -591,7 +614,7 @@ play_move 的 reason 用繁體中文一句話說明，只能提到工具結果�
     def rejection(self, state, action):
         if action is None:
             return "行動格式不對，請用 fold、check、call、allin 或 raise N"
-        if action == "leave":
+        if action.startswith("leave"):
             return "AI 不能離場"
         if action == "deal" or state.hand_over:
             return "這手牌還沒結束，不能開下一手"
@@ -625,7 +648,7 @@ play_move 的 reason 用繁體中文一句話說明，只能提到工具結果�
         dealt = me in t.hole
         entered = opened = False
         for action in actions:
-            if not t.hand_over and t.to_act == me and t.street == 0 and action != "leave":
+            if not t.hand_over and t.to_act == me and t.street == 0 and not action.startswith("leave"):
                 kind = self._action_key(t, me, action) if action != "fold" else "fold"
                 entered = entered or kind not in ("fold", "check")
                 opened = opened or kind not in ("fold", "check", "call")
@@ -750,7 +773,7 @@ play_move 的 reason 用繁體中文一句話說明，只能提到工具結果�
         t = self.new_state({**settings, "viewer": human_seat})
         moments = []
         for i, action in enumerate(actions):
-            if not t.hand_over and t.to_act == t.viewer and action != "leave":  # 離場是要不要繼續玩，不是牌局判斷
+            if not t.hand_over and t.to_act == t.viewer and not action.startswith("leave"):  # 離場是要不要繼續玩，不是牌局判斷
                 moment = self._judge(t, i, action)
                 if moment:
                     moments.append(moment)
@@ -867,6 +890,8 @@ play_move 的 reason 用繁體中文一句話說明，只能提到工具結果�
         action = actions[n - 1]
         if action == "leave":
             return [{"evidence": RULE, "text": f"第 {n} 步是你離場：{self.apply(t, action).result()[1]}。"}]
+        if action.startswith("leave "):
+            return [{"evidence": RULE, "text": f"第 {n} 步是{seat_label(int(action.split()[1]))}離場，放棄剩下的籌碼。"}]
         if t.hand_over:
             return [{"evidence": RULE, "text": f"第 {n} 步是開始第 {t.hand_no + 1} 手牌。"}]
         actor = t.to_act

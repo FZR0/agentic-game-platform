@@ -91,8 +91,10 @@ def home(request):
 def history(request):
     game_key = request.GET.get("game", "")
     result = request.GET.get("result", "")
+    room = request.GET.get("room", "")
+    # room：房間頁「對戰紀錄」只列這個房間打完的每一盤（2026-11-16）；0＝不篩選
     params = {"game": game_key if game_key in games.GAMES else "", "result": result if result in RESULTS else "",
-              "page": request.GET.get("page") or 1}
+              "page": request.GET.get("page") or 1, "room": int(room) if room.isdigit() else 0}
     return _page(request, "arena/history.html", "history", {"params": params})
 
 

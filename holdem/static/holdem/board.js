@@ -19,6 +19,7 @@ window.GameBoard = (() => {
   function actionText(action) {
     if (!action) return "";
     if (action.startsWith("raise ")) return `加注到 ${action.split(" ")[1]}`;
+    if (action.startsWith("leave ")) return `${action.split(" ")[1]} 號位離場`;
     return { fold: "棄牌", check: "過牌", call: "跟注", allin: "All in", deal: "下一手", leave: "離場" }[action] ?? action;
   }
 
@@ -331,23 +332,33 @@ window.GameBoard = (() => {
 
   // 依局面產生動作按鈕。第一排是決定：棄牌（紅）、過牌或跟注（藍）、加注到 X、All in；
   // 第二排是加注金額：最小、半個底池、一個底池或自己輸入（按 Enter 直接加注）。一手結束後只有「下一手」。
-  function renderControls(frame, container, enabled, playAction) {
+  // live：牌局在進行（已開始、沒結束、不是復盤、沒在等伺服器），不管輪到誰；離場不一定要輪到自己
+  function renderControls(frame, container, enabled, playAction, live = enabled) {
     container.replaceChildren();
     if (!frame || frame.result) return;
-    // 離場（使用者要求）：一手牌之間直接結束；一手牌進行中等於先棄牌。放在最右邊，免得誤按
+    // 離場（使用者要求）：一手牌之間直接結束；一手牌進行中等於先棄牌。放在最右邊，免得誤按。
+    // 送什麼由伺服器決定（frame.leave_action）：開桌的人（1 號位）結束牌局；真人對戰的其他真人放棄籌碼離開，
+    // 牌局由其他人繼續（2026-11-16 補上，之前他們沒有這個按鈕、走不了）；觀戰的人與已經離場的人沒有
+    const host = frame.leave_action === "leave";
     const leave = button("離場", () => {
-      const ask = frame.hand_over ? "確定要離場嗎？會帶走目前的籌碼，結束這場牌局。"
-        : "確定要離場嗎？這手牌會直接棄牌，已經下的注不會退回。";
-      if (window.confirm(ask)) playAction("leave");
-    }, enabled, "leave");
-    // 真人對戰只有開桌的人（1 號位）能離場（frame.can_leave）；其他人沒有這個按鈕
-    if (frame.can_leave === false) leave.hidden = true;
+      const ask = host
+        ? (frame.hand_over ? "確定要離場嗎？會帶走目前的籌碼，結束這場牌局。"
+          : "確定要離場嗎？這手牌會直接棄牌，已經下的注不會退回。")
+        : "確定要離場嗎？剩下的籌碼會放棄、這場牌局算你輸，其他人會繼續玩。"
+          + (frame.hand_over || !frame.legal ? "" : "這手牌會直接棄牌。");
+      if (window.confirm(ask)) playAction(frame.leave_action);
+    }, live && Boolean(frame.leave_now), "leave");
+    leave.hidden = !frame.leave_action;
     if (frame.hand_over) {
       if (frame.to_move === 1) container.append(button("下一手", () => playAction("deal"), enabled, "primary"), leave);
       return;
     }
     const legal = frame.legal;
-    if (!legal) return;
+    if (!legal) {
+      // 沒輪到自己：已經棄牌（或輸光）的真人對戰玩家仍可以離場
+      if (!host && frame.leave_now) container.append(leave);
+      return;
+    }
     if (legal.call) container.append(button("棄牌", () => playAction("fold"), enabled, "fold"));
     container.append(legal.check
       ? button("過牌", () => playAction("check"), enabled, "call")

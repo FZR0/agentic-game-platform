@@ -602,6 +602,63 @@ class PvpTableTests(TestCase):
         self.assertEqual(r.status_code, 400)
         self.assertIn("開桌的人", r.json()["error"])
 
+    def test_the_other_humans_can_leave_by_giving_up_their_chips(self):
+        # 2026-11-16 使用者要求「德州撲克則是離場沒有就要補上」：之前只有開桌的人有「離場」，其他真人走不了。
+        # 其他真人離場＝放棄剩下的籌碼（跟認輸一樣），牌局由其他人繼續；誰都不能替別人離場
+        game = self.open_table()
+        for _ in range(20):  # 等到輪到 bob（3 號位）
+            game.refresh_from_db()
+            state = MODULE.replay({**game.settings, "secret": game.secret}, game.actions)
+            if state.to_act == 3:
+                break
+            self.post("alice", f"/api/holdem/games/{game.id}/move/",
+                      {"action": "check" if state.legal()["check"] else "call"})
+        self.assertEqual(state.to_act, 3)
+        frame = self.clients["bob"].get(f"/api/holdem/games/{game.id}/").json()["frames"][-1]
+        self.assertEqual((frame["leave_action"], frame["leave_now"]), ("leave 3", True))
+        self.assertEqual(self.post("bob", f"/api/holdem/games/{game.id}/move/", {"action": "leave 1"}).status_code, 400)
+        r = self.post("bob", f"/api/holdem/games/{game.id}/move/", {"action": "leave 3"})
+        self.assertEqual(r.status_code, 200, r.content)
+        game.refresh_from_db()
+        self.assertIn("leave 3", game.actions)
+        self.assertFalse(game.finished)  # 1 號位和 AI 繼續打
+        state = MODULE.replay({**game.settings, "secret": game.secret}, game.actions)
+        self.assertEqual(state.stacks[3], 0)
+        self.assertIn(3, state.folded)
+        frame = self.clients["bob"].get(f"/api/holdem/games/{game.id}/").json()["frames"][-1]
+        self.assertIsNone(frame["leave_action"])  # 已經離場，沒有按鈕了
+
+
+class PvpLeaveRuleTests(SimpleTestCase):
+    """真人對戰 1 號位以外的真人離場（"leave N"，2026-11-16）的規則：放棄籌碼算輸，不能靠離場保住領先。"""
+
+    def table(self):
+        return MODULE.new_state({**settings_for(2, stack=2000, seed=5), "humans": [1, 2]})
+
+    def test_leaving_between_hands_hands_the_game_to_the_host_even_when_ahead(self):
+        t = self.table()
+        while not t.hand_over:
+            t = MODULE.apply(t, "fold" if t.to_act == 1 and not t.legal()["check"] else
+                             ("check" if t.legal()["check"] else "call"))
+        self.assertGreater(t.stacks[2], t.stacks[1])  # 2 號位領先（1 號位一直棄牌）
+        self.assertEqual(MODULE.to_move(t), 1)  # 兩手之間輪到開桌的人發牌，2 號位照樣能離場
+        self.assertTrue(MODULE.may_act(t, "leave 2", 2))
+        self.assertFalse(MODULE.may_act(t, "leave 2", 1))  # 開桌的人不能替別人離場
+        t = MODULE.apply(t, "leave 2")
+        self.assertEqual(MODULE.outcome(t), (1, False))
+
+    def test_mid_hand_the_leaver_must_wait_for_their_turn_and_folds(self):
+        t = self.table()
+        other = 2 if t.to_act == 1 else 1
+        if other == 2:
+            with self.assertRaises(ValueError):
+                MODULE.apply(t, "leave 2")
+            t = MODULE.apply(t, "call")
+        t = MODULE.apply(t, "leave 2")
+        self.assertTrue(t.hand_over)  # 單挑時 2 號位棄牌，這手牌由 1 號位拿下
+        self.assertEqual(MODULE.outcome(t), (1, False))
+        self.assertEqual(MODULE.rejection(t, "leave 2"), "AI 不能離場")
+
 
 class OpponentStyleTests(SimpleTestCase):
     """撲克的對手觀察：只用對手做過的動作算入池率與加注比例，依經驗範圍判斷鬆緊、主動或被動，再給常見的應對。"""

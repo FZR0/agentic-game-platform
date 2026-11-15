@@ -196,13 +196,19 @@ def home_context(user):
             "stats": stats, "any_finished": any(s["finished"] for s in stats)}
 
 
-def history_context(user, game_key, result, page):
+def history_context(user, game_key, result, page, room=0):
+    """room：房間裡某一盤的編號（房間頁的「對戰紀錄」，2026-11-16 使用者要求「改成對戰紀錄按鈕，雙方都能復盤」），
+    只列出同一個房間打完的每一盤；每一盤照舊用 visible_to，所以雙方各自看得到、復盤自己坐的那一盤，
+    沒坐過的人（觀戰、外人）一盤也看不到，也不能用編號探別人的房間。"""
     played = _played_games(user, **({"game_type": game_key} if game_key else {}))
+    anchor = Game.watchable_by(user).filter(pk=room, mode="pvp").exclude(room_code="").first() if room else None
+    if room:
+        played = [g for g in played if anchor and g.room_code == anchor.room_code and g.finished]
     if result:
         played = [g for g in played if _result(g, user) == result]
     page = Paginator(played, HISTORY_PAGE_SIZE).get_page(page)
     return {**_site_context("history"), "page": page, "cards": [_card(g, user) for g in page],
-            "game_key": game_key, "result": result, "results": RESULTS}
+            "game_key": game_key, "result": result, "results": RESULTS, "room": room}
 
 
 def guide_context():
@@ -566,7 +572,7 @@ def play_human_move(module, game, action, seat):
     if not game.started:
         raise ValueError("房主還沒按「開始」" if game.started_at is None else "倒數還沒結束，請稍等")
     state = module.replay(settings_of(game), game.actions)
-    if module.to_move(state) != seat:
+    if not module.may_act(state, action, seat):
         raise ValueError("現在不是你的回合")
     state = module.apply(state, action)  # 不合法會丟出 ValueError
     game.actions.append(action)

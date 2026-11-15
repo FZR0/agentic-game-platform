@@ -222,20 +222,28 @@ function setThinkingStatus() {
   }, 1000);
 }
 
-const humanTurn = () => !state.over && !state.reviewing && !waitingForPlayers() && roomStarted()
-  && currentFrame()?.to_move === state.human;
+// 牌局在進行，不管輪到誰（撲克真人對戰的離場不必輪到自己，2026-11-16）
+const inPlay = () => !state.over && !state.reviewing && !waitingForPlayers() && roomStarted();
+const humanTurn = () => inPlay() && currentFrame()?.to_move === state.human;
 const waitingForPlayers = () => state.pvp && Object.values(state.players).some((name) => name === null);
 // 真人對戰要房主按「開始」、倒數結束才能下（伺服器也會拒絕，2026-11-13）
 const roomStarted = () => !state.pvp || (state.startsAt !== null && Date.now() >= state.startsAt);
 // 真人對戰還沒結束時不能用 AI 教練（伺服器也會拒絕），否則就是幫其中一方作弊（使用者決定，2026-11-05）
 const coachLocked = () => state.pvp && !state.over;
 
+// 坐在真人對戰房間裡（對局中、大廳、打完等著回到房間）：頂端的「復盤」換成「對戰紀錄」（2026-11-16 使用者要求），
+// 打開這個房間打完的每一盤，雙方各自從那裡復盤；從對局紀錄打開某一盤復盤時仍是「復盤」
+const inRoom = () => state.pvp && !state.watching && !state.closed && !state.reviewing && state.gameId !== null
+  && (!state.over || returnTimer !== null);
+
 function updateButtons() {
   $("new-game").disabled = state.busy;
+  const review = $("start-review");
+  review.textContent = inRoom() ? "對戰紀錄" : "復盤";
   // 觀戰的人沒有座位，復盤是從某一方的角度分析的，所以不能用（結束後可以用 ◀ ▶ 回看）
   // 房主在開始前關掉的房間一步都沒下，沒有東西可以復盤
-  $("start-review").disabled = state.busy || state.reviewing || state.gameId === null || coachLocked() || state.watching
-    || state.closed || returnTimer !== null;
+  review.disabled = !inRoom() && (state.busy || state.reviewing || state.gameId === null || coachLocked()
+    || state.watching || state.closed || returnTimer !== null);
   $("coach-toggle").disabled = coachLocked();
   $("coach-toggle").title = coachLocked() ? "真人對戰中不能使用 AI 教練，對局結束後就可以復盤" : "";
   document.querySelectorAll("#game-actions button").forEach((b) => { b.disabled = state.busy || !humanTurn(); });
@@ -254,7 +262,8 @@ function updateButtons() {
   $("leave-room").disabled = state.busy || state.starting;
   updateChatAvailability();
   renderRoomPlayers();
-  GameBoard.renderControls?.(currentFrame(), $("game-actions"), !state.busy && humanTurn(), playAction);
+  GameBoard.renderControls?.(currentFrame(), $("game-actions"), !state.busy && humanTurn(), playAction,
+    !state.busy && !state.watching && inPlay());
   updateAskAvailability();
 }
 
@@ -1176,10 +1185,11 @@ function addNote(note, live) {
     showResult(li, { text: factsText(note.facts), note: "完整思路含底牌，這手牌結束後復盤時可以看", source: "hidden" }, "");
   } else if (note.narration) {
     showResult(li, note.narration, "AI 的白話說明");
-  } else if (live && !state.watching) {
+  } else if (live && !state.watching && !coachLocked()) {
     queueNarration(li, path, {}, note.facts, "AI 的白話說明");
-  } else if (state.watching) {
-    showResult(li, { text: factsText(note.facts), note: "" }, "");  // 觀戰的人不能請 AI 說明
+  } else if (state.watching || coachLocked()) {
+    // 觀戰的人不能請 AI 說明；真人對戰結束前伺服器也會拒絕（operations.coach_allowed），不送出請求
+    showResult(li, { text: factsText(note.facts), note: state.watching ? "" : "真人對戰結束後可以請 AI 說明" }, "");
   } else {
     showResult(li, { text: factsText(note.facts), note: "這一手還沒有 AI 說明" }, "");
     const button = document.createElement("button");
@@ -1448,6 +1458,13 @@ function markReferenceRow() {
 async function openGame(id, mode) {
   try {
     const g = await api(`games/${id}/`);
+    // 房間網址停在打完的那一盤（打完到回到房間之間重新整理、上一頁）：回到房間現在的那一盤，
+    // 不把打完的那盤當成復盤打開，否則 AI 教練出現在房間裡（2026-11-16 使用者回報）。復盤要從「對戰紀錄」打開
+    const now = mode !== "review" ? g.game.current_round : null;
+    if (now) {
+      window.location.replace(`/${now.game_type}/?${mode === "watch" ? "watch" : "resume"}=${now.id}`);
+      return;
+    }
     // 觀戰（2026-11-08）：伺服器說這盤沒有自己的座位（my_seat 是 null）
     const watching = g.game.mode === "pvp" && g.my_seat === null;
     resetView(watching ? null : g.my_seat ?? g.game.human_seat, g.game.settings, g.actions, g.frames,
@@ -1456,7 +1473,8 @@ async function openGame(id, mode) {
     state.gameId = g.game.id;
     // 房主（可以轉讓，所以照伺服器說的）：回到這頁也能接著改設定
     state.owner = Boolean(g.is_owner);
-    rememberRoom();
+    // 從對戰紀錄復盤某一盤時網址保持 ?review=（換成 ?resume= 的話，重新整理會被帶回房間）
+    if (mode !== "review") rememberRoom();
     setStartsIn(g.game.starts_in);
     renderChat(g.chat || []);
     for (const note of g.notes) addNote(note, false);
@@ -1618,7 +1636,11 @@ $("chat-close").addEventListener("click", () => setChatOpen(false));
 $("chat-form").addEventListener("submit", sendChat);
 $("new-game").addEventListener("click", newGame);
 $("end-game").addEventListener("click", endGame);
-$("start-review").addEventListener("click", startReview);
+$("start-review").addEventListener("click", () => {
+  // 房間裡是「對戰紀錄」：開新分頁，房間頁留著（朋友按開始時還在房間裡）
+  if (inRoom()) window.open(`${$("start-review").dataset.roomHistory}?room=${state.gameId}`, "_blank", "noopener");
+  else startReview();
+});
 $("nav-first").addEventListener("click", () => goTo(0));
 $("nav-prev").addEventListener("click", () => goTo(state.viewAt - 1));
 $("nav-next").addEventListener("click", () => goTo(state.viewAt + 1));
