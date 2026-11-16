@@ -17,7 +17,7 @@ from pathlib import Path
 from django.conf import settings
 
 from . import health
-from .base import CONDITIONAL, ESTIMATE
+from .base import CONDITIONAL, ESTIMATE, SOLVED
 
 log = logging.getLogger(__name__)
 
@@ -25,6 +25,9 @@ CERTAIN_WORDS = ("必勝", "一定", "必然", "絕對")
 # 「不一定」「不絕對」是保留的說法，不是確定用語：對手觀察的應對建議本來就寫「他不一定找得到殺法」，
 # 模型照著寫卻被當成「一定」擋下，改顯示原文（2026-11-16 情境測試）
 CERTAIN_RE = re.compile("|".join(f"(?<!不){w}" for w in CERTAIN_WORDS))
+# 「在搜尋範圍內已確認」是求解確認的用語。2026-11-16 情境測試裡約 9% 的說明把它用在條件式計算、引擎估計或計數上
+# （「在搜尋範圍內已確認第 10 步沒有止損」），講得比證據肯定
+SOLVED_RE = re.compile(r"在搜尋範圍內(?:已經|已)?確認")
 LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
 UNAVAILABLE = "Ollama 無法使用"  # 呼叫不到模型時的說明備註；模型使用紀錄靠它分辨「呼叫不到」和「沒通過檢查」
 # 思考模式的推理過程也算在生成長度內，需要比較大的上限
@@ -38,7 +41,8 @@ SYSTEM_PROMPT = """你是{game}教練，負責把分析引擎提供的事實改�
 1. 使用繁體中文（台灣用語），不要條列、不要 Markdown 符號。
 2. 不要逐條複述事實，也不要從「目前輪到誰下」開始講；只挑和要說明的事最相關的一兩點。
 3. 只能使用提供的事實，不可自行推測新的棋步或座標；提到的座標必須出現在事實中。
-4. 依證據種類用語：「規則確認」可以直接陳述；「求解確認」要保留「在搜尋範圍內已確認」；「條件式計算」要說出所依據的假設；「引擎估計」要說「依引擎估計」，不可說「必勝」或「一定」。"""
+4. 依證據種類用語：「規則確認」可以直接陳述；「求解確認」要保留「在搜尋範圍內已確認」；「條件式計算」要說出所依據的假設；「引擎估計」要說「依引擎估計」，不可說「必勝」或「一定」。
+5. 「在搜尋範圍內已確認」只能用在「求解確認」的事實，其他事實不要寫這句；「在搜尋範圍內未發現」不等於確認沒有。"""
 
 INTROS = {
     "ai_move": "以下是 AI 這一手的分析事實，請用 AI 第一人稱說明這一手的思路：",
@@ -118,6 +122,8 @@ def check_text(text, facts, coord_re):
     only_estimates = all(p["evidence"] in (ESTIMATE, CONDITIONAL) for p in facts["points"])
     if only_estimates and CERTAIN_RE.search(text):
         return "只有引擎估計或條件式計算，模型卻使用了確定的用語"
+    if SOLVED_RE.search(text) and not any(p["evidence"] == SOLVED for p in facts["points"]):
+        return "沒有求解確認的事實，模型卻寫了「在搜尋範圍內已確認」"
     return None
 
 

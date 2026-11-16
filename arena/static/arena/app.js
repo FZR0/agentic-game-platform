@@ -1328,6 +1328,7 @@ function plainNote(note) {
   if (note.startsWith("Ollama 無法使用")) return "AI 說明暫時連不上";
   if (note.startsWith("模型提到事實中沒有的座標")) return "AI 的說明提到了分析裡沒有的位置，所以不採用";
   if (note.startsWith("只有引擎估計或條件式計算")) return "AI 的說明講得比分析更肯定，所以不採用";
+  if (note.startsWith("沒有求解確認的事實")) return "AI 的說明講得比分析更肯定，所以不採用";
   return note;
 }
 

@@ -81,6 +81,19 @@ class NarrationCheckTests(SimpleTestCase):
     def test_accepts_faithful_text(self):
         self.assertIsNone(narrator.check_text("依引擎估計，我下在 H9 是為了形成橫向活三。", self.FACTS, GOMOKU.coord_re))
 
+    def test_the_solved_wording_needs_a_solved_fact(self):
+        # 2026-11-16 情境測試：約 9% 的說明把「在搜尋範圍內已確認」寫在條件式計算或引擎估計上
+        # （撲克「在搜尋範圍內已確認第 10 步沒有止損」），玩家會以為那是算到底確認的
+        conditional = {"kind": "review", "points": [{"evidence": "條件式計算", "text": "在這些假設下，跟注的期望值約 -19。"},
+                                                    {"evidence": "規則確認", "text": "第 1 手牌河牌：底池 80。"}]}
+        self.assertIsNotNone(narrator.check_text("在搜尋範圍內已確認跟注划不來。", conditional, GOMOKU.coord_re))
+        self.assertIsNone(narrator.check_text("在這些假設下，跟注划不來。", conditional, GOMOKU.coord_re))
+        solved = {"kind": "review", "points": [{"evidence": "求解確認", "text": "在搜尋範圍內已確認，黑棋下 H9 可以連續衝四取勝。"}]}
+        self.assertIsNone(narrator.check_text("在搜尋範圍內已確認，下 H9 就能連續衝四取勝。", solved, GOMOKU.coord_re))
+        # 引擎事實本身的「在搜尋範圍內未發現」是估計的說法，照寫沒問題
+        estimate = {"kind": "review", "points": [{"evidence": ESTIMATE, "text": "在搜尋範圍內未發現白棋有連續衝四。"}]}
+        self.assertIsNone(narrator.check_text("在搜尋範圍內未發現白棋有連續衝四。", estimate, GOMOKU.coord_re))
+
     def test_a_hedge_is_not_a_certainty(self):
         # 2026-11-16 情境測試：對手觀察的建議寫「他不一定找得到殺法」，模型照著說卻被當成「一定」擋下。
         # 「不一定」正是估計該有的保留說法；「一定」照樣要擋
