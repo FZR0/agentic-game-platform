@@ -85,7 +85,7 @@
             <summary>進階設定</summary>
             <label>AI 模型
               <select id="model"></select>
-              <span class="muted">依聰明程度排列；秒數是 AI 每下一步大約要等多久。</span>
+              <span class="muted">依聰明程度排列；秒數是 AI 每下一步大約要等多久。復盤和「問 AI」一律用 AI 伺服器上最聰明的模型。</span>
             </label>
             <label>AI 每一步最多查證幾次
               <input id="steps" type="number" min="{{ config.minSteps }}" max="{{ config.maxSteps }}" value="{{ config.defaultSteps }}">

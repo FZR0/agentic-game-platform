@@ -78,7 +78,9 @@ def _save_and_hide(module, game, state, moves):
 
 
 def narrate(module, facts, model, game=None, index=None):
-    """請語言模型說明，同時記下這次用模型的秒數與結果（ModelRun）。"""
+    """請語言模型說明，同時記下這次用模型的秒數與結果（ModelRun）。復盤的說明不管 model 是什麼，一律用最聰明的模型。"""
+    if facts["kind"] in narrator.REVIEW_KINDS:
+        model = narrator.review_model()
     start = time.perf_counter()
     result = narrator.narrate(facts, model, module)
     seconds = round(time.perf_counter() - start, 2)
@@ -1011,7 +1013,10 @@ def _overall(module, game, moments, seat):
     if result:
         winner, draw = result
         who = "真人" if winner in game.human_seats() else "AI"
-        verdict = "和局" if draw else "你贏了" if winner == seat else f"{module.seat_names[winner]}（{who}）贏了"
+        # 寫明玩家是哪一方、是贏是輸：只寫「白棋（AI）贏了」時，模型回答「我是贏還是輸」只說得出白棋獲勝（2026-11-16 情境測試）
+        mine = f"你（{module.seat_names[seat]}）" if seat in module.seat_names else "你"
+        verdict = ("和局" if draw else f"{mine}贏了" if winner == seat
+                   else f"{mine}輸了，{module.seat_names[winner]}（{who}）贏了")
         detail = module.frame(state, seat).get("result")
         points = [(RULE, f"結果：{verdict}" + (f"（{detail}）" if detail else "") + "。")]
     elif game.ended:
@@ -1093,11 +1098,12 @@ def position_points(module, game, at, focus, seat):
     """第 at 步之後的局面事實（seat 看得到的）；focus 是 module.question_focus 找到的座標或行動。"""
     coach_allowed(game)
     state = module.replay(settings_of(game, seat), game.actions[:at])
-    result = module.outcome(state)
-    if result:
-        winner, _ = result
-        ended = f"{module.seat_names[winner]}獲勝" if winner else "和局"
-        return [{"evidence": RULE, "text": f"這時對局已經結束（{ended}）。"}]
+    if module.outcome(state):
+        # 終局（2026-11-16 情境測試）：原本只有「這時對局已經結束（白棋獲勝）」，模型答不出「我是贏還是輸」
+        # 「我為什麼輸」「輸了幾目」。改用整體評論的事實：玩家是哪一方、輸贏與終局說明（圍棋的目數），
+        # 以及問題檢查找到的問題在第幾步；都是引擎與規則的結果，和復盤的「問題檢查」同一份。
+        moments = module.review(settings_of(game), game.actions, seat)
+        return _overall(module, game, moments, seat)["points"]
     next_action = game.actions[at] if at < len(game.actions) else None
     return module.explain_position(state, focus, next_action)
 

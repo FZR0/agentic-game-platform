@@ -67,6 +67,22 @@ def model_config(name=None):
     raise ValueError(f"不支援的模型：{name}")
 
 
+# 復盤（問題檢查、整體評論、對手觀察、問 AI）一律用最聰明的模型，不跟著玩家選的（使用者決定，2026-11-16）。
+# AI 下棋那一手的思路說明（ai_move）仍用玩家選的模型：它說明的是那個模型自己下的棋。
+REVIEW_KINDS = ("review", "overall", "opponent", "ask")
+
+
+def review_model():
+    """復盤用的模型：OLLAMA_MODELS 裡這台 Ollama 伺服器有安裝的第一個（清單依聰明程度由高到低排）。
+    只看清單第一個的話，本機 AI 模式（本機 Ollama 通常只有小模型）每次復盤都會找不到模型。
+    查不到安裝清單（連不上）時用第一個：反正也呼叫不到，說明會照常改顯示事實原文。"""
+    installed = installed_models()
+    for config in settings.OLLAMA_MODELS:
+        if installed is None or config["name"] in installed:
+            return config["name"]
+    return settings.OLLAMA_MODEL
+
+
 def narrate(facts, model, module):
     config = model_config(model)
     template = "".join(p["text"] for p in facts["points"])

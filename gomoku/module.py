@@ -215,7 +215,10 @@ play_move 的 reason 用繁體中文一句話說明為什麼下這裡，只能�
     def explain_action(self, settings, actions, n):
         if actions[n - 1] == RESIGN:
             color = engine.BLACK if (n - 1) % 2 == 0 else engine.WHITE
-            return [{"evidence": RULE, "text": f"第 {n} 手是{engine.COLOR_NAMES[color]}認輸。"}]
+            # 「我認輸時局面真的很差嗎？」：只寫「第 n 手是認輸」時模型沒有依據、自己說局面很差（2026-11-16 情境測試），附上認輸前的局面
+            board, _ = engine.build_board([cell(a) for a in actions[:n - 1]])
+            return ([{"evidence": RULE, "text": f"第 {n} 手是{engine.COLOR_NAMES[color]}認輸；以下是認輸前的局面。"}]
+                    + engine.explain_position(board))
         return engine.explain_move([cell(a) for a in actions if a != RESIGN], n)
 
 
@@ -234,7 +237,7 @@ def find_threats(board, color):
     for c, name in ((color, me), (opp, them)):
         line = engine.find_vcf(board, c)
         if line:
-            points.append((SOLVED, f"在搜尋範圍內已確認，如果輪到{name}下，{engine.vcf_text(name, line)}。"))
+            points.append((SOLVED, f"在搜尋範圍內已確認，如果輪到{name}下，{engine.vcf_text(name, line, board, c)}。"))
         else:
             points.append((ESTIMATE, f"在搜尋範圍內未發現{name}有連續衝四。"))
     return points

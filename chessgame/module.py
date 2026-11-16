@@ -544,7 +544,9 @@ play_move 的 reason 用繁體中文一句話說明，只能提到工具結果�
         state = self.replay(settings, actions[:n - 1])
         action = actions[n - 1]
         if action == RESIGN:
-            return [{"evidence": RULE, "text": f"第 {n} 手是{COLOR_NAMES[state.to_move]}認輸。"}]
+            # 「我認輸時局面真的很差嗎？」：只寫「第 n 手是認輸」時模型沒有依據、自己說局面很差（2026-11-16 情境測試），附上認輸前的局面
+            return ([{"evidence": RULE, "text": f"第 {n} 手是{COLOR_NAMES[state.to_move]}認輸；以下是認輸前的局面。"}]
+                    + self.explain_position(state, [], None))
         points = [(RULE, f"第 {n} 手是{COLOR_NAMES[state.to_move]}下 {move_text(state.board, chess.Move.from_uci(action))}。")]
         points += self._check(state, action)
         return [{"evidence": ev, "text": text} for ev, text in points]

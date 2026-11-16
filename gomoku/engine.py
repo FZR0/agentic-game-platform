@@ -263,8 +263,11 @@ def _vcf(b, color, opp_fives, budget, depth):
     return None
 
 
-def vcf_text(name, line):
-    """把連續衝四手順寫成主詞清楚的句子，避免語言模型混淆是哪一方的棋。"""
+def vcf_text(name, line, board, color):
+    """把連續衝四手順寫成主詞清楚的句子，避免語言模型混淆是哪一方的棋。board 是搜尋的局面，color 是 name 那一方。
+    find_vcf 在已經能連五時也只回傳那一點：要分開寫，否則「下一手就連五」會寫成「形成活四或雙四」（2026-11-16 情境測試）。"""
+    if len(line) == 1 and makes_five(board, *line[0], color):
+        return f"{name}下 {coord(*line[0])} 就能直接連成五子"
     if len(line) == 1:
         return f"{name}下 {coord(*line[0])} 就形成活四或雙四，對方擋不完"
     steps = "→".join(coord(x, y) for x, y in line)
@@ -307,7 +310,7 @@ def choose_move(board, color):
     vcf = find_vcf(board, color)
     if vcf:
         return _decision(vcf[0], "vcf", [
-            (SOLVED, f"在搜尋範圍內已確認，{vcf_text(me, vcf)}。")])
+            (SOLVED, f"在搜尋範圍內已確認，{vcf_text(me, vcf, board, color)}。")])
 
     ranked = ranked_candidates(board, color)
     threat = find_vcf(board, other(color))
@@ -315,7 +318,7 @@ def choose_move(board, color):
         if find_vcf(_placed(board, *p, color), other(color)) is None:
             points = []
             if threat:
-                points.append((SOLVED, f"在搜尋範圍內已確認，如果不處理，{vcf_text(opp, threat)}。"))
+                points.append((SOLVED, f"在搜尋範圍內已確認，如果不處理，{vcf_text(opp, threat, board, other(color))}。"))
                 points.append((ESTIMATE, f"{me}下在 {coord(*p)}，在搜尋範圍內未發現{opp}還能連續衝四。"))
             points.append((ESTIMATE, f"依引擎估計，{coord(*p)} 的作用：{'、'.join(move_labels(board, *p, color))}。"))
             alts = [q for q in ranked[:3] if q != p][:2]
@@ -327,7 +330,7 @@ def choose_move(board, color):
     best = ranked[0]
     points = [(ESTIMATE, f"依引擎估計，{coord(*best)} 的作用：{'、'.join(move_labels(board, *best, color))}。")]
     if threat:
-        points.insert(0, (SOLVED, f"在搜尋範圍內已確認，{vcf_text(opp, threat)}，{me}前幾名候選都擋不住。"))
+        points.insert(0, (SOLVED, f"在搜尋範圍內已確認，{vcf_text(opp, threat, board, other(color))}，{me}前幾名候選都擋不住。"))
     return _decision(best, "no_defense", points)
 
 
@@ -366,15 +369,16 @@ def judge_move(board, x, y, color):
         if _keeps_vcf(board, x, y, color):
             return None
         return _moment("missed_vcf", "錯過連續衝四取勝", (x, y), vcf[0], [
-            (SOLVED, f"在搜尋範圍內已確認，這時{vcf_text(me, vcf)}。"),
+            (SOLVED, f"在搜尋範圍內已確認，這時{vcf_text(me, vcf, board, color)}。"),
             (ESTIMATE, f"下了 {played} 之後，在搜尋範圍內未找到同樣的取勝手順。")])
 
-    threat = find_vcf(_placed(board, x, y, color), opp)
+    after = _placed(board, x, y, color)
+    threat = find_vcf(after, opp)
     if threat:
         best = tuple(choose_move(board, color)["move"])
         if best != (x, y) and find_vcf(_placed(board, *best, color), opp) is None:
             return _moment("allowed_vcf", "讓對手可以連續衝四", (x, y), best, [
-                (SOLVED, f"在搜尋範圍內已確認，{me}下 {played} 之後，{vcf_text(them, threat)}。"),
+                (SOLVED, f"在搜尋範圍內已確認，{me}下 {played} 之後，{vcf_text(them, threat, after, opp)}。"),
                 (ESTIMATE, f"如果{me}改下 {coord(*best)}，在搜尋範圍內未發現{them}還能連續衝四。")])
         return None  # 前幾名候選都擋不住，敗勢不是這一手造成的
 
@@ -434,7 +438,7 @@ def explain_position(board, focus=(), next_move=None):
     if decision["reason"] not in ("block_five", "defend_vcf", "no_defense"):
         threat = find_vcf(board, opp)
         if threat:
-            points.append((SOLVED, f"在搜尋範圍內已確認，如果輪到{them}下，{vcf_text(them, threat)}。"))
+            points.append((SOLVED, f"在搜尋範圍內已確認，如果輪到{them}下，{vcf_text(them, threat, board, opp)}。"))
         else:
             points.append((ESTIMATE, f"在搜尋範圍內未發現{them}目前有連續衝四。"))
 
@@ -464,9 +468,10 @@ def check_point(board, x, y, color):
     elif blocks and (x, y) not in blocks:
         points.append((RULE, f"{them}已經衝四，{me}下 {c} 沒有擋住 {coord(*blocks[0])}，{them}下一手就能連五。"))
     else:
-        threat = find_vcf(_placed(board, x, y, color), opp)
+        after = _placed(board, x, y, color)
+        threat = find_vcf(after, opp)
         if threat:
-            points.append((SOLVED, f"在搜尋範圍內已確認，{me}下 {c} 之後，{vcf_text(them, threat)}。"))
+            points.append((SOLVED, f"在搜尋範圍內已確認，{me}下 {c} 之後，{vcf_text(them, threat, after, opp)}。"))
         else:
             points.append((ESTIMATE, f"{me}下 {c} 之後，在搜尋範圍內未發現{them}能連續衝四。"))
     return points

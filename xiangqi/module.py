@@ -478,10 +478,12 @@ play_move 的 reason 用繁體中文一句話說明，只能提到工具結果�
     def explain_action(self, settings, actions, n):
         state = self.replay(settings, actions[:n - 1])
         action = actions[n - 1]
-        text = self.move_text(state, action) if action != RESIGN else "認輸"
-        points = [(RULE, f"第 {n} 步是{COLOR_NAMES[state.to_move]}{text}。")]
-        if action != RESIGN:
-            points += self._check(state, action)
+        if action == RESIGN:
+            # 「我認輸時局面真的很差嗎？」：只寫「第 n 手是認輸」時模型沒有依據、自己說局面很差（2026-11-16 情境測試），附上認輸前的局面
+            return ([{"evidence": RULE, "text": f"第 {n} 步是{COLOR_NAMES[state.to_move]}認輸；以下是認輸前的局面。"}]
+                    + self.explain_position(state, [], None))
+        points = [(RULE, f"第 {n} 步是{COLOR_NAMES[state.to_move]}{self.move_text(state, action)}。")]
+        points += self._check(state, action)
         return [{"evidence": ev, "text": text} for ev, text in points]
 
 

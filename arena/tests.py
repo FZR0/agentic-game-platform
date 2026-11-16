@@ -488,9 +488,9 @@ class ModelRunTests(TestCase):
         for reply in ("重點：擋住。\n說明：先擋。", "重點：下 N2。\n說明：N2 比較好。", OSError("timed out")):
             with patch("arena.narrator._ask_ollama", side_effect=[reply]):
                 self.post("/api/gomoku/narrate/", {"facts": self.FACTS, "model": "qwen3:8b"})
+        smart = narrator.review_model()  # 復盤的說明一律用最聰明的模型（ReviewModelTests）
         self.assertEqual([(r.kind, r.model, r.outcome) for r in self.uses()],
-                         [("review", "qwen3:8b", "ok"), ("review", "qwen3:8b", "fallback"),
-                          ("review", "qwen3:8b", "error")])
+                         [("review", smart, "ok"), ("review", smart, "fallback"), ("review", smart, "error")])
 
     def test_a_saved_explanation_is_not_counted_again(self):
         game = Game.objects.create(game_type="gomoku", human_seat=1, actions=["H8", "H9"])
@@ -578,7 +578,7 @@ def obedient(seen=None, values=None):
     values = values or {}
     called = []
 
-    def chat(messages, tools):
+    def chat(messages, tools, model=None):
         if len(messages) == 2:
             called.clear()
         if seen is not None:
@@ -597,7 +597,7 @@ def scripted(*replies):
     """假的 AI 助理模型：每次依序回傳一組工具呼叫，用完就回覆完成；None 代表呼叫不到模型。"""
     replies = list(replies)
 
-    def chat(messages, tools):
+    def chat(messages, tools, model=None):
         reply = replies.pop(0) if replies else []
         if reply is None:
             raise OSError("timed out")
@@ -789,6 +789,87 @@ class RequestAgentTests(TestCase):
         chat.assert_not_called()
         self.assertEqual(r["handled"], {"by": "direct"})
         self.assertFalse(ModelRun.objects.exists())
+
+
+SMART = {"name": "smart:70b", "label": "最聰明", "think": False, "agent": True}
+SMALL = {"name": "small:2b", "label": "最小", "think": False, "agent": True}
+DEFAULT = {"name": "default:26b", "label": "預設", "think": False, "agent": True}
+
+
+@override_settings(OLLAMA_MODELS=[SMART, DEFAULT, SMALL], OLLAMA_MODEL=DEFAULT["name"])
+class ReviewModelTests(TestCase):
+    # 使用者決定（2026-11-16）：復盤 AI 一律用最聰明的模型（OLLAMA_MODELS 依聰明程度排，第一個），
+    # 不跟著玩家在進階設定選的模型：玩家為了下棋快選小模型時，復盤的說明與回答不該跟著變差。
+    # AI 下棋那一手的思路說明不在內：它說明的是玩家選的那個模型自己下的棋。
+    client_class = AdminClient
+    FACTS = {"kind": "review", "points": [{"evidence": ESTIMATE, "text": "白棋下 H9。"}]}
+
+    def setUp(self):
+        self.narrated = []  # 每次說明用的模型
+
+        def ask(facts, config, game_name):
+            self.narrated.append((facts["kind"], config["name"]))
+            return "重點：擋住。\n說明：先擋。"
+        for target, effect in (("arena.narrator._ask_ollama", ask),
+                               ("arena.agent._chat", OSError("測試不連 Ollama"))):
+            patcher = patch(target, side_effect=effect)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.installed = {SMART["name"], DEFAULT["name"], SMALL["name"]}  # 這台 Ollama 伺服器上有的模型
+        patcher = patch("arena.narrator.installed_models", side_effect=lambda: self.installed)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.assistant = []  # AI 助理每次呼叫用的模型
+
+        def chat(messages, tools, model=None):
+            self.assistant.append(model)
+            return {"content": "完成", "tool_calls": []}
+        patcher = patch("arena.orchestrator._chat", side_effect=chat)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def post(self, url, body):
+        return self.client.post(url, json.dumps(body), content_type="application/json")
+
+    def test_review_explanations_use_the_smartest_model_whatever_the_player_picked(self):
+        for kind in ("review", "overall", "opponent"):
+            self.post("/api/gomoku/narrate/", {"facts": {**self.FACTS, "kind": kind}, "model": SMALL["name"]})
+        self.assertEqual(self.narrated, [("review", SMART["name"]), ("overall", SMART["name"]),
+                                         ("opponent", SMART["name"])])
+        # 模型使用紀錄記的是實際用的模型，報表才不會把最聰明的模型的秒數算到玩家選的小模型上
+        self.assertEqual({r.model for r in ModelRun.objects.exclude(kind__startswith="req_")}, {SMART["name"]})
+
+    def test_the_smartest_model_is_the_smartest_one_this_server_has(self):
+        # 本機 AI 模式的本機 Ollama 通常只有小模型：固定用清單第一個的話，每次復盤都找不到模型、只能顯示事實原文
+        self.installed = {DEFAULT["name"], SMALL["name"]}
+        self.post("/api/gomoku/narrate/", {"facts": self.FACTS, "model": SMALL["name"]})
+        self.assertEqual(self.narrated, [("review", DEFAULT["name"])])
+
+    def test_questions_are_answered_by_the_smartest_model(self):
+        game = Game.objects.create(game_type="gomoku", human_seat=1, actions=["H8", "H9", "I8"])
+        r = self.post(f"/api/gomoku/games/{game.id}/ask/", {"question": "第 1 手好嗎？", "at": 3, "model": SMALL["name"]})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.narrated, [("ask", SMART["name"])])
+
+    def test_the_ai_moves_own_explanation_keeps_the_players_model(self):
+        game = Game.objects.create(game_type="gomoku", human_seat=1, actions=["H8", "H9"])
+        AiNote.objects.create(game=game, index=1, seat=2, facts={**self.FACTS, "kind": "ai_move"})
+        self.post(f"/api/gomoku/games/{game.id}/notes/1/narrate/", {"model": SMALL["name"]})
+        self.assertEqual(self.narrated, [("ai_move", SMALL["name"])])
+
+    def test_the_assistant_handling_review_requests_is_the_smartest_model_too(self):
+        game = Game.objects.create(game_type="gomoku", human_seat=1, actions=["H8", "H9", "I8"])
+        self.client.get(f"/api/gomoku/games/{game.id}/review/")
+        self.post(f"/api/gomoku/games/{game.id}/ask/", {"question": "第 1 手好嗎？", "at": 3, "model": SMALL["name"]})
+        self.post("/api/gomoku/narrate/", {"facts": self.FACTS, "model": SMALL["name"]})
+        review_calls = list(self.assistant)
+        self.post(f"/api/gomoku/games/{game.id}/move/", {"action": "A1", "model": SMALL["name"]})
+        self.assertEqual(set(review_calls), {SMART["name"]})
+        # 其他請求（下棋、開頁面）照舊用預設模型：只有復盤改
+        self.assertEqual(set(self.assistant[len(review_calls):]), {DEFAULT["name"]})
+        self.assertEqual({r.kind: r.model for r in ModelRun.objects.filter(kind__startswith="req_")},
+                         {"req_review": SMART["name"], "req_ask": SMART["name"], "req_narrate": SMART["name"],
+                          "req_move": DEFAULT["name"]})
 
 
 class RulesPanelTests(TestCase):
@@ -1773,6 +1854,12 @@ class OpponentObservationTests(TestCase):
         self.assertIn(GOMOKU.opponent_tips["沒有擋住對手的衝四"], " ".join(texts))
         self.assertIn(8, [s["index"] for s in rivals[0]["signs"]])
         self.assertEqual(rivals[0]["facts"]["kind"], "opponent")
+
+    def test_each_player_reads_the_result_from_their_own_side(self):
+        # 2026-11-16 情境測試：總評只寫「白棋（真人）贏了」時，兩個人看到同一句話，模型不一定說得清楚誰輸誰贏
+        game = self.play(["H8", "A1", "J10", "A2", "L3", "A3", "C12", "A4", "N14", "A5"])
+        first = {seat: operations.review(GOMOKU, game, seat)["overall"]["points"][0]["text"] for seat in (1, 2)}
+        self.assertEqual(first, {1: "結果：你（黑棋）輸了，白棋（真人）贏了。", 2: "結果：你（白棋）贏了。"})
 
     def test_advice_is_marked_as_experience_not_a_computed_fact(self):
         game = self.play(["H8", "A1", "J10", "A2", "L3", "A3", "C12", "A4", "N14", "A5"])

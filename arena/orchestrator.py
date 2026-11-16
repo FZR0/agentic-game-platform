@@ -48,8 +48,8 @@ def _same(got, want):
     return str(got).strip().lower() == str(want).strip().lower()
 
 
-def _chat(messages, tools):
-    config = narrator.model_config()
+def _chat(messages, tools, model=None):
+    config = narrator.model_config(model)
     body = {"model": config["name"], "stream": False, "think": config["think"], "keep_alive": settings.OLLAMA_KEEP_ALIVE,
             "tools": tools, "messages": messages, "options": {"temperature": 0.1, "num_predict": 300,
                                                             "num_ctx": settings.OLLAMA_NUM_CTX}}
@@ -61,6 +61,7 @@ class Request:
     kind = ""            # ModelRun 記成 req_<kind>
     game_scoped = True   # 對局的請求：只有 module.agentic_requests 的遊戲才交給 Agent；頁面不分遊戲，一律交給 Agent
     auto_finish = True   # 完成條件一達成就結束，不必再問模型一次
+    review = False       # 復盤的請求：AI 助理也用最聰明的模型（narrator.review_model，2026-11-16），其他用預設模型
     tools = []
 
     def task(self, ctx):
@@ -99,8 +100,8 @@ class Request:
 class OneStep(Request):
     """只要呼叫一個工具就完成的請求（載入頁面資料、結束對局、復盤…）。"""
 
-    def __init__(self, kind, tool, task, op, params=None, game_scoped=True, summary=None):
-        self.kind, self.task_text, self.op, self.game_scoped = kind, task, op, game_scoped
+    def __init__(self, kind, tool, task, op, params=None, game_scoped=True, summary=None, review=False):
+        self.kind, self.task_text, self.op, self.game_scoped, self.review = kind, task, op, game_scoped, review
         self.params = params or {}  # {參數: (JSON 型別, 說明, ctx["params"] 的 key)}
         self.summary = summary or (lambda data: "完成。")
         self.tools = [_tool(tool, task, **{k: (t, d) for k, (t, d, _) in self.params.items()})]
@@ -245,6 +246,7 @@ class Ask(Request):
     """復盤提問：由 Agent 決定要查哪些局面與哪幾步（以前用正規表示式猜），查到的事實再交給語言模型回答。"""
     kind = "ask"
     auto_finish = False  # 要查多少由 Agent 決定
+    review = True
     tools = [_tool("explain_position", "查詢使用者正在看的局面；focus 是問題提到的位置或行動（例如座標），沒有就填空字串",
                    focus=("string", "問題提到的位置或行動")),
              _tool("explain_action", "查詢這盤棋第 n 步（從 1 起算）的分析", n=("integer", "第幾步"))]
@@ -403,12 +405,12 @@ REQUESTS = {r.kind: r for r in [
             lambda ctx: operations.end_game(_game(ctx)) or {"game": _game(ctx).summary()}, params={"game_id": GAME_ID}),
     OneStep("review", "review_game", "使用者按了第 {game_id} 盤的「復盤」，請檢查這盤棋的問題。",
             lambda ctx: operations.review(ctx["module"], _game(ctx), ctx["seat"]), params={"game_id": GAME_ID},
-            summary=lambda data: f"找到 {len(data['moments'])} 個問題。"),
+            summary=lambda data: f"找到 {len(data['moments'])} 個問題。", review=True),
     OneStep("note", "explain_note", "使用者要看第 {game_id} 盤第 {index} 步 AI 的思路說明，請產生說明。",
             lambda ctx: operations.narrate_note(ctx["module"], ctx["note"], ctx["params"]["model"]),
             params={"game_id": GAME_ID, "index": ("integer", "第幾步（從 0 起算）", "index")}),
     OneStep("narrate", "explain_facts", "使用者要看一段分析的白話說明，請產生說明。",
-            lambda ctx: operations.narrate(ctx["module"], ctx["params"]["facts"], ctx["params"]["model"])),
+            lambda ctx: operations.narrate(ctx["module"], ctx["params"]["facts"], ctx["params"]["model"]), review=True),
     # 真人對戰（2026-11-05）：輸入房間密碼的頁面，與按下「加入」
     OneStep("join_page", "open_join_page", "使用者打開了「加入真人對戰」頁面，請載入頁面。",
             lambda ctx: operations.join_context(), game_scoped=False),
@@ -465,8 +467,8 @@ def handle(kind, ctx):
         spec.fallback(ctx)
         return spec.respond(ctx), {"by": "direct"}
     start = time.perf_counter()
-    run = {"model": narrator.model_config()["name"], "steps": REQUEST_STEPS, "calls": 0, "model_seconds": 0.0,
-           "rejected": 0, "outcome": "ok", "problem": ""}
+    run = {"model": narrator.review_model() if spec.review else narrator.model_config()["name"],
+           "steps": REQUEST_STEPS, "calls": 0, "model_seconds": 0.0, "rejected": 0, "outcome": "ok", "problem": ""}
     try:
         outcome, problem = _run_agent(spec, ctx, run)
     except ValueError as exc:
@@ -503,7 +505,7 @@ def _run_agent(spec, ctx, run):
         started = time.perf_counter()
         run["calls"] += 1
         try:
-            message = _chat(messages, spec.tools)
+            message = _chat(messages, spec.tools, run["model"])
         except (OSError, ValueError, KeyError) as exc:
             return "error", f"{agent.UNREACHABLE}：{exc}"
         finally:
