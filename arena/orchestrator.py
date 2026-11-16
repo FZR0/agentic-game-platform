@@ -253,8 +253,10 @@ class Ask(Request):
 
     def task(self, ctx):
         p = ctx["params"]
+        side = ctx["module"].seat_names.get(ctx["seat"])  # 「我這一步」指的是使用者自己那一方的步（2026-11-16 情境測試）
         return (f"使用者在{ctx['module'].name}第 {p['game_id']} 盤（共 {len(ctx['game'].actions)} 步）復盤，"
-                f"正在看第 {p['at']} 步之後的局面，問：「{p['question']}」。"
+                + (f"使用者是{side}，" if side else "")
+                + f"正在看第 {p['at']} 步之後的局面，問：「{p['question']}」。"
                 "請用工具查出回答這個問題需要的分析（可以查不只一項），查完回覆「完成」。")
 
     def call(self, ctx, name, args):
@@ -284,7 +286,8 @@ class Ask(Request):
 
     def respond(self, ctx):
         p = ctx["params"]
-        return operations.answer(ctx["module"], ctx["game"], p["question"], p["at"], ctx["points"], p["model"])
+        return operations.answer(ctx["module"], ctx["game"], p["question"], p["at"], ctx["points"], p["model"],
+                                 ctx["seat"])
 
 
 def _game(ctx):

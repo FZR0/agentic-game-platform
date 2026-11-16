@@ -783,6 +783,17 @@ class RequestAgentTests(TestCase):
             r = self.post(f"/api/gomoku/games/{game.id}/ask/", {"question": "第 1 手好嗎？", "at": 3}).json()
         self.assertEqual(r["source"], "template")
 
+    def test_the_question_says_which_side_asked(self):
+        # 2026-11-16 情境測試：執白棋的玩家問「我這一步哪裡不好？」，AI 助理查了黑棋的上一步，模型也照著回答黑棋那一步。
+        # 交給 AI 助理的任務和交給模型的說明都要寫明提問的人是哪一方
+        game = Game.objects.create(game_type="gomoku", human_seat=2, actions=["H8", "H9", "I8"])
+        seen = []
+        with patch("arena.orchestrator._chat", side_effect=obedient(seen, {"explain_action": {"n": 2}})),                 patch("arena.narrator._ask_ollama", side_effect=OSError("timed out")):
+            r = self.post(f"/api/gomoku/games/{game.id}/ask/", {"question": "我這一步哪裡不好？", "at": 1}).json()
+        self.assertTrue(any("使用者是白棋" in text for text in seen), seen)
+        prompt = narrator.request_body(r["facts"], narrator.model_config(), GOMOKU.name)["messages"][1]["content"]
+        self.assertIn("提問的玩家（問題裡的「我」）是白棋。", prompt)
+
     def test_question_falls_back_to_the_old_lookup(self):
         game = Game.objects.create(game_type="gomoku", human_seat=1, actions=["H8", "H9", "I8"])
         with patch("arena.orchestrator._chat", side_effect=OSError("timed out")), \

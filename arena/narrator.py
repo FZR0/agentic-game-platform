@@ -130,6 +130,8 @@ def check_text(text, facts, coord_re):
 def request_body(facts, config, game_name):
     if facts["kind"] == "ask":
         lines = [f"玩家的問題：「{facts['question']}」", ASK_INTRO, "引擎事實："]
+        if facts.get("player"):  # 問題裡的「我」是哪一方（operations.answer 放進來）
+            lines.insert(1, f"提問的玩家（問題裡的「我」）是{facts['player']}。")
     else:
         lines = [INTROS[facts["kind"]]]
     lines += [f"- [{p['evidence']}] {p['text']}" for p in facts["points"]]

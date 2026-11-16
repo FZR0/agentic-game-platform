@@ -1145,7 +1145,10 @@ def ask_points_by_rules(module, game, question, at, seat):
     return points
 
 
-def answer(module, game, question, at, points, model):
-    """依查到的事實請語言模型回答提問。"""
+def answer(module, game, question, at, points, model, seat=None):
+    """依查到的事實請語言模型回答提問。seat 是提問的人坐的座位：寫進給模型的說明，「我這一步」才不會被當成對方的那一步
+    （2026-11-16 情境測試：執白棋的玩家問「我這一步哪裡不好」，模型回答的是黑棋的上一步）。"""
     facts = {"kind": "ask", "question": question, "points": points}
+    if seat in module.seat_names:
+        facts["player"] = module.seat_names[seat]
     return {**narrate(module, facts, model, game, at), "facts": facts}
