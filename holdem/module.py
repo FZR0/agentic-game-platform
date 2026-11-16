@@ -738,6 +738,9 @@ play_move 的 reason 用繁體中文一句話說明，只能提到工具結果�
             now = t.stacks[me] + (0 if t.hand_over else t.total[me])  # 打到一半的那手牌，已經下的注還算你的
             diff = now - t.start_stack
             points.append((RULE, f"籌碼：起始 {t.start_stack}，現在 {now}（{'+' if diff >= 0 else ''}{diff}）。"))
+        if hands < self.MIN_STYLE_HANDS:  # 和對手觀察同一個門檻：只打 1 手就說「偏鬆」，連照引擎打的也被說偏鬆（2026-11-16 情境測試）
+            points.append((RULE, f"只打了 {hands} 手，樣本太少，看不出打法傾向（至少要 {self.MIN_STYLE_HANDS} 手）。"))
+            return points
         # 數字的好壞由程式判斷後寫進事實，語言模型不自己評價（它曾把 78% 的入池率說成「很穩定」）
         rate = joined / hands
         players, low, high, kind = self._vpip_verdict(settings, rate)

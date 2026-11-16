@@ -325,7 +325,29 @@ class ReviewTests(SimpleTestCase):
         text = " ".join(x for _, x in MODULE.overall_points(s, ["raise 60", "fold", "deal"], HUMAN))
         self.assertIn("你打完了 1 手牌：主動入池（翻牌前跟注或加注）1 手（100%），翻牌前加注 1 手（100%），打到攤牌 0 手，贏下 1 手。", text)
         self.assertIn("籌碼：起始 1000，現在 1020（+20）。", text)
+        # 2026-11-16 情境測試：只打 1 手就寫「你這盤 100%，偏鬆」，連照引擎打的玩家也被說偏鬆。
+        # 和對手觀察同一個門檻（MIN_STYLE_HANDS），手數太少就照實說樣本太少
+        self.assertIn("只打了 1 手，樣本太少，看不出打法傾向（至少要 5 手）。", text)
+        self.assertNotIn("偏鬆", text)
+
+    def test_overall_comment_judges_the_style_once_there_are_enough_hands(self):
         # 好壞由程式依人數判斷後寫進事實，不交給語言模型自己評價
+        s = settings_for(2, stack=4000, seed=5)
+        t, actions = MODULE.new_state(s), []
+        while t.hand_no <= MODULE.MIN_STYLE_HANDS and not MODULE.outcome(t):
+            if t.hand_over:
+                if t.hand_no == MODULE.MIN_STYLE_HANDS:
+                    break
+                action = "deal"
+            elif t.to_act == HUMAN:  # 玩家每手翻牌前都加注（一定算主動入池），之後過牌或跟注
+                legal = t.legal()
+                action = f"raise {legal['raise'][0]}" if t.street == 0 and legal["raise"] else                     "check" if legal["check"] else "call"
+            else:
+                action = (MODULE.forced(t) or MODULE.engine_move(t))["action"]
+            t = MODULE.apply(t, action)
+            actions.append(action)
+        text = " ".join(x for _, x in MODULE.overall_points(s, actions, HUMAN))
+        self.assertIn(f"你打完了 {MODULE.MIN_STYLE_HANDS} 手牌", text)
         self.assertIn("2 人桌一般建議主動入池約 50%–80%（經驗值，不是這盤算出來的）；你這盤 100%，偏鬆（玩太多手）。", text)
 
     def test_every_problem_is_listed_with_a_level(self):
@@ -707,6 +729,16 @@ class PvpTableTests(TestCase):
         self.assertEqual(seated, {self.token("alice"), self.token("bob")})  # 桌上的人照樣坐著
         self.assertTrue(nxt.in_room(self.users["carol"]))
         self.assertIsNone(nxt.started_at)
+
+    def test_the_review_says_who_ended_the_table(self):
+        # 2026-11-16 情境測試：房主結束牌局，bob 的整體評論卻寫「是你選擇結束」
+        game = self.start(self.open_room())
+        self.finish_hand(game)
+        self.post("alice", f"/api/holdem/games/{game.id}/end_table/", {})
+        first = {name: self.clients[name].get(f"/api/holdem/games/{game.id}/review/").json()["overall"]["points"][0]["text"]
+                 for name in ("alice", "bob")}
+        self.assertEqual(first, {"alice": "這場開放牌桌由你結束；開放牌桌不計勝負。",
+                                 "bob": "這場開放牌桌由房主結束；開放牌桌不計勝負。"})
 
     def test_a_member_who_left_the_room_can_still_review(self):
         game = self.start(self.open_room())

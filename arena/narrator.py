@@ -22,6 +22,9 @@ from .base import CONDITIONAL, ESTIMATE
 log = logging.getLogger(__name__)
 
 CERTAIN_WORDS = ("必勝", "一定", "必然", "絕對")
+# 「不一定」「不絕對」是保留的說法，不是確定用語：對手觀察的應對建議本來就寫「他不一定找得到殺法」，
+# 模型照著寫卻被當成「一定」擋下，改顯示原文（2026-11-16 情境測試）
+CERTAIN_RE = re.compile("|".join(f"(?<!不){w}" for w in CERTAIN_WORDS))
 LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
 UNAVAILABLE = "Ollama 無法使用"  # 呼叫不到模型時的說明備註；模型使用紀錄靠它分辨「呼叫不到」和「沒通過檢查」
 # 思考模式的推理過程也算在生成長度內，需要比較大的上限
@@ -113,7 +116,7 @@ def check_text(text, facts, coord_re):
     if extra:
         return f"模型提到事實中沒有的座標：{'、'.join(sorted(extra))}"
     only_estimates = all(p["evidence"] in (ESTIMATE, CONDITIONAL) for p in facts["points"])
-    if only_estimates and any(w in text for w in CERTAIN_WORDS):
+    if only_estimates and CERTAIN_RE.search(text):
         return "只有引擎估計或條件式計算，模型卻使用了確定的用語"
     return None
 

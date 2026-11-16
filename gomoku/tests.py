@@ -413,6 +413,22 @@ class GameApiTests(TestCase):
         self.assertIn("結果：你（黑棋）輸了，白棋（AI）贏了。", texts)
         self.assertIn("最常出現的問題：「沒有擋住對手的衝四」1 次（第 9 手）。", texts)
 
+    def test_a_question_at_the_end_of_an_unscored_game_says_it_has_no_result(self):
+        # 2026-11-16 情境測試：「結束（不計勝負）」的最後局面問「這盤誰贏了？」，事實只有局面分析，沒說這盤不計勝負
+        game = self.saved(self.MISSED_BLOCK, ended=True)
+        r = self.post(f"/api/gomoku/games/{game.id}/ask/", {"question": "這盤誰贏了？", "at": len(self.MISSED_BLOCK)})
+        texts = [p["text"] for p in r.json()["facts"]["points"]]
+        self.assertIn("這盤沒有下完，是你選擇結束、不計勝負。", texts)
+        self.assertIn("目前輪到白棋下。", texts)  # 棋停在一半：停下來時的局面照樣附上
+
+    def test_a_question_at_the_end_of_a_resigned_game_gets_the_position_before_it(self):
+        # 退回的查法（AI 助理沒完成時）也要拿得到認輸前的局面，否則問「我認輸時局面真的很差嗎？」沒有依據
+        game = self.saved(["H8", "A1", "I8", "A2", "J8", "resign"], winner=BLACK)
+        r = self.post(f"/api/gomoku/games/{game.id}/ask/", {"question": "認輸時局面很差嗎？", "at": 6})
+        texts = [p["text"] for p in r.json()["facts"]["points"]]
+        self.assertIn("結果：你（黑棋）贏了（白棋認輸，黑棋獲勝）。", texts)
+        self.assertIn("第 6 手是白棋認輸；以下是認輸前的局面。", texts)
+
     def test_history_lists_only_this_games_records(self):
         game = self.saved(["H8"], seat=WHITE)
         Game.objects.create(game_type="other", human_seat=1, actions=[])

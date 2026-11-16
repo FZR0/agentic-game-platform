@@ -81,6 +81,12 @@ class NarrationCheckTests(SimpleTestCase):
     def test_accepts_faithful_text(self):
         self.assertIsNone(narrator.check_text("依引擎估計，我下在 H9 是為了形成橫向活三。", self.FACTS, GOMOKU.coord_re))
 
+    def test_a_hedge_is_not_a_certainty(self):
+        # 2026-11-16 情境測試：對手觀察的建議寫「他不一定找得到殺法」，模型照著說卻被當成「一定」擋下。
+        # 「不一定」正是估計該有的保留說法；「一定」照樣要擋
+        self.assertIsNone(narrator.check_text("依引擎估計，H9 不一定是最好的一手。", self.FACTS, GOMOKU.coord_re))
+        self.assertIsNotNone(narrator.check_text("H9 不錯，一定能贏。", self.FACTS, GOMOKU.coord_re))
+
     def test_thinking_only_model_is_called_with_thinking_on(self):
         # 只能思考的模型（例如原開發機的 qwen3:4b）關掉思考時會把推理過程寫進回答，所以必須開啟並留足生成長度。
         thinking_only = {"name": "thinking-only:4b", "label": "思考版", "think": True, "agent": False}
