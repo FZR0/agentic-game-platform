@@ -270,6 +270,39 @@ class ReviewTests(SimpleTestCase):
     def test_review_without_pikafish_is_empty_not_an_error(self):
         self.assertEqual(module_with(BrokenPikafish()).review({}, self.GAME, RED), [])
 
+    def test_the_agents_candidates_the_first_choice_and_the_review_agree(self):
+        # 2026-11-19 情境測試：候選清單用 MultiPV 5、首選用 MultiPV 1，兩次搜尋的第一名不同。
+        # 同一步的分析原文寫著「候選第 1 是車９進１」又寫「Pikafish 的首選是車２進４」，
+        # Agent 照候選第一名走，教練又說它沒照引擎首選。Agent、引擎代下、復盤要用同一份第一名
+        class SplitPikafish(FakePikafish):
+            def analyze(self, actions, depth, multipv=1, searchmoves=None):
+                if multipv == 1 and not searchmoves:  # 另一次搜尋的第一名不一樣
+                    return [self.entry(sorted(rules.legal_moves(replay(actions)))[-1], 0)]
+                return super().analyze(actions, depth, multipv, searchmoves)
+        m = module_with(SplitPikafish())
+        s = replay([])
+        move = m.engine_move(s)["action"]
+        self.assertIn(f"1. {m.move_text(s, move)}", m.run_tool(s, "list_candidates", {})[1][0][1])
+        self.assertNotIn("Pikafish 的首選是", " ".join(t for _, t in m.run_tool(s, "check_move", {"move": move})[1]))
+        self.assertEqual(m.review({}, [move], RED), [])
+
+    def test_facts_carry_the_continuation_so_the_answer_can_say_why(self):
+        # 沒有後續變化時，模型只能說「引擎比較推薦另一步」（2026-11-19 情境測試：「資訊不足以分析具體的後續變化」）
+        class LinePikafish(FakePikafish):
+            def analyze(self, actions, depth, multipv=1, searchmoves=None):
+                lines = super().analyze(actions, depth, multipv, searchmoves)
+                for e in lines:  # 主要變化：這一步之後，雙方各走第一個合法步
+                    state = rules.play(replay(actions), e["move"])
+                    reply = sorted(rules.legal_moves(state))[0]
+                    e["pv"] = [e["move"], reply, sorted(rules.legal_moves(rules.play(state, reply)))[0]]
+                return lines
+        m = module_with(LinePikafish(best={2: "h0g2"}, scores={2: 50}, played={2: -300}))
+        moment, = m.review({}, self.GAME, RED)
+        texts = [p["text"] for p in moment["points"]]
+        self.assertTrue(any(t.startswith("依引擎估計，紅方走傌八進七（b0c2）之後的後續：黑方") for t in texts), texts)
+        self.assertTrue(any(t.startswith("依引擎估計，紅方走傌二進三（h0g2）之後的後續：黑方") for t in texts), texts)
+        self.assertTrue(all(p["evidence"] == ESTIMATE for p in moment["points"] if "後續" in p["text"]))
+
 
 @override_settings(OLLAMA_URL="http://127.0.0.1:9", OLLAMA_TIMEOUT=2)
 class GameApiTests(TestCase):
@@ -327,10 +360,15 @@ class PikafishIntegrationTests(SimpleTestCase):
     def test_real_engine_gives_legal_candidates(self):
         m = XiangqiModule()
         s = replay(["h2e2"])
-        (evidence, text), = m.run_tool(s, "list_candidates", {})[1]
+        (evidence, text), (_, line) = m.run_tool(s, "list_candidates", {})[1]
         self.assertEqual(evidence, ESTIMATE)
         self.assertIn("黑方的候選依好壞排序", text)
-        self.assertTrue(rules.is_legal(s, m.engine_move(s)["action"]))
+        self.assertIn("的後續：黑方", line)  # 主要變化，模型才講得出「為什麼」（2026-11-19）
+        move = m.engine_move(s)["action"]
+        self.assertTrue(rules.is_legal(s, move))
+        # Agent 看到的候選第一名，就是引擎代下與復盤認定的首選（2026-11-19：兩邊用不同的搜尋，同一步的事實前後矛盾）
+        self.assertIn(f"1. {m.move_text(s, move)}", text)
+        self.assertNotIn("Pikafish 的首選是", " ".join(t for _, t in m.run_tool(s, "check_move", {"move": move})[1]))
 
     def test_engine_playing_both_sides_is_never_flagged(self):
         # 復盤和 AI 下棋用同一個標準：引擎自己選的步，復盤時不能被說成失誤

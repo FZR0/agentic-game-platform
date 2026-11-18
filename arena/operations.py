@@ -1195,11 +1195,40 @@ def _overall(module, game, moments, seat):
     for levels, label, top in ((("key", "minor"), "最常出現的問題", 3), (("good",), "做得好的地方", 2)):
         group = [m for m in moments if m["level"] in levels]
         for pattern, n in Counter(m.get("pattern", m["title"]) for m in group).most_common(top):
-            same = [m for m in group if m.get("pattern", m["title"]) == pattern]
+            # 列出的三步是最嚴重的三步，不是最早的三步（2026-11-19 情境測試：圍棋列「第 2、4、6 手」，
+            # 損失 32 目的第 14 手沒列出來，模型就把第 2 手說成最差的一步）
+            same = sorted((m for m in group if m.get("pattern", m["title"]) == pattern), key=_severity)
             steps = "、".join(f"第 {m['index'] + 1} {module.step_word}" for m in same[:3])
             points.append((_main_evidence(same[0]), f"{label}：「{pattern}」{n} 次（{steps}）。"))
     points += module.overall_points(settings_of(game), game.actions, seat)
     return {"kind": "overall", "points": [{"evidence": e, "text": t} for e, t in points]}
+
+
+def _severity(moment):
+    """問題的嚴重程度排序：關鍵時刻在前；同一級裡規則或求解確認的錯誤（沒有損失數字）在前，其次損失大的在前，再依步數。
+    損失只在同一盤、同一種遊戲裡比較，單位一樣（目、百分之一個兵、勝率、籌碼）。"""
+    return (0 if moment["level"] == "key" else 1, "loss" in moment, -moment.get("loss", 0), moment["index"])
+
+
+def problem_points(module, game, seat):
+    """提問用：這位玩家在整盤棋的失誤，依嚴重程度排序（2026-11-19 情境測試：問「我哪一步最差」時，
+    AI 助理把每一手都查一遍，一次拿到 30 到 90 則事實，要等 40 到 240 秒，還讓研究用伺服器的模型出錯一次）。
+    和復盤的「問題檢查」是同一份結果。"""
+    coach_allowed(game)
+    moments = module.review(settings_of(game), game.actions, seat)
+    mistakes = sorted((m for m in moments if m["level"] in ("key", "minor")), key=_severity)
+    suggests = sum(m["level"] == "suggest" for m in moments)
+    extra = f"；另有建議 {suggests} 個（建議不是失誤，只是引擎比較推薦的下法）" if suggests else ""
+    if not mistakes:
+        return [{"evidence": RULE, "text": f"問題檢查沒有找到你的失誤{extra}。"}]
+    points = [{"evidence": RULE, "text": f"問題檢查找到你的失誤 {len(mistakes)} 個{extra}；"
+                                        "以下依嚴重程度排序（關鍵時刻在前，同一級裡損失大的在前）。"}]
+    for rank, m in enumerate(mistakes[:5], 1):
+        best = f"，建議{module.step_text(m['best'])}" if m.get("best") else ""
+        points.append({"evidence": _main_evidence(m),
+                       "text": f"排第 {rank}：第 {m['index'] + 1} {module.step_word}（{LEVEL_NAMES[m['level']]}，{m['title']}），"
+                               f"實際{module.step_text(m['played'])}{best}。"})
+    return points
 
 
 def _steps_text(module, indexes):
@@ -1277,7 +1306,9 @@ def position_points(module, game, at, focus, seat):
             points += module.explain_action(settings_of(game, seat), game.actions, len(game.actions))
         return points
     next_action = game.actions[at] if at < len(game.actions) else None
-    return module.explain_position(state, focus, next_action)
+    points = module.explain_position(state, focus, next_action)
+    # 實際的下一步是 AI 下的：同樣附上 AI 的分析（問「AI 第 N 手」時，那一步常常就是正在看的局面的下一步）
+    return points + (_ai_note_points(module, game, at + 1, points) if next_action else [])
 
 
 def action_points(module, game, n, seat):
@@ -1285,7 +1316,25 @@ def action_points(module, game, n, seat):
     coach_allowed(game)
     if not 1 <= n <= len(game.actions):
         raise ValueError(f"這盤只有 {len(game.actions)} {module.step_word}")
-    return module.explain_action(settings_of(game, seat), game.actions, n)
+    points = module.explain_action(settings_of(game, seat), game.actions, n)
+    return points + _ai_note_points(module, game, n, points)
+
+
+def _ai_note_points(module, game, n, points):
+    """第 n 步（從 1 起算）是 AI 下的：AI 當時查到的分析（2026-11-19 情境測試：撲克問「AI 第 23 手的想法」只拿到「它跟注了」一則，
+    答不出 AI 用了什麼假設、算出多少期望值）。含底牌的思路在那手牌結束前照樣不給（_public）；points 裡已有的不重複。"""
+    note = game.ai_notes.filter(index=n - 1).first()
+    if not note:
+        return []
+    public = _public(module, module.replay(settings_of(game), game.actions), [note.to_dict()])[0]
+    if public.get("hidden"):
+        return []
+    seen = {p["text"] for p in points}
+    # 引擎代下的研究紀錄（「Agent 沒有完成這一手…」）是給研究者看的，不交給模型改寫給玩家
+    mine = [p for p in public["facts"]["points"] if p["text"] not in seen and not p["text"].startswith("Agent ")]
+    if not mine:
+        return []
+    return [{"evidence": RULE, "text": f"第 {n} {module.step_word}是 AI 下的；以下是 AI 下這一步時查到的分析。"}] + mine
 
 
 def ask_points_by_rules(module, game, question, at, seat):

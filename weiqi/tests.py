@@ -233,6 +233,40 @@ class ReviewTests(SimpleTestCase):
     def test_review_without_katago_is_empty_not_an_error(self):
         self.assertEqual(module_with(BrokenKataGo()).review(SMALL, ["E5", "C7"], BLACK), [])
 
+    def test_questions_use_the_same_analysis_as_the_review(self):
+        # 2026-11-19 情境測試：KataGo 每次搜尋的結果不一樣，復盤說第 5 手該下 G6、提問卻說 D6，
+        # 問題數量也對不起來。提問查同一手時要用復盤那一份分析
+        class NoisyKataGo(FakeKataGo):
+            calls = 0
+
+            def analyze(self, *args, **kwargs):
+                NoisyKataGo.calls += 1
+                self.default = ["C3", "D3", "F3", "G3"][NoisyKataGo.calls % 4]  # 每次搜尋的首選都不同
+                return super().analyze(*args, **kwargs)
+        m = module_with(NoisyKataGo(leads={2: 2.0, 3: -5.0}))
+        moment, = m.review(SMALL, self.GAME, BLACK)
+        asked = " ".join(p["text"] for p in m.explain_action(SMALL, self.GAME, 3))
+        self.assertIn(f"KataGo 建議下 {moment['best']}", asked)
+        self.assertIn("約損失 7.0 目", asked)  # 原本只有勝率與落後幾目，模型分不出哪一手損失最多
+        position = " ".join(p["text"] for p in m.explain_position(replay(self.GAME[:2]), [], "J9"))
+        self.assertIn(f"候選依好壞排序：1. {moment['best']}（", position)
+
+    def test_facts_carry_the_continuation_so_the_answer_can_say_why(self):
+        # 沒有後續變化時，模型只能說「引擎比較推薦另一步」（2026-11-19 情境測試：「缺乏後續變化數據」）
+        class LineKataGo(FakeKataGo):
+            def analyze(self, *args, **kwargs):
+                out = super().analyze(*args, **kwargs)
+                for result in out.values():
+                    for move in result["moves"]:
+                        move["pv"] = [move["move"], "D5", "E6"]
+                return out
+        m = module_with(LineKataGo(leads={2: 2.0, 3: -5.0}, best={2: "C3", 3: "G3"}))
+        moment, = m.review(SMALL, self.GAME, BLACK)
+        texts = [p["text"] for p in moment["points"]]
+        self.assertIn("依引擎估計，黑棋下 J9 之後的後續：白棋 G3、黑棋 D5、白棋 E6。", texts)
+        self.assertIn("依引擎估計，如果黑棋改下 C3，後續：黑棋 C3、白棋 D5、黑棋 E6。", texts)
+        self.assertTrue(all(p["evidence"] == ESTIMATE for p in moment["points"] if "後續" in p["text"]))
+
 
 @override_settings(OLLAMA_URL="http://127.0.0.1:9", OLLAMA_TIMEOUT=2)
 class GameApiTests(TestCase):
@@ -296,8 +330,10 @@ class KataGoIntegrationTests(SimpleTestCase):
     def test_real_engine_gives_legal_candidates(self):
         m = WeiqiModule()
         s = replay(["E5"])
-        (evidence, text), = m.run_tool(s, "list_candidates", {})[1]
+        (evidence, text), (_, line) = m.run_tool(s, "list_candidates", {})[1]
         self.assertEqual(evidence, ESTIMATE)
         self.assertIn("白棋目前勝率約", text)
+        # 真的 KataGo 會給主要變化：事實裡要有後續，模型才講得出「為什麼」（2026-11-19）
+        self.assertRegex(line, r"首選 \S+ 的後續：白棋 \S+、黑棋 ")
         move = m.engine_move(s)["action"]
         self.assertTrue(rules.is_legal(s, move), move)

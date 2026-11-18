@@ -826,6 +826,59 @@ class RequestAgentTests(TestCase):
         self.assertEqual(r["handled"]["by"], "fallback")
         self.assertEqual(r["facts"]["points"], operations.ask_points_by_rules(GOMOKU, game, "第 1 手好嗎？", 3, 1))
 
+    def test_a_question_cannot_look_up_every_step(self):
+        # 2026-11-19 情境測試：問「我哪一步最差」時，AI 助理一次查了每一步（14 到 35 次），事實多到 30–90 則，
+        # 等 40–240 秒，還讓研究用伺服器的模型出錯一次。一次提問最多查 MAX_ACTION_QUERIES 步，其餘不執行
+        game = Game.objects.create(game_type="gomoku", human_seat=1, actions=["H8", "H9", "I8", "I9", "J8", "J9"])
+        every_step = [("explain_action", {"n": n}) for n in range(1, 7)]
+        with patch("arena.orchestrator._chat", side_effect=scripted(every_step)), \
+                patch("arena.narrator._ask_ollama", return_value="重點：還可以。\n說明：開局常見。"):
+            r = self.post(f"/api/gomoku/games/{game.id}/ask/", {"question": "我哪一步最差？", "at": 6}).json()
+        looked_up = {p["text"] for n in range(1, orchestrator.MAX_ACTION_QUERIES + 1)
+                     for p in operations.action_points(GOMOKU, game, n, 1)}
+        self.assertEqual({p["text"] for p in r["facts"]["points"]}, looked_up)
+        self.assertFalse(any(p["text"].startswith("第 4 手") for p in r["facts"]["points"]))
+
+    def test_whole_game_questions_get_the_mistakes_ranked_by_severity(self):
+        # 2026-11-19 情境測試：圍棋問「我哪一步最差」，答的是損失 8 目的第 2 手，復盤自己找到的是損失 32 目的第 14 手。
+        # list_problems 一次給出問題檢查的結果，依嚴重程度排序：關鍵時刻在前，規則確認的錯誤在前，再依損失大小
+        game = Game.objects.create(game_type="weiqi", human_seat=1, settings={"size": 9, "komi": 7.5},
+                                   actions=["E5", "E1", "G4", "A1", "C5", "J4"])
+        moment = lambda index, level, loss=None: {  # noqa: E731
+            "index": index, "level": level, "title": f"第{index}", "played": "A1", "best": "C3", "pattern": "目數損失",
+            "points": [{"evidence": ESTIMATE, "text": "依引擎估計…"}], **({"loss": loss} if loss is not None else {})}
+        found = [moment(0, "minor", 3.0), moment(2, "key", 8.0), moment(4, "key", 32.0), moment(5, "key"),
+                 moment(1, "suggest", 1.5)]
+        with patch.object(WEIQI, "review", return_value=found), \
+                patch("arena.orchestrator._chat", side_effect=scripted([("list_problems", {})])), \
+                patch("arena.narrator._ask_ollama", return_value="重點：還可以。\n說明：開局常見。"):
+            r = self.post(f"/api/weiqi/games/{game.id}/ask/", {"question": "我哪一步最差？", "at": 6}).json()
+            overall = operations._overall(WEIQI, game, found, 1)
+        ranked = [p["text"] for p in r["facts"]["points"]]
+        self.assertIn("問題檢查找到你的失誤 4 個；另有建議 1 個", ranked[0])
+        self.assertEqual([t.split("：")[1].split("（")[0] for t in ranked[1:]], ["第 6 手", "第 5 手", "第 3 手", "第 1 手"])
+        # 整體評論列出的三步也是最嚴重的三步，不是最早的三步
+        self.assertIn("「目數損失」4 次（第 6 手、第 5 手、第 3 手）", " ".join(p["text"] for p in overall["points"]))
+
+    def test_asking_about_an_ai_move_shows_what_the_ai_looked_up(self):
+        # 2026-11-19 情境測試：撲克問「AI 第 23 手的想法」只拿到「它跟注了」一則，答不出 AI 用了什麼假設。
+        # 問 AI 下的那一步時附上 AI 當時查到的分析；手牌還沒結束、思路含底牌時（hidden）照樣不給
+        game = Game.objects.create(game_type="gomoku", human_seat=1, actions=["H8", "H9", "I8"])
+        thought = "依引擎估計，白棋下 H9 是為了擋住黑棋的直線。"
+        AiNote.objects.create(game=game, index=1, seat=2, facts={"kind": "ai_move", "points": [
+            {"evidence": ESTIMATE, "text": thought},
+            {"evidence": ESTIMATE, "text": "Agent 沒有完成這一手（逾時），改由引擎代下。"}]})
+        texts = [p["text"] for p in operations.action_points(GOMOKU, game, 2, 1)]
+        self.assertIn(thought, texts)
+        self.assertIn("第 2 手是 AI 下的；以下是 AI 下這一步時查到的分析。", texts)
+        self.assertFalse(any(t.startswith("Agent ") for t in texts))  # 研究紀錄不交給模型改寫給玩家
+        # 那一步常是正在看的局面的「實際下一步」：查局面（AI 助理沒查第 N 步、或改用原本的查法）時也要有
+        self.assertIn(thought, [p["text"] for p in operations.position_points(GOMOKU, game, 1, [], 1)])
+        hide = lambda state, notes: [{**n, "hidden": True} for n in notes]  # noqa: E731
+        with patch.object(GOMOKU, "public_notes", side_effect=hide):
+            self.assertNotIn(thought, [p["text"] for p in operations.action_points(GOMOKU, game, 2, 1)])
+            self.assertNotIn(thought, [p["text"] for p in operations.position_points(GOMOKU, game, 1, [], 1)])
+
     def test_pages_go_through_the_agent_and_show_when_it_failed(self):
         with patch("arena.orchestrator._chat", side_effect=obedient()):
             html = self.client.get("/").content.decode()

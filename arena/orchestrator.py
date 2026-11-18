@@ -242,14 +242,23 @@ class Move(Request):
                 "next_round": game.next_round_id() if game.finished else None}  # 真人對戰打完回到房間（2026-11-15）
 
 
+MAX_ACTION_QUERIES = 3  # 一次提問最多查幾步的 explain_action
+
+
 class Ask(Request):
-    """復盤提問：由 Agent 決定要查哪些局面與哪幾步（以前用正規表示式猜），查到的事實再交給語言模型回答。"""
+    """復盤提問：由 Agent 決定要查哪些局面與哪幾步（以前用正規表示式猜），查到的事實再交給語言模型回答。
+    2026-11-19 情境測試：問「我哪一步最差」時，Agent 一次呼叫 explain_action 把每一步都查一遍（14 到 35 次），
+    事實多到 30–90 則、等 40–240 秒，還讓研究用伺服器的模型出錯一次。所以改成：整盤的失誤用 list_problems 一次查到
+    （和復盤的問題檢查同一份、依嚴重程度排序），explain_action 一次提問最多查 MAX_ACTION_QUERIES 步，超過的不執行。"""
     kind = "ask"
     auto_finish = False  # 要查多少由 Agent 決定
     review = True
     tools = [_tool("explain_position", "查詢使用者正在看的局面；focus 是問題提到的位置或行動（例如座標），沒有就填空字串",
                    focus=("string", "問題提到的位置或行動")),
-             _tool("explain_action", "查詢這盤棋第 n 步（從 1 起算）的分析", n=("integer", "第幾步"))]
+             _tool("explain_action", f"查詢這盤棋第 n 步（從 1 起算）的分析；一次提問最多查 {MAX_ACTION_QUERIES} 步",
+                   n=("integer", "第幾步")),
+             _tool("list_problems", "列出問題檢查找到的使用者失誤，依嚴重程度排序（整盤一次查完）；"
+                                    "問「哪一步最差」「輸在哪裡」這類整盤的問題時用，不要逐步查")]
 
     def task(self, ctx):
         p = ctx["params"]
@@ -257,7 +266,8 @@ class Ask(Request):
         return (f"使用者在{ctx['module'].name}第 {p['game_id']} 盤（共 {len(ctx['game'].actions)} 步）復盤，"
                 + (f"使用者是{side}，" if side else "")
                 + f"正在看第 {p['at']} 步之後的局面，問：「{p['question']}」。"
-                "請用工具查出回答這個問題需要的分析（可以查不只一項），查完回覆「完成」。")
+                "請用工具查出回答這個問題需要的分析（可以查不只一項），查完回覆「完成」。"
+                f"整盤的問題（例如哪一步最差）先用 list_problems；explain_action 最多查 {MAX_ACTION_QUERIES} 步。")
 
     def call(self, ctx, name, args):
         module, game, at, seat = ctx["module"], ctx["game"], ctx["params"]["at"], ctx["seat"]
@@ -265,8 +275,14 @@ class Ask(Request):
             if name == "explain_position":
                 points = operations.position_points(module, game, at, module.question_focus(str(args.get("focus", ""))),
                                                     seat)
+            elif name == "list_problems":
+                points = operations.problem_points(module, game, seat)
             else:
+                if ctx.get("action_queries", 0) >= MAX_ACTION_QUERIES:
+                    return (f"這次提問已經查了 {MAX_ACTION_QUERIES} 步，不再查更多，沒有執行。"
+                            "要找整盤最嚴重的失誤請用 list_problems，否則請用已經查到的分析。")
                 points = operations.action_points(module, game, int(args.get("n")), seat)
+                ctx["action_queries"] = ctx.get("action_queries", 0) + 1  # 查不到的（例如超出步數）不算
         except (TypeError, ValueError) as exc:
             return f"查不到：{exc}"
         found = ctx.setdefault("points", [])

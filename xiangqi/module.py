@@ -20,6 +20,7 @@ CHINESE_RE = r"(?:[前中後][車俥馬傌炮砲包相象仕士帥將兵卒]|[�
 # 引擎代下選的那一步在復盤時就一定是引擎的首選，不會被挑出問題（第二台開發機約 0.1–0.2 秒一次）
 DEPTH = 12
 CANDIDATES = 5
+PV_PLIES = 4  # 事實裡寫出後續變化的步數（2026-11-19：沒有後續時，模型答不出「為什麼不好」，只能說引擎比較推薦別步）
 LOSS_KEY, LOSS_MINOR, LOSS_SUGGEST = 300, 150, 50  # 復盤的分級（百分之一個兵）；50 以下在搜尋誤差內
 DECIDED = 1000  # 落後 10 個兵以上算勝負大致已定
 VALUES = {"K": 100, "R": 9, "C": 4.5, "N": 4, "B": 2, "A": 2, "P": 1}
@@ -161,6 +162,38 @@ class XiangqiModule(GameModule):
                     self._cache.popitem(last=False)
             return self._cache[key]
 
+    def _lines(self, state):
+        """這個局面 Pikafish 的前幾名（MultiPV 5）。Agent 的候選、check_move 的首選、引擎代下、復盤的建議都用這一份
+        （2026-11-19 情境測試：候選用 MultiPV 5、首選用 MultiPV 1，兩次搜尋的第一名不同，同一步的事實寫著
+        「候選第 1 是車９進１」又寫「Pikafish 的首選是 車２進４」）。"""
+        return self._analysis(state, CANDIDATES)
+
+    def _best_and_mine(self, state, action):
+        """(首選, 走 action 的結果)。action 就是首選時用同一條線，數字才不會和候選清單不同。"""
+        best = self._lines(state)[0]
+        mine = best if best["move"] == action else self._analysis(state, searchmoves=[action])[0]
+        return best, mine
+
+    def _continuation(self, state, pv):
+        """Pikafish 的主要變化寫成「紅方炮八平三（b1g1）→黑方車２進１（b9b8）→…」；state 是 pv 第一步之前的局面。"""
+        steps = []
+        for move in pv[:PV_PLIES]:
+            try:
+                text = self.move_text(state, move)
+                state = rules.play(state, move)
+            except (ValueError, KeyError, IndexError):
+                break
+            steps.append(f"{COLOR_NAMES[rules.other(state.to_move)]}{text}")
+        return "→".join(steps)
+
+    def _after_point(self, state, action, entry):
+        """走 action 之後的後續（entry 是走 action 的那條線，pv 從 action 開始）。"""
+        after = rules.play(state, action)
+        line = self._continuation(after, entry.get("pv", [])[1:])
+        if not line:
+            return []
+        return [(ESTIMATE, f"依引擎估計，{COLOR_NAMES[state.to_move]}走{self.move_text(state, action)}之後的後續：{line}。")]
+
     def _eval_point(self, color, entry, subject):
         """一個 Pikafish 結果寫成事實。subject 例如「紅方走炮二平五（h2e2）後」。殺棋屬於求解確認。"""
         name = COLOR_NAMES[color]
@@ -223,7 +256,7 @@ class XiangqiModule(GameModule):
 
     def _candidates(self, state):
         color = state.to_move
-        lines = self._analysis(state, CANDIDATES)
+        lines = self._lines(state)
         items = []
         for i, e in enumerate(lines, 1):
             how = (f"{e['mate']} 回合內將死對方" if e["mate"] and e["mate"] > 0 else
@@ -231,7 +264,11 @@ class XiangqiModule(GameModule):
             items.append(f"{i}. {self.move_text(state, e['move'])}（{how}）")
         evidence = SOLVED if lines and lines[0]["mate"] is not None else ESTIMATE
         lead = "在搜尋範圍內已確認" if evidence == SOLVED else "依引擎估計"
-        return [(evidence, f"{lead}（Pikafish {DEPTH} 層），{COLOR_NAMES[color]}的候選依好壞排序：{'；'.join(items)}。")]
+        points = [(evidence, f"{lead}（Pikafish {DEPTH} 層），{COLOR_NAMES[color]}的候選依好壞排序：{'；'.join(items)}。")]
+        line = self._continuation(state, lines[0].get("pv", [])) if lines else ""
+        if line and len(lines[0].get("pv", [])) > 1:
+            points.append((ESTIMATE, f"依引擎估計，首選{self.move_text(state, lines[0]['move'])}的後續：{line}。"))
+        return points
 
     def _rule_facts(self, state, action):
         """走 action 的規則事實：合不合法、吃子、將軍、會不會讓對方一步殺。"""
@@ -262,9 +299,9 @@ class XiangqiModule(GameModule):
             return points
         color = state.to_move
         try:
-            best = self._analysis(state)[0]
-            mine = self._analysis(state, searchmoves=[action])[0]
+            best, mine = self._best_and_mine(state, action)
             points.append(self._eval_point(color, mine, f"{COLOR_NAMES[color]}走{self.move_text(state, action)}後，"))
+            points += self._after_point(state, action, mine)
             if best["move"] != action:
                 points.append((ESTIMATE, f"Pikafish 的首選是 {self.move_text(state, best['move'])}。"))
         except (PikafishUnavailable, IndexError) as exc:
@@ -352,7 +389,7 @@ play_move 的 reason 用繁體中文一句話說明，只能提到工具結果�
 
     def engine_move(self, state):
         try:
-            for e in self._analysis(state):
+            for e in self._lines(state):
                 if rules.is_legal(state, e["move"]):
                     return {"action": e["move"], "points": [self._eval_point(
                         state.to_move, e, f"Pikafish 的首選是{self.move_text(state, e['move'])}；走完後")]}
@@ -404,8 +441,7 @@ play_move 的 reason 用繁體中文一句話說明，只能提到工具結果�
                     (RULE, f"{name}走{played}之後，對方一步就能獲勝；例如改走{self.move_text(state, safe)}就不會。")] + rule_points)
             return None  # 每一步都會輸，不是這一步的錯
         try:
-            best = self._analysis(state)[0]
-            mine = self._analysis(state, searchmoves=[action])[0]
+            best, mine = self._best_and_mine(state, action)
         except (PikafishUnavailable, IndexError):
             return None
         if best["move"] == action or (best["mate"] is not None and best["mate"] < 0):
@@ -432,6 +468,8 @@ play_move 的 reason 用繁體中文一句話說明，只能提到工具結果�
             points.append((ESTIMATE, f"這時{name}已{lead_text(best['score'])}，勝負大致已定；這一步的問題是損失，不是輸棋的原因。"))
         if level == "suggest":
             points.append((ESTIMATE, f"差距約 {pawns(loss)}，不算失誤；{best_text}是 Pikafish 比較推薦的走法。"))
+        else:  # 兩邊的後續，說明才講得出差在哪裡（2026-11-19）
+            points += self._after_point(state, action, mine) + self._after_point(state, best["move"], best)
         title = f"建議：Pikafish 推薦{best_text}" if level == "suggest" else f"損失約 {pawns(loss)}"
         return self._moment(t, action, best["move"], level, "建議" if level == "suggest" else "局面損失", title,
                             points + rule_points, loss=loss)
