@@ -710,10 +710,34 @@ class PvpTableTests(TestCase):
         state = self.state(game)
         self.assertEqual(state.stacks[mine], 0)
         self.assertTrue(state.hand_over)  # 單挑時離場的人棄牌，這手由對方拿下
-        self.post(other, f"/api/holdem/games/{game.id}/deal/", {"hand": state.hand_no})
-        self.assertIsNone(self.state(game).seat_of_token(self.token(who)))
+        # 2026-11-18 使用者回報：桌上只剩一人時不會發下一手，離場的人原本一直「坐在」桌上，
+        # 沒有「排隊上桌」、也離不開房間。這手一結束就要下桌，不必等發牌
+        self.assertIsNone(state.seat_of_token(self.token(who)))
         self.assertTrue(game.in_room(self.users[who]))
         self.assertFalse(game.finished)  # 不計勝負：牌局不會因為只剩一人就結束
+        r = self.table(who, game, "sit")  # 回到觀戰席後可以再排隊；牌桌在等人，馬上補進去發牌
+        self.assertEqual(r.status_code, 200, r.content)
+        state = self.state(game)
+        self.assertIsNotNone(state.seat_of_token(self.token(who)))
+        self.assertEqual(state.hand_no, 2)
+
+    def test_a_folded_player_who_leaves_stands_up_when_someone_else_ends_the_hand(self):
+        # 三人桌：先棄牌再離場，這手還在打；由別人的行動結束這手時，離場的人要馬上下桌
+        game = self.open_room()
+        self.clients["carol"].post("/join/", {"code": game.room_code})
+        self.table("carol", game, "sit")
+        game = self.start(game)
+        names = {self.token(n): n for n in ("alice", "bob", "carol")}
+        state = self.state(game)
+        who = names[MODULE.to_move(state)]
+        mine = state.seat_of_token(self.token(who))
+        self.assertEqual(self.post(who, f"/api/holdem/games/{game.id}/move/", {"action": "fold"}).status_code, 200)
+        self.assertEqual(self.post(who, f"/api/holdem/games/{game.id}/move/", {"action": f"leave {mine}"}).status_code,
+                         200)  # 已經棄牌：不必等輪到自己
+        self.assertEqual(self.state(game).occupant.get(mine), self.token(who))  # 這手還在打：先留在桌上
+        state = self.finish_hand(game)
+        self.assertIsNone(state.seat_of_token(self.token(who)))
+        self.assertEqual(len(state.live()), 2)  # 另外兩人照常等下一手
 
     def test_the_host_ends_the_table_without_a_result_and_everyone_returns_to_the_room(self):
         game = self.start(self.open_room())

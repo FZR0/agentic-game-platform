@@ -874,6 +874,16 @@ def _table_apply(module, game, state, action):
     return state
 
 
+def _stand_gone(module, game, state):
+    """開放牌桌：按了「離場」（leave N）的人在這手牌結束時馬上下桌、回到觀戰席。
+    2026-11-18 使用者回報：原本要等 table_advance 發下一手才下桌，桌上只剩一個人時不會發牌，
+    畫面一直顯示他還坐在桌上、沒有「排隊上桌」，也不能離開房間。"""
+    if open_table(game) and getattr(state, "hand_over", False):
+        for s in sorted(set(state.gone) & set(state.occupant)):
+            state = _table_apply(module, game, state, f"stand {s}")
+    return state
+
+
 def table_action(module, game, user, op, kind="", seat=0):
     """開放牌桌的操作（除了 deal、end）。回傳 (對局, 要不要接著補人發牌)：開始後牌桌在等人時排進來的人馬上補進去。
     op：sit（上桌；開始後是排隊）、unqueue（離開隊列；房主帶 seat＝隊列第幾個，拿掉排隊的 AI）、
@@ -1027,6 +1037,7 @@ def play_human_move(module, game, action, seat):
         raise ValueError("現在不是你的回合")
     state = module.apply(state, action)  # 不合法會丟出 ValueError
     game.actions.append(action)
+    state = _stand_gone(module, game, state)
     _set_outcome(module, game, state)
     game.save()
     _open_next_round(game)  # 真人對戰打完了：回到房間（2026-11-15）
@@ -1040,6 +1051,7 @@ def run_ai_turns(module, game, model, steps, seat):
         return []
     state = module.replay(settings_of(game), game.actions)
     state, moves = _ai_turns(module, game, state, model, steps, seat)
+    state = _stand_gone(module, game, state)  # AI 的行動結束這手牌時，離場的人也馬上下桌
     moves = _save_and_hide(module, game, state, moves)
     _open_next_round(game)  # 撲克可能由 AI 的行動結束整場
     return moves

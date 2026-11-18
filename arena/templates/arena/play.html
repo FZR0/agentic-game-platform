@@ -124,18 +124,28 @@
         <div id="moments"></div>
       </section>
 
+      {% comment %}問 AI 改成對話的樣子（2026-11-18 使用者要求參考 Gemini 側欄）：還沒問時中間是問候語，
+         問答一問一答排下來，建議問題和輸入框固定在下方，輸入框裡標出正在問哪個局面{% endcomment %}
       <section id="tab-ask" class="tab-panel ask-panel" role="tabpanel" hidden>
-        <ol id="answers" class="entries answers"></ol>
+        <div id="ask-welcome" class="ask-welcome">
+          <span class="ask-spark" aria-hidden="true">✦</span>
+          <p class="ask-hello">想問這盤棋的什麼？</p>
+          <p class="muted">在棋盤下方用 ◀ ▶ 選好局面再問。問題裡提到的座標、牌或「第幾手」，會先交給電腦分析。</p>
+        </div>
+        <ol id="answers" class="answers" aria-live="polite"></ol>
         <div class="ask-box">
-          <p id="ask-context" class="muted">復盤時可以針對棋盤上的任何局面提問。</p>
           <div class="quick-questions">
             <button type="button">這一手為什麼不好？</button>
             <button type="button">現在對手最大的威脅是什麼？</button>
             <button type="button">電腦建議下哪裡？為什麼？</button>
           </div>
           <form id="ask-form" class="ask-form">
-            <input id="ask-input" type="text" maxlength="200" autocomplete="off" placeholder="例如：第 9 手為什麼不好？">
-            <button type="submit" class="primary">送出</button>
+            <p id="ask-context" class="ask-context">復盤時可以針對棋盤上的任何局面提問。</p>
+            <div class="ask-row">
+              <input id="ask-input" type="text" maxlength="200" autocomplete="off" placeholder="例如：第 9 手為什麼不好？"
+                aria-label="問 AI">
+              <button type="submit" class="primary ask-send" aria-label="送出" title="送出">↑</button>
+            </div>
           </form>
         </div>
       </section>

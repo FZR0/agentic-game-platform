@@ -32,14 +32,15 @@ LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
 UNAVAILABLE = "Ollama 無法使用"  # 呼叫不到模型時的說明備註；模型使用紀錄靠它分辨「呼叫不到」和「沒通過檢查」
 # 思考模式的推理過程也算在生成長度內，需要比較大的上限
 NUM_PREDICT = {False: 300, True: 3000}
+ASK_NUM_PREDICT = 600  # 回答提問的說明比較長（要交代因果），300 會在句子中間截斷
 
 SYSTEM_PROMPT = """你是{game}教練，負責把分析引擎提供的事實改寫成自然、易懂的說明。
 輸出固定兩行：
 重點：一句話（25 字以內），直接說出最重要的結論。
-說明：1 到 3 句，補充理由。
+說明：{body}
 規則：
 1. 使用繁體中文（台灣用語），不要條列、不要 Markdown 符號。
-2. 不要逐條複述事實，也不要從「目前輪到誰下」開始講；只挑和要說明的事最相關的一兩點。
+2. 不要逐條複述事實，也不要從「目前輪到誰下」開始講；{pick}
 3. 只能使用提供的事實，不可自行推測新的棋步或座標；提到的座標必須出現在事實中。
 4. 依證據種類用語：「規則確認」可以直接陳述；「求解確認」要保留「在搜尋範圍內已確認」；「條件式計算」要說出所依據的假設；「引擎估計」要說「依引擎估計」，不可說「必勝」或「一定」。
 5. 「在搜尋範圍內已確認」只能用在「求解確認」的事實，其他事實不要寫這句；「在搜尋範圍內未發現」不等於確認沒有。"""
@@ -61,7 +62,14 @@ INTROS = {
                  "「說明」寫這個傾向在第幾步出現過跡象，以及事實裡列的應對建議。只能根據下面列出的事實，"
                  "不要自己推測對手沒出現過的習慣，也不要加上事實裡沒有的應對方法："),
 }
+# 「說明」的長度與挑選事實的方式。提問另外放寬（2026-11-18 使用者：「沒有詳細說明只是一昧著依照引擎」）：
+# 原本一律 1 到 3 句、只挑一兩點，模型只寫得出「依引擎估計 I7 比較好、H5 效果較弱」，講不出為什麼
+BODY_RULES = {"default": ("1 到 3 句，補充理由。", "只挑和要說明的事最相關的一兩點。"),
+              "ask": ("3 到 5 句，把因果講清楚。", "挑出能回答問題的事實，按發生的順序串起來講。")}
 ASK_INTRO = ("請直接回答上面這個問題：「重點」那一句必須正面回應玩家問的事，不要先描述局面。"
+             "玩家問「為什麼」時，「說明」要講出原因，不能只說引擎比較推薦另一手：用事實裡的後續變化，"
+             "說這一手下了之後對方怎麼應、應完之後雙方各得到什麼（例如對方被迫應的那一手同時幫自己做了什麼、"
+             "誰搶到了好點），再和建議的下法下完之後的發展比較，指出差在哪裡。"
              "如果玩家問的是自己的習慣或感受（例如為什麼常看不到某個點），就指出那個點的威脅是什麼、"
              "在哪個方向，並給一個下次可以檢查的習慣。只根據下面的引擎事實回答；"
              "事實不足以回答時，就直接說「引擎目前無法判斷」，不要猜測。")
@@ -140,14 +148,18 @@ def request_body(facts, config, game_name):
     else:
         lines = [INTROS[facts["kind"]]]
     lines += [f"- [{p['evidence']}] {p['text']}" for p in facts["points"]]
+    ask = facts["kind"] == "ask"
+    body, pick = BODY_RULES["ask" if ask else "default"]
+    predict = NUM_PREDICT[config["think"]]
+    if ask and not config["think"]:
+        predict = ASK_NUM_PREDICT
     return {
         "model": config["name"],
         "stream": False,
         "think": config["think"],
         "keep_alive": settings.OLLAMA_KEEP_ALIVE,
-        "options": {"temperature": 0.3, "num_predict": NUM_PREDICT[config["think"]],
-                    "num_ctx": settings.OLLAMA_NUM_CTX},
-        "messages": [{"role": "system", "content": SYSTEM_PROMPT.format(game=game_name)},
+        "options": {"temperature": 0.3, "num_predict": predict, "num_ctx": settings.OLLAMA_NUM_CTX},
+        "messages": [{"role": "system", "content": SYSTEM_PROMPT.format(game=game_name, body=body, pick=pick)},
                      {"role": "user", "content": "\n".join(lines)}],
     }
 

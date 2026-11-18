@@ -379,6 +379,7 @@ function resetView(human, settings, actions, frames, pvp = false, players = {}, 
   $("moments").replaceChildren();
   $("review-summary").textContent = REVIEW_HINT;
   $("answers").replaceChildren();
+  $("ask-welcome").hidden = false;
   $("review-nav").hidden = true;
   $("mark-legend").hidden = true;
   selectTab("thoughts");
@@ -1676,8 +1677,8 @@ function goTo(n) {
 function updateNav() {
   $("nav-label").textContent = `第 ${state.viewAt} / ${state.actions.length} ${STEP}`;
   const toMove = state.frames[state.viewAt]?.to_move;
-  $("ask-context").textContent = `針對第 ${state.viewAt} ${STEP}之後的局面提問${toMove ? `（輪到${seatName(toMove)}）` : ""}。`
-    + `問題中的座標、牌或「第幾${STEP}」會先交給電腦分析。`;
+  // 輸入框上方標出正在問哪個局面（說明文字在問 AI 分頁中間的問候語裡）
+  $("ask-context").textContent = `問第 ${state.viewAt} ${STEP}之後的局面${toMove ? `・輪到${seatName(toMove)}` : ""}`;
   $("mark-legend").hidden = !state.marks;
   if (state.marks) {
     $("legend-played").textContent = actionText(state.marks.played);
@@ -1689,29 +1690,44 @@ function updateNav() {
 
 let asking = false;
 
+// 一問一答（2026-11-18 參考 Gemini 側欄改成對話的樣子）：玩家的問題是靠右的對話泡泡，
+// AI 的回答接在下面（證據標籤、重點、說明、電腦分析原文照舊）；點回答回到問的那個局面
 async function askQuestion(question) {
   if (!question || state.gameId === null || asking || !state.reviewing) return;
   const { round, viewAt: at } = state;
-  const headText = `問（第 ${at} ${STEP}後）：${question}`;
-  const pending = document.createElement("li");
-  pending.textContent = `${headText}　電腦分析中…`;
-  $("answers").append(pending);
-  pending.scrollIntoView({ block: "nearest" });
+  const turn = document.createElement("li");
+  turn.className = "qa";
+  const where = document.createElement("span");
+  where.className = "qa-where";
+  where.textContent = `第 ${at} ${STEP}之後`;
+  const bubble = document.createElement("p");
+  bubble.className = "qa-question";
+  bubble.textContent = question;
+  const pending = document.createElement("div");
+  pending.className = "qa-pending";
+  pending.innerHTML = '<span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>電腦分析中…';
+  turn.append(where, bubble, pending);
+  $("answers").append(turn);
+  $("ask-welcome").hidden = true;
+  turn.scrollIntoView({ block: "nearest" });
   asking = true;
   updateAskAvailability();
   try {
     const data = await api(`games/${state.gameId}/ask/`, { question, at, model: $("model").value });
     if (round !== state.round) return;
-    const li = entry(headText, data.facts);
-    showResult(li, data, "AI 依電腦分析回答（點這裡回到那個局面）");
-    li.addEventListener("click", () => {
+    const answer = document.createElement("div");
+    answer.className = "qa-answer";
+    answer.append(...entry("", data.facts).childNodes); // 和其他說明同一套：證據標籤、重點、說明、電腦分析原文
+    showResult(answer, data, "AI 依電腦分析回答・點這裡回到那個局面");
+    answer.addEventListener("click", () => {
       revealBoard();
       goTo(at);
     });
-    pending.replaceWith(li);
-    li.scrollIntoView({ block: "nearest" });
+    pending.replaceWith(answer);
+    turn.scrollIntoView({ block: "nearest" });
   } catch (err) {
-    pending.textContent = `${headText}　失敗：${err.message}`;
+    pending.className = "qa-pending failed";
+    pending.textContent = `沒有回答：${err.message}`;
   } finally {
     asking = false;
     updateAskAvailability();

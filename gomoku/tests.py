@@ -239,6 +239,22 @@ class ReviewTests(SimpleTestCase):
         d = engine.choose_move(board_with(black=["H8", "I8", "J8"], white=["A1", "A2"]), WHITE)
         self.assertTrue(any("就形成活四或雙四，對方擋不完" in p["text"] for p in d["points"]), d["points"])
 
+    def test_asking_why_a_four_explains_what_happens_after_it(self):
+        # 2026-11-18 使用者：問「為什麼衝四反而不好」，AI 教練只回「依引擎估計 I7 比較好、H5 效果較弱」。
+        # 事實裡只有那一手當下形成什麼，模型講不出原因。現在要附上對方被迫擋在哪、擋完這個四就用掉了，
+        # 以及擋完之後和引擎建議的下法各自怎麼發展，模型才有因果可以講
+        b = board_with(black=["H8", "H7", "H6", "G7"], white=["H9", "G9", "J10", "F8"])
+        texts = [p["text"] for p in engine.explain_position(b, [at("H5")])]
+        self.assertIn("黑棋下 H5 是衝四，白棋下一手只能擋在 H4，否則黑棋就連五。", texts)
+        self.assertTrue(any(t.startswith("白棋擋住 H4 之後，黑棋在 H5 的這個四就用掉了") for t in texts), texts)
+        best = engine.coord(*engine.choose_move(b, BLACK)["move"])
+        self.assertTrue(any(t.startswith("依引擎估計，白棋擋住 H4 之後的後續：黑棋下 ") for t in texts), texts)
+        self.assertTrue(any(t.startswith(f"依引擎估計，黑棋下 {best} 之後的後續：白棋下 ") for t in texts), texts)
+        # 後續的每一手都是引擎的選擇，只能是估計；只有「被迫擋」和「四用掉了」是規則
+        for p in engine.explain_position(b, [at("H5")]):
+            if "後續" in p["text"]:
+                self.assertEqual(p["evidence"], ESTIMATE, p["text"])
+
     def test_playing_the_vcf_is_not_flagged(self):
         self.assertIsNone(engine.judge_move(board_with(**VCF_POSITION), *at("K8"), BLACK))
 

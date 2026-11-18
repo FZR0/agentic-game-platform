@@ -33,6 +33,7 @@ LEVELS = {"missed_win": "key", "missed_block": "key", "missed_vcf": "key", "allo
           "suggest": "suggest"}
 # 「建議」（使用者要求，2026-10-11）：不算失誤，但引擎更推薦另一點——實際下的點不到引擎選擇的 80%（不到一半就是小失誤）
 SUGGEST_RATIO, SUGGEST_MIN_VALUE = 0.8, 100
+CONTINUATION_PLIES = 3  # 回答提問時，一手棋之後往下推演幾手（對方應、己方再下、對方再應）
 
 
 def coord(x, y):
@@ -442,14 +443,18 @@ def explain_position(board, focus=(), next_move=None):
         else:
             points.append((ESTIMATE, f"在搜尋範圍內未發現{them}目前有連續衝四。"))
 
+    points += continuation(board, *best, color)
     for x, y in focus[:3]:
         points += check_point(board, x, y, color)
         if (x, y) == best:
             points.append((ESTIMATE, f"{coord(x, y)} 就是引擎建議的那一手。"))
+        else:
+            points += continuation(board, x, y, color)
 
     if next_move is not None:
         points += _move_facts(board, *next_move, color, "棋譜中實際的下一手")
 
+    points = list(dict.fromkeys(points))  # 問到的點、實際的下一手和引擎建議常是同一點，後續變化不重複列
     return [{"evidence": ev, "text": text} for ev, text in points]
 
 
@@ -477,6 +482,53 @@ def check_point(board, x, y, color):
     return points
 
 
+def continuation(board, x, y, color, plies=CONTINUATION_PLIES):
+    """回答「為什麼」用：color 下 (x, y) 之後的後續變化，回傳 [(證據種類, 文字)]。
+    2026-11-18 使用者回報：AI 教練只說「依引擎估計 I7 比較好、H5 效果較弱」，沒有說明為什麼。原本的事實只有一手棋
+    當下形成什麼棋形，沒有下完之後會發生什麼，模型只能重複引擎的結論。這裡補上對方怎麼應、應完之後各得到什麼：
+    衝四逼對方擋的那一手是規則確認；之後雙方各下引擎會選的一手（choose_move，和 AI 對局、復盤同一個標準）是引擎估計。"""
+    opp = other(color)
+    me, them = COLOR_NAMES[color], COLOR_NAMES[opp]
+    c = coord(x, y)
+    if board[y][x] != EMPTY or makes_five(board, x, y, color) or five_points(board, opp):
+        return []  # 已經有子、直接連五、或對方已經衝四（check_point 已寫明），沒有後續可談
+    b = _placed(board, x, y, color)
+    points = []
+    wins = _win_points_after(b, x, y, color)
+    if len(wins) >= 2:
+        return [(RULE, f"{me}下 {c} 之後有 {'、'.join(coord(*p) for p in sorted(wins))} 好幾個連五點，{them}擋不完。")]
+    side = opp
+    if wins:  # 衝四：對方只能擋在連五點
+        (bx, by), = wins
+        block = coord(bx, by)
+        points.append((RULE, f"{me}下 {c} 是衝四，{them}下一手只能擋在 {block}，否則{me}就連五。"))
+        gains = [label for label in move_labels(b, bx, by, opp) if "連五" not in label]  # 擋住連五是一定的，不用再說
+        points.append((ESTIMATE, f"{them}擋在 {block} 這一手同時：{'、'.join(gains)}。" if gains
+                       else f"依引擎估計，{them}擋在 {block} 這一手只是擋住，沒有幫自己形成棋形。"))
+        b = _placed(b, bx, by, opp)
+        if not _win_points_after(b, x, y, color):
+            points.append((RULE, f"{them}擋住 {block} 之後，{me}在 {c} 的這個四就用掉了，沒有連五的點，"
+                                 f"又輪到{me}下。"))
+        side, plies = color, plies - 1
+        start = f"{them}擋住 {block} 之後"
+    else:
+        start = f"{me}下 {c} 之後"
+    line = []
+    for _ in range(plies):
+        name = COLOR_NAMES[side]
+        decision = choose_move(b, side)
+        mx, my = decision["move"]
+        if makes_five(b, mx, my, side):
+            line.append(f"{name}下 {coord(mx, my)} 連成五子")
+            break
+        line.append(f"{name}下 {coord(mx, my)}（{'、'.join(move_labels(b, mx, my, side))}）")
+        b = _placed(b, mx, my, side)
+        side = other(side)
+    if line:
+        points.append((ESTIMATE, f"依引擎估計，{start}的後續：" + "，接著".join(line) + "。"))
+    return points
+
+
 def explain_move(moves, n):
     """回答提問用：棋譜第 n 手（從 1 起算）的事實，供玩家用「第 n 手」提問時使用。"""
     board, _ = build_board(moves[:n - 1])
@@ -494,6 +546,9 @@ def _move_facts(board, x, y, color, name):
         points += [(p["evidence"], p["text"]) for p in m["points"]]
     else:
         points.append((ESTIMATE, f"引擎沒有在{name}找到問題。"))
+    points += continuation(board, x, y, color)
+    if m and m.get("best") and tuple(m["best"]) != (x, y):  # 和引擎建議的下法比：各自下完之後怎麼發展
+        points += continuation(board, *m["best"], color)
     return points
 
 

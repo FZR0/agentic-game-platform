@@ -582,8 +582,56 @@ canvas {
 .tab-panel { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 2px 4px; }
 .ask-panel { display: flex; flex-direction: column; overflow: hidden; }
 .ask-panel .answers { flex: 1; min-height: 0; overflow-y: auto; }
-.ask-box { margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--border); }
-.ask-box p { margin: 0 0 6px; }
+.ask-box { margin-top: 8px; }
+
+/* 問 AI（2026-11-18 參考 Gemini 側欄）：還沒問時中間是問候語；問答是一問一答的對話 */
+.ask-welcome {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 16px 8px;
+  text-align: center;
+}
+.ask-welcome[hidden] { display: none; }
+.ask-welcome p { margin: 0; }
+.ask-welcome .muted { max-width: 30em; font-size: 0.8125rem; }
+.ask-spark { color: var(--accent); font-size: 1.75rem; line-height: 1; }
+.ask-hello { font-size: 1.1875rem; font-weight: 700; }
+.ask-welcome:not([hidden]) + .answers { flex: 0 0 auto; }
+
+.answers { display: flex; flex-direction: column; gap: 18px; list-style: none; margin: 0; padding: 4px 2px; }
+.qa { display: flex; flex-direction: column; gap: 6px; }
+.qa-where { align-self: flex-end; color: var(--muted); font-size: 0.75rem; }
+.qa-question {
+  align-self: flex-end;
+  max-width: 85%;
+  margin: 0;
+  padding: 8px 14px;
+  border-radius: 18px 18px 4px 18px;
+  background: var(--accent-soft);
+  overflow-wrap: anywhere;
+}
+.qa-answer {
+  padding: 4px 6px 6px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+.qa-answer:hover { background: var(--panel-2); }
+.qa-answer .head:empty, .qa-answer .head:not(:has(.tag)) { display: none; }
+.qa-answer .text { margin: 6px 0 4px; line-height: 1.7; }
+.qa-answer .source { color: var(--muted); font-size: 0.75rem; }
+.qa-pending { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 0.875rem; }
+.qa-pending.failed { color: var(--warn); }
+.dots { display: inline-flex; gap: 3px; }
+.dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: ask-dot 1.2s infinite ease-in-out; }
+.dots i:nth-child(2) { animation-delay: 0.15s; }
+.dots i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes ask-dot { 0%, 80%, 100% { opacity: 0.25; } 40% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .dots i { animation: none; opacity: 0.6; } }
 
 .footnote { margin: 10px 0 0; padding-top: 10px; border-top: 1px solid var(--border); font-size: 0.75rem; line-height: 1.55; }
 
@@ -600,12 +648,12 @@ canvas {
 .entries .head { font-weight: 600; line-height: 1.5; }
 .entries .text { margin: 6px 0 4px; }
 
-.thoughts.clickable > li, .moments > li, .answers > li { cursor: pointer; }
-.thoughts.clickable > li:hover, .moments > li:hover, .answers > li:hover { background: var(--panel-2); }
+.thoughts.clickable > li, .moments > li { cursor: pointer; }
+.thoughts.clickable > li:hover, .moments > li:hover { background: var(--panel-2); }
 .entries > li.active { border-color: var(--accent); background: var(--active); }
 
 /* 回答的重點：比內文醒目，一眼先看到結論 */
-.entries .key {
+.entries .key, .qa-answer .key {
   margin: 8px 0 4px;
   padding: 7px 10px;
   border-left: 3px solid var(--accent);
@@ -647,11 +695,41 @@ canvas {
 
 .narrate-button { margin-top: 6px; padding: 3px 12px; border-radius: 999px; font-size: 0.8125rem; }
 
-.quick-questions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
-.quick-questions button { padding: 4px 12px; border-radius: 999px; background: var(--panel-2); font-size: 0.8125rem; }
+/* 建議問題：一顆顆圓角膠囊，靠左排在輸入框上方 */
+.quick-questions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.quick-questions button {
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  font-size: 0.8125rem;
+  text-align: left;
+}
+.quick-questions button:hover:not(:disabled) { border-color: var(--accent); }
 
-.ask-form { display: flex; gap: 8px; }
-.ask-form input { flex: 1; min-width: 0; }
+/* 輸入框：一整塊圓角輸入區，上面一行標出正在問哪個局面，右邊是圓形的送出鈕 */
+.ask-form {
+  padding: 8px 8px 8px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 22px;
+  background: var(--raised);
+  box-shadow: var(--shadow-sm);
+  transition: border-color 0.15s;
+}
+.ask-form:focus-within { border-color: var(--accent); }
+.ask-context { margin: 0 0 2px; color: var(--muted); font-size: 0.75rem; }
+.ask-row { display: flex; align-items: center; gap: 8px; }
+.ask-row input { flex: 1; min-width: 0; padding: 6px 0; border: 0; background: transparent; box-shadow: none; outline: none; }
+.ask-send {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  min-height: 36px;
+  padding: 0;
+  border-radius: 50%;
+  font-size: 1.125rem;
+  font-weight: 700;
+  line-height: 1;
+}
 
 details { color: var(--muted); font-size: 0.8125rem; margin-top: 6px; }
 details summary { width: fit-content; cursor: pointer; }

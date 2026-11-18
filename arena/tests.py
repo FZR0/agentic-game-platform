@@ -280,6 +280,20 @@ class NumCtxTests(SimpleTestCase):
         self.assertEqual(len(sent), 1)
         self.assertEqual(sent[0]["options"]["num_ctx"], 4096)
 
+    @override_settings(OLLAMA_NUM_CTX=4096)
+    def test_answers_to_questions_may_explain_the_reasons_at_length(self):
+        # 2026-11-18 使用者：AI 教練回答問題「沒有詳細說明只是一昧著依照引擎」。提問的說明放寬到 3 到 5 句、
+        # 要求講出因果，生成長度也跟著加大，否則說到一半被截斷；其他說明維持原本的長度
+        ask = {"kind": "ask", "question": "為什麼 H9 不好？", "points": self.FACTS["points"]}
+        sent = self.sent_bodies(lambda: narrator._ask_ollama(ask, narrator.model_config(), GOMOKU.name))
+        self.assertEqual(sent[0]["options"]["num_ctx"], 4096)
+        self.assertEqual(sent[0]["options"]["num_predict"], narrator.ASK_NUM_PREDICT)
+        self.assertIn("3 到 5 句", sent[0]["messages"][0]["content"])
+        self.assertIn("後續變化", sent[0]["messages"][1]["content"])
+        sent = self.sent_bodies(lambda: narrator._ask_ollama(self.FACTS, narrator.model_config(), GOMOKU.name))
+        self.assertEqual(sent[0]["options"]["num_predict"], narrator.NUM_PREDICT[False])
+        self.assertIn("1 到 3 句", sent[0]["messages"][0]["content"])
+
     def test_default_is_8192(self):
         self.assertEqual(settings.OLLAMA_NUM_CTX, 8192)  # 沒設環境變數 OLLAMA_NUM_CTX 時
 
