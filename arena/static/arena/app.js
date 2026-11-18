@@ -582,19 +582,20 @@ function roomButton(label, onClick, className = "") {
   return b;
 }
 
-// 房主把某個人換到別的座位（坐到有人的座位時兩人交換）或改成觀戰；current 是他現在的座位，觀戰中是 null
+// 房主把某個人換到別的座位（坐到有人的座位時兩人交換）或改成觀戰；current 是他現在的座位，觀戰中是 null。
+// 房主換自己（2026-11-18 使用者要求）：name 傳空字串、current 是房主的座位，沒有「觀戰」（房主要一直坐著）
 function seatPicker(name, current) {
   const select = document.createElement("select");
   select.className = "room-action";
   select.disabled = state.busy || state.starting;
-  select.setAttribute("aria-label", `把 ${name} 換到`);
+  select.setAttribute("aria-label", name ? `把 ${name} 換到` : "把自己換到");
   // 房主要一直坐著：觀戰的人不能換進房主的座位；撲克的房主固定 1 號位，誰都不能換進去
   const blocked = (s) => s === state.hostSeat && (CONFIG.pickHumanSeats || current === null);
   select.append(new Option("換到…", ""));
   for (const s of Object.keys(state.players).map(Number)) {
     if (s !== current && !blocked(s)) select.append(new Option(seatName(s), String(s)));
   }
-  if (current !== null) select.append(new Option("觀戰", "0"));
+  if (current !== null && name) select.append(new Option("觀戰", "0"));
   select.addEventListener("change", () => {
     if (select.value !== "") moveTo(name, Number(select.value));
   });
@@ -779,10 +780,10 @@ function renderSeatPlayers() {
   $("room-table").hidden = aiSeats <= 0;
   const rows = taken.map(([seat, name]) => memberItem(name, seatName(seat),
     [seat === state.hostSeat && "房主", seat === mySeat && "你"],
-    host && seat !== mySeat
-      ? [seatPicker(name, seat), roomButton("交給他當房主", () => transferHost(name)),
-        roomButton("請離開", () => kickPlayer(name), "danger")]
-      : []));
+    !host ? [] : seat === mySeat
+      ? (seats.length > 1 ? [seatPicker("", seat)] : [])
+      : [seatPicker(name, seat), roomButton("交給他當房主", () => transferHost(name)),
+        roomButton("請離開", () => kickPlayer(name), "danger")]));
   for (const name of state.spectators) {
     rows.push(memberItem(name, "觀戰", [name === ME && "你"],
       host ? [seatPicker(name, null), roomButton("請離開", () => kickPlayer(name), "danger")] : []));
