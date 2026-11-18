@@ -827,19 +827,40 @@ details ul { margin: 4px 0 0; padding-left: 18px; }
 .room-banner[hidden] { display: none; }
 .page .room-banner { width: auto; margin: 0 0 16px; }
 @media (max-width: 640px) { .room-banner { width: calc(100% - 24px); margin-top: 8px; } .page .room-banner { width: auto; margin: 0 0 12px; } }
-/* 房間的玩家列表（2026-11-13） */
-.room-players { margin: 0 0 12px; padding: 10px 14px; border: 1px solid var(--border); border-radius: var(--radius);
+/* 房間的對局玩家與房間成員（2026-11-13 的玩家列表，2026-11-18 依使用者要求拆成兩塊） */
+.room-card { margin: 0 0 12px; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius);
   background: var(--panel); }
-.room-players[hidden] { display: none; }
-.room-seats { display: flex; flex-wrap: wrap; gap: 6px 10px; margin: 0; padding: 0; list-style: none; }
-.room-seats li { padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--raised); }
-.room-seats li.empty { border-style: dashed; color: var(--muted); }
+.room-card[hidden] { display: none; }
+.room-card-title { margin: 0 0 10px; font-size: 0.95rem; font-weight: 700; }
+.room-card-title .muted { margin-left: 4px; font-size: 0.85rem; font-weight: 400; }
+/* 對局玩家：一個座位一格 */
+.room-seats { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 8px; margin: 0; padding: 0;
+  list-style: none; }
+.room-seats li { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 8px 12px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--raised); }
+.room-seats li.empty { border-style: dashed; background: transparent; color: var(--muted); }
 .room-seats li.turn { border-color: var(--accent); background: var(--accent-soft); }
-.room-seats .seat-name { font-weight: 700; }
-.room-seats .seat-tags { color: var(--accent); font-size: 0.85rem; font-weight: 600; }
-.room-players > p { margin: 6px 0 0; font-size: 0.88rem; overflow-wrap: anywhere; }
-.room-players > .end-button { margin-top: 8px; }
-/* 房間大廳的操作（2026-11-15）：座位標籤裡的小按鈕與「換到…」選單 */
-.room-players .room-action { padding: 2px 8px; font-size: 0.82rem; border-radius: 999px; }
-.room-players .room-action.danger:hover:not(:disabled) { border-color: var(--warn); color: var(--warn); }
-.room-players .spectator { white-space: nowrap; }
+.room-seats li.turn .badge { background: var(--raised); }
+.room-seats .seat-name { color: var(--muted); font-size: 0.8rem; font-weight: 600; }
+.room-seats .seat-who { font-weight: 700; overflow-wrap: anywhere; }
+.room-table { margin-top: 10px; font-size: 0.88rem; overflow-wrap: anywhere; }
+.room-table[hidden] { display: none; }
+.room-table .table-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 0; }
+/* 房間成員：一個人一列，左邊是名字和他在哪裡，右邊是房主的管理 */
+.room-members { margin: 0; padding: 0; list-style: none; }
+.room-members li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 8px 0;
+  border-top: 1px solid var(--border); }
+.room-members li:first-child { padding-top: 0; border-top: none; }
+.room-members .member-name { font-weight: 600; overflow-wrap: anywhere; }
+.room-members .member-role { color: var(--muted); font-size: 0.85rem; }
+.room-members .member-actions { margin-left: auto; }
+.room-card .badges { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.room-card .badge { padding: 0 7px; border-radius: 999px; background: var(--accent-soft); color: var(--accent);
+  font-size: 0.75rem; font-weight: 600; line-height: 1.6; }
+.room-card .seat-actions, .room-card .member-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.room-footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 10px; padding-top: 10px;
+  border-top: 1px solid var(--border); }
+.room-footer[hidden] { display: none; }
+/* 房間大廳的操作（2026-11-15）：小按鈕與「換到…」選單 */
+.room-card .room-action { padding: 2px 8px; font-size: 0.82rem; border-radius: 999px; }
+.room-card .room-action.danger:hover:not(:disabled) { border-color: var(--warn); color: var(--warn); }

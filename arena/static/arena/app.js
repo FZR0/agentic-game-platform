@@ -610,7 +610,62 @@ function aiLabel(entry) {
   return entry.ai === "agent" ? "Agent AI" : "機器人";
 }
 
-// 撲克開放牌桌的玩家列表（2026-11-16）：牌桌上的座位、隊列、觀戰席，以及上桌／排隊／觀眾／補 AI／結束牌局的按鈕
+// ---- 對局玩家與房間成員（2026-11-18 使用者要求「控制面板太亂」，把原本混在一起的玩家列表拆成兩塊）----
+// 對局玩家：每個座位一格，只放和座位本身有關的按鈕（坐這裡、改成觀戰、觀眾、請 AI 下桌）。
+// 房間成員：房間裡每個人一列，房主的管理（換到…、交給他當房主、請離開）放在那個人的右邊。
+
+// 登入的帳號名稱（play.html 的 viewer-name）：觀戰的人沒有座位，房間成員要靠名字標出「你」
+const ME = JSON.parse(document.getElementById("viewer-name")?.textContent || '""');
+
+function badgeList(tags) {
+  const box = document.createElement("span");
+  box.className = "badges";
+  for (const text of tags.filter(Boolean)) {
+    const badge = document.createElement("span");
+    badge.className = "badge";
+    badge.textContent = text;
+    box.append(badge);
+  }
+  return box;
+}
+
+function textSpan(className, text) {
+  const span = document.createElement("span");
+  span.className = className;
+  span.textContent = text;
+  return span;
+}
+
+// 對局玩家的一格：座位名稱、坐的人、標籤（房主、你、輪到…）、這個座位上的按鈕
+function seatItem(label, who, tags, buttons = [], { empty = false, turn = false } = {}) {
+  const li = document.createElement("li");
+  li.classList.toggle("empty", empty);
+  li.classList.toggle("turn", turn);
+  li.append(textSpan("seat-name", label), textSpan("seat-who", who));
+  if (tags.some(Boolean)) li.append(badgeList(tags));
+  if (buttons.length) {
+    const box = textSpan("seat-actions", "");
+    box.append(...buttons);
+    li.append(box);
+  }
+  return li;
+}
+
+// 房間成員的一列：名字、標籤、他在哪裡（黑棋、3 號位、觀戰…）、房主可以對他做的事
+function memberItem(name, where, tags, buttons = []) {
+  const li = document.createElement("li");
+  li.append(textSpan("member-name", name));
+  if (tags.some(Boolean)) li.append(badgeList(tags));
+  li.append(textSpan("member-role", where));
+  if (buttons.length) {
+    const box = textSpan("member-actions", "");
+    box.append(...buttons);
+    li.append(box);
+  }
+  return li;
+}
+
+// 撲克開放牌桌（2026-11-16）：牌桌上的座位、隊列，上桌／排隊／觀眾／補 AI／結束牌局；房間成員分成桌上、排隊、觀戰席
 function renderTablePlayers() {
   const started = state.startsAt !== null && !state.over;
   const lobby = inLobby();
@@ -621,70 +676,44 @@ function renderTablePlayers() {
   const ownerName = table.owner;
   const turn = started && roomStarted() ? state.frames.at(-1)?.acting : null;
   const seated = tableSeated();
-  const people = new Set();
+  const total = Number(state.settings.players) || 0;
+  const members = new Map(); // 名字 → 他在哪裡；依桌上、排隊、觀戰席的順序列出
   $("room-seats").replaceChildren(...seated.map((s) => {
-    const li = document.createElement("li");
     const name = s.token ? state.players[s.token] : null;
-    if (name) people.add(name);
-    li.classList.toggle("turn", s.seat === turn);
-    const label = document.createElement("span");
-    label.className = "seat-name";
-    label.textContent = `${s.seat} 號位`;
-    li.append(label, ` ${name ?? s.role}`);
-    const tags = [name && name === ownerName && "房主", s.seat === mine && "你", s.seat === turn && "輪到",
-      leaving.has(s.seat) && "這手結束後下桌"].filter(Boolean);
-    if (tags.length) {
-      const tag = document.createElement("span");
-      tag.className = "seat-tags";
-      tag.textContent = tags.join("・");
-      li.append(" ", tag);
-    }
+    if (name) members.set(name, `${s.seat} 號位`);
+    const buttons = [];
     if (s.seat === mine && (lobby || started)) {
-      li.append(" ", lobby ? roomButton("下桌", () => tableAction("stand"))
+      buttons.push(lobby ? roomButton("下桌", () => tableAction("stand"))
         : roomButton(leaving.has(s.seat) ? "取消（繼續打）" : "觀眾", () => tableAction("stand")));
     }
     if (host && !s.token) {
-      li.append(" ", roomButton(leaving.has(s.seat) ? "取消（留在桌上）" : "請 AI 下桌",
+      buttons.push(roomButton(leaving.has(s.seat) ? "取消（留在桌上）" : "請 AI 下桌",
         () => tableAction("remove_ai", { seat: s.seat }), leaving.has(s.seat) ? "" : "danger"));
     }
-    if (lobby && host && name && name !== ownerName) {
-      li.append(" ", roomButton("交給他當房主", () => transferHost(name)), " ", roomButton("請離開", () => kickPlayer(name), "danger"));
-    }
-    return li;
+    const tags = [name && name === ownerName && "房主", s.seat === mine && "你", s.seat === turn && "輪到",
+      leaving.has(s.seat) && "這手結束後下桌"];
+    return seatItem(`${s.seat} 號位`, name ?? s.role, tags, buttons, { turn: s.seat === turn });
   }));
-  const total = Number(state.settings.players) || 0;
-  const lines = [`牌桌 ${seated.length}／${total} 人`];
+  if (!seated.length) $("room-seats").append(seatItem("牌桌", "還沒有人上桌", [], [], { empty: true }));
+  $("room-seat-count").textContent = `${seated.length}／${total} 人`;
+  // 牌桌下方：排隊的人與 AI，以及自己上桌／排隊、房主補 AI、結束牌局
+  const box = $("room-table");
+  box.replaceChildren();
   const queue = table.queue || [];
-  const spectators = $("room-spectators");
-  spectators.replaceChildren(lines.join(""));
-  const myToken = state.myToken;
   if (started && queue.length) {
-    spectators.append("。排隊：");
+    const line = document.createElement("p");
+    line.className = "table-queue";
+    line.append(`排隊（${queue.length}）：`);
     queue.forEach((entry, i) => {
-      const span = document.createElement("span");
-      span.className = "spectator";
-      span.append(i ? "、" : "", entry.token !== undefined ? entry.name ?? "玩家" : aiLabel(entry));
-      if (entry.token === undefined && host) span.append(" ", roomButton("取消", () => tableAction("unqueue", { seat: i + 1 })));
-      spectators.append(span);
+      const human = entry.token !== undefined;
+      const name = human ? entry.name ?? "玩家" : aiLabel(entry);
+      if (human && !members.has(name)) members.set(name, "排隊上桌");
+      line.append(i ? "、" : "", name);
+      if (!human && host) line.append(" ", roomButton("取消", () => tableAction("unqueue", { seat: i + 1 })));
     });
+    box.append(line);
   }
-  // 觀戰席：觀戰的人，加上上過桌、現在沒坐在桌上、還在房間裡的人
-  const away = new Set(table.away || []);
-  const watchers = [...state.spectators, ...Object.entries(state.players)
-    .filter(([token, name]) => name && !away.has(Number(token)) && !people.has(name)).map(([, name]) => name)];
-  const unique = [...new Set(watchers)];
-  spectators.append(unique.length ? `。觀戰席（${unique.length}）：` : "。觀戰席沒有人");
-  unique.forEach((name, i) => {
-    const span = document.createElement("span");
-    span.className = "spectator";
-    span.append(i ? "、" : "", name, name === ownerName ? "（房主）" : "");
-    if (lobby && host && name !== ownerName) {
-      span.append(" ", roomButton("交給他當房主", () => transferHost(name)), " ", roomButton("請離開", () => kickPlayer(name), "danger"));
-    }
-    spectators.append(span);
-  });
-  // 自己沒上桌：開始前直接上桌，開始後排隊；房主補 AI；開始後房主可以結束牌局
-  const actions = document.createElement("p");
+  const actions = document.createElement("div");
   actions.className = "table-actions";
   const full = seated.length >= total;
   if (mine === null && (lobby || started)) {
@@ -693,7 +722,7 @@ function renderTablePlayers() {
       b.disabled ||= full;
       actions.append(b);
     } else {
-      const inQueue = myToken !== null && queue.some((e) => e.token === myToken);
+      const inQueue = state.myToken !== null && queue.some((e) => e.token === state.myToken);
       actions.append(inQueue ? roomButton("離開隊列", () => tableAction("unqueue"))
         : roomButton("＋ 排隊上桌", () => tableAction("sit"), "primary"));
     }
@@ -702,13 +731,23 @@ function renderTablePlayers() {
     for (const [kind, text] of [["agent", "補 Agent AI"], ["bot", "補機器人"]]) {
       const b = roomButton(lobby ? text : `${text}（排隊）`, () => tableAction("add_ai", { kind }));
       b.disabled ||= lobby && full;
-      actions.append(" ", b);
+      actions.append(b);
     }
-    if (started) {
-      actions.append(" ", roomButton("結束牌局", endTable, "danger"));
-    }
+    if (started) actions.append(roomButton("結束牌局", endTable, "danger"));
   }
-  spectators.append(actions);
+  if (actions.childElementCount) box.append(actions);
+  box.hidden = !box.childElementCount;
+  // 觀戰席：觀戰的人，加上上過桌、現在沒坐在桌上、還在房間裡的人
+  const away = new Set(table.away || []);
+  const watchers = [...state.spectators, ...Object.entries(state.players)
+    .filter(([token, name]) => name && !away.has(Number(token))).map(([, name]) => name)];
+  for (const name of watchers) if (!members.has(name)) members.set(name, "觀戰席");
+  $("room-member-list").replaceChildren(...[...members].map(([name, where]) => memberItem(name, where,
+    [name === ownerName && "房主", name === ME && "你"],
+    lobby && host && name !== ownerName
+      ? [roomButton("交給他當房主", () => transferHost(name)), roomButton("請離開", () => kickPlayer(name), "danger")]
+      : [])));
+  $("room-member-count").textContent = `${members.size} 人`;
 }
 
 async function endTable() {
@@ -716,64 +755,53 @@ async function endTable() {
   await roomAction("end_table", {}, "沒有結束牌局");
 }
 
-function renderRoomPlayers() {
-  const box = $("room-players");
-  box.hidden = !(state.pvp && state.gameId !== null);
-  if (box.hidden) return;
-  if (isTable()) {
-    renderTablePlayers();
-    $("close-room").hidden = !(state.owner && state.startsAt === null && !state.over);
-    $("close-room").disabled = state.busy || state.starting;
-    return;
-  }
+// 一般的真人對戰（每個座位一個人）：座位、空位、輪到誰；房間成員是坐著的人和觀戰的人
+function renderSeatPlayers() {
   const turn = !state.over && roomStarted() && !waitingForPlayers() ? currentFrame()?.to_move : null;
   // 房間大廳（按開始之前，2026-11-15）：自己坐下或起身觀戰；房主還能幫人換座位、轉讓房主、請人離開
   const lobby = inLobby();
   const host = lobby && state.owner && !state.watching;
   const mySeat = state.watching ? null : state.human;
-  $("room-seats").replaceChildren(...Object.entries(state.players).map(([key, name]) => {
-    const seat = Number(key);
-    const li = document.createElement("li");
-    li.classList.toggle("empty", name === null);
-    li.classList.toggle("turn", seat === turn);
-    const tags = [seat === state.hostSeat && "房主", seat === mySeat && "你", seat === turn && "輪到"].filter(Boolean);
-    const label = document.createElement("span");
-    label.className = "seat-name";
-    label.textContent = seatName(seat);
-    li.append(label, ` ${name ?? "等待加入…"}`);
-    if (tags.length) {
-      const tag = document.createElement("span");
-      tag.className = "seat-tags";
-      tag.textContent = tags.join("・");
-      li.append(" ", tag);
-    }
-    if (lobby) {
-      // 撲克的房主固定 1 號位，不能自己換到別的座位
-      if (name === null && !(host && CONFIG.pickHumanSeats)) li.append(" ", roomButton("坐這裡", () => moveTo("", seat)));
-      if (seat === mySeat && !state.owner) li.append(" ", roomButton("改成觀戰", () => moveTo("", 0)));
-      if (host && name !== null && seat !== mySeat) {
-        li.append(" ", seatPicker(name, seat), " ", roomButton("交給他當房主", () => transferHost(name)),
-          " ", roomButton("請離開", () => kickPlayer(name), "danger"));
-      }
-    }
-    return li;
+  const seats = Object.entries(state.players).map(([key, name]) => [Number(key), name]);
+  $("room-seats").replaceChildren(...seats.map(([seat, name]) => {
+    const buttons = [];
+    // 撲克的房主固定 1 號位，不能自己換到別的座位
+    if (lobby && name === null && !(host && CONFIG.pickHumanSeats)) buttons.push(roomButton("坐這裡", () => moveTo("", seat)));
+    if (lobby && seat === mySeat && !state.owner) buttons.push(roomButton("改成觀戰", () => moveTo("", 0)));
+    const tags = [seat === state.hostSeat && "房主", seat === mySeat && "你", seat === turn && "輪到"];
+    return seatItem(seatName(seat), name ?? "等待加入…", tags, buttons, { empty: name === null, turn: seat === turn });
   }));
-  // 撲克的其他座位由 AI 坐（開桌時自選哪些座位給朋友）
-  const aiSeats = (Number(state.settings.players) || 0) - Object.keys(state.players).length;
-  const lines = [];
-  if (aiSeats > 0) lines.push(`另外 ${aiSeats} 個座位由 AI 坐`);
-  lines.push(state.spectators.length ? `觀戰（${state.spectators.length}）：` : "目前沒有人觀戰");
-  const spectators = $("room-spectators");
-  spectators.replaceChildren(lines.join("。"));
-  state.spectators.forEach((name, i) => {
-    const span = document.createElement("span");
-    span.className = "spectator";
-    span.append(i ? "、" : "", name);
-    if (host) span.append(" ", seatPicker(name, null), " ", roomButton("請離開", () => kickPlayer(name), "danger"));
-    spectators.append(span);
-  });
-  $("close-room").hidden = !(state.owner && !state.watching && state.startsAt === null && !state.over);
+  const taken = seats.filter(([, name]) => name !== null);
+  $("room-seat-count").textContent = `${taken.length}／${seats.length} 人`;
+  // 舊版撲克（固定座位）的其他座位由 AI 坐
+  const aiSeats = (Number(state.settings.players) || 0) - seats.length;
+  $("room-table").textContent = aiSeats > 0 ? `另外 ${aiSeats} 個座位由 AI 坐。` : "";
+  $("room-table").hidden = aiSeats <= 0;
+  const rows = taken.map(([seat, name]) => memberItem(name, seatName(seat),
+    [seat === state.hostSeat && "房主", seat === mySeat && "你"],
+    host && seat !== mySeat
+      ? [seatPicker(name, seat), roomButton("交給他當房主", () => transferHost(name)),
+        roomButton("請離開", () => kickPlayer(name), "danger")]
+      : []));
+  for (const name of state.spectators) {
+    rows.push(memberItem(name, "觀戰", [name === ME && "你"],
+      host ? [seatPicker(name, null), roomButton("請離開", () => kickPlayer(name), "danger")] : []));
+  }
+  $("room-member-list").replaceChildren(...rows);
+  $("room-member-count").textContent = `${rows.length} 人`;
+}
+
+function renderRoomPlayers() {
+  const show = state.pvp && state.gameId !== null;
+  $("room-players").hidden = !show;
+  $("room-members").hidden = !show;
+  if (!show) return;
+  if (isTable()) renderTablePlayers();
+  else renderSeatPlayers();
+  // 撲克開放牌桌的房主可以不上桌，在觀戰席也能關閉房間
+  $("close-room").hidden = !(state.owner && (!state.watching || isTable()) && state.startsAt === null && !state.over);
   $("close-room").disabled = state.busy || state.starting;
+  $("room-footer").hidden = $("close-room").hidden && $("leave-room").hidden;
 }
 
 // 被房主請出房間（即時連線收到 left，2026-11-15）：不能再下、不能再聊天；可以再用房間密碼回來
