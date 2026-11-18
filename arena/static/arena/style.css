@@ -792,6 +792,16 @@ details ul { margin: 4px 0 0; padding-left: 18px; }
 .room-bar { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px 12px; }
 .room-bar .hint { color: var(--muted); font-size: 0.9rem; align-self: center; }
 .join-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+/* 房間鎖（2026-11-18）：房間成員下面，公開或上鎖；房主的密碼欄與按鈕 */
+.room-lock { padding-top: 8px; border-top: 1px solid var(--border); }
+.room-lock p { margin: 0 0 6px; font-size: 0.875rem; }
+.room-lock-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.room-lock-form input { font: inherit; flex: 1 1 10em; min-width: 0; padding: 5px 10px; border-radius: 8px;
+  border: 1px solid var(--border-strong); background: var(--raised); color: var(--text); }
+/* 房間列表（2026-11-18）：上鎖的房間在按鈕前多一格密碼 */
+.room-join { flex-wrap: wrap; gap: 8px; align-items: center; }
+.room-join input { font: inherit; width: 9em; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border-strong);
+  background: var(--raised); color: var(--text); }
 /* 房主按開始、倒數、房間聊天室（2026-11-13） */
 .room-start { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin: 0 0 12px; padding: 12px 14px;
   border: 1px solid var(--accent); border-radius: var(--radius); background: var(--accent-soft); }

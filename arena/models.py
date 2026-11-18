@@ -22,7 +22,10 @@ class Game(models.Model):
     # 真人對戰（2026-11-05，docs/交接.md 4.10）：pvp 時真人的座位在 GamePlayer，對手用房間密碼加入
     MODES = {"ai": "和 AI 對戰", "pvp": "真人對戰"}
     mode = models.CharField(max_length=4, default="ai")
-    room_code = models.CharField(max_length=8, blank=True, db_index=True)
+    room_code = models.CharField(max_length=8, blank=True, db_index=True)  # 房間編號（畫面上 2026-11-18 起叫編號）
+    # 房間鎖（使用者要求，2026-11-18）：空的＝公開；有值時不在房間裡的人要輸入這個密碼才能加入或觀戰。
+    # 房主要把它傳給朋友，所以存原文；只給房主看（game_detail），不放進 summary，也不經過 AI 助理的參數
+    room_password = models.CharField(max_length=12, blank=True, default="")
     settings = models.JSONField(default=dict)  # 各遊戲的設定，例如圍棋的棋盤大小
     actions = models.JSONField(default=list)  # 各遊戲記法的字串，例如五子棋 "H8"
     secret = models.JSONField(default=dict, blank=True)  # 只在伺服器的資料（撲克的洗牌種子），絕不送到網頁
@@ -64,9 +67,9 @@ class Game(models.Model):
         return self.mode == "pvp"
 
     def human_seats(self):
-        """真人坐的座位；其他座位由 AI 行動。"""
+        """真人坐的座位；其他座位由 AI 行動（真人對戰裡房主請 AI 坐的座位也是，2026-11-18）。"""
         if self.pvp:
-            return {p.seat for p in self.players.all()}
+            return {p.seat for p in self.players.all() if not p.ai}
         return {self.human_seat}
 
     def seat_of(self, user):
@@ -86,7 +89,7 @@ class Game(models.Model):
     @property
     def waiting(self):
         """真人對戰還有空的真人座位：等對手用房間密碼加入，還不能開始下。"""
-        return self.pvp and any(p.user_id is None for p in self.players.all())
+        return self.pvp and any(p.user_id is None and not p.ai for p in self.players.all())
 
     @property
     def started(self):
@@ -135,6 +138,7 @@ class Game(models.Model):
                 "action_count": len(self.actions), "created_at": self.created_at.isoformat()}
         if self.pvp:
             data["players"] = {p.seat: p.user.username if p.user else None for p in self.players.all()}
+            data["ai_seats"] = [p.seat for p in self.players.all() if p.ai]  # 房主請 AI 坐的座位（2026-11-18）
             # 房主的帳號名稱：房主可能在觀戰（2026-11-18），網頁不能再用 human_seat 認房主
             data["owner"] = self.owner.username if self.owner else None
             # 房間的玩家列表也列出觀戰的人（2026-11-13 使用者要求「房間內要有玩家列表」），依進來的先後
@@ -146,6 +150,7 @@ class Game(models.Model):
             data["current_round"] = self.current_round() if self.finished else None
             data["starts_in"] = self.starts_in()
             data["closed"] = self.ended and self.started_at is None  # 房主在開始前關閉了房間（2026-11-13）
+            data["locked"] = bool(self.room_password)  # 房間上鎖了（密碼本身只給房主，見 operations.game_detail）
             if self.settings.get("table"):  # 撲克開放牌桌：隊列、這手結束要下桌的座位、已經離開房間的成員
                 data["table"] = {"owner": self.owner.username if self.owner else None,
                                  "queue": self.table.get("queue", []), "leaving": self.table.get("leaving", []),
@@ -162,6 +167,8 @@ class GamePlayer(models.Model):
     user = models.ForeignKey(USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="seats")
     joined_at = models.DateTimeField(null=True, blank=True)
     left = models.BooleanField(default=False)  # 開放牌桌：打過牌後離開了房間（紀錄留著給他復盤）
+    # 房主請 AI 坐這個座位（使用者要求，2026-11-18「5個遊戲都可以讓ai進來」）：不算真人座位，輪到時由 AI 行動；user 一定是空的
+    ai = models.BooleanField(default=False)
 
     class Meta:
         ordering = ["seat"]

@@ -2223,7 +2223,7 @@ class SpectatorTests(TestCase):
         self.assertRedirects(self.watch(), f"/gomoku/?watch={self.game.id}", fetch_redirect_response=False)
         detail = self.clients["carol"].get(f"/api/gomoku/games/{self.game.id}/").json()
         self.assertIsNone(detail["my_seat"])
-        self.assertContains(self.watch(code="ZZZZZZ"), "找不到這個房間密碼")
+        self.assertContains(self.watch(code="ZZZZZZ"), "找不到這個房間編號")
 
     def test_a_full_room_can_still_be_watched_and_players_keep_their_seat(self):
         self.assertRedirects(self.clients["carol"].post("/join/", {"code": self.game.room_code}),
@@ -2426,7 +2426,7 @@ class RoomStartTests(RefusalAssertions, TestCase):
         game, _ = operations.start_game(GOMOKU, 1, {}, self.alice, "pvp")
         home = self.clients["alice"].get("/").content.decode()
         self.assertIn(f"/gomoku/?resume={game.id}", home)
-        self.assertIn(f"等朋友加入（房間密碼 {game.room_code}）", home)
+        self.assertIn(f"等朋友加入（房間編號 {game.room_code}）", home)
         self.assertIn("回到房間", home)
         operations.join_game(game.room_code, self.bob)
         home = self.clients["bob"].get("/").content.decode()
@@ -2864,6 +2864,59 @@ class RoomLobbyTests(RefusalAssertions, TestCase):
         game.refresh_from_db()
         self.assertTrue(operations.closed_room(game))
 
+    def test_the_host_can_seat_an_ai_in_an_empty_seat(self):
+        # 2026-11-18 使用者：「5個遊戲都可以讓ai進來」；做法由使用者決定：房主在空位請 AI 坐（撲克開放牌桌照舊「補 AI」）。
+        # AI 坐的座位不算真人座位：不必等人、加入的人坐不進去，輪到時由 AI 下；房間的下一盤、改設定後照樣由 AI 坐
+        game = self.room(watcher="")
+        url = f"/api/gomoku/games/{game.id}"
+        self.post("bob", f"{url}/seat/", {"seat": 0})  # bob 起身觀戰，白棋空出來
+        self.assertRefused(self.post("bob", f"{url}/seat_ai/", {"seat": 2, "on": True}), "只有房主")
+        self.assertRefused(self.post("alice", f"{url}/seat_ai/", {"seat": 1, "on": True}), "已經有人")
+        self.assertEqual(self.post("alice", f"{url}/seat_ai/", {"seat": 2, "on": True}).status_code, 200)
+        game.refresh_from_db()
+        self.assertEqual((game.summary()["ai_seats"], game.waiting, game.human_seats()), ([2], False, {1}))
+        # 加入的人坐不進 AI 的座位（改成觀戰），也不能換進去
+        self.assertEqual(operations.join_game(game.room_code, self.users["dave"]), (game, None))
+        self.assertRefused(self.post("dave", f"{url}/seat/", {"seat": 2}), "由 AI 坐")
+        # 至少留一個座位給真人
+        self.post("alice", f"{url}/seat/", {"seat": 0})
+        self.assertRefused(self.post("alice", f"{url}/seat_ai/", {"seat": 1, "on": True}), "至少要留一個座位給真人")
+        self.post("alice", f"{url}/seat/", {"seat": 1})
+        # 改設定後照樣由 AI 坐
+        self.post("alice", f"{url}/room/", {"seat": 1, "settings": {}})
+        self.assertEqual(game.summary()["ai_seats"], [2])
+        # 開始後 AI 接著真人下（模型連不上時由電腦下，照樣是 AI 的座位）
+        start_now(game)
+        r = self.post("alice", f"{url}/move/", {"action": "H8"})
+        self.assertEqual([m["seat"] for m in r.json()["ai_moves"]], [2])
+        game.refresh_from_db()
+        self.assertEqual(len(game.actions), 2)
+        self.assertRefused(self.post("alice", f"{url}/seat_ai/", {"seat": 2, "on": False}), "已經開始")
+        # 打完回到房間：下一盤照樣由 AI 坐，房主可以請它離座
+        nxt = Game.objects.get(pk=self.post("alice", f"{url}/move/", {"action": "resign"}).json()["next_round"])
+        self.assertEqual(nxt.summary()["ai_seats"], [2])
+        self.assertEqual(self.post("alice", f"/api/gomoku/games/{nxt.id}/seat_ai/", {"seat": 2, "on": False}).status_code, 200)
+        self.assertEqual((nxt.summary()["ai_seats"], nxt.waiting), ([], True))
+
+    def test_the_host_can_ban_the_poker_equity_table_in_a_room(self):
+        # 2026-11-18 使用者：「德州撲克多一個設定 禁用概率列表 讓玩家不能看」；使用者決定只在真人房間由房主設定，
+        # 和 AI 對局時不受影響（自己練習時看勝率表不影響別人）
+        from holdem.module import MODULE as HOLDEM
+        banned = HOLDEM.clean_settings({"equity_table": "hide"})
+        room, _ = operations.start_game(HOLDEM, 1, banned, self.users["alice"], "pvp")
+        self.assertEqual(room.settings["equity_table"], "hide")
+        solo, _ = operations.start_game(HOLDEM, 1, banned, self.users["alice"])
+        self.assertNotIn("equity_table", solo.settings)
+        with self.assertRaises(ValueError):
+            HOLDEM.clean_settings({"equity_table": "maybe"})
+        # 房主在房間裡改回來
+        r = self.post("alice", f"/api/holdem/games/{room.id}/room/", {"seat": 1, "settings": {"players": 6}})
+        self.assertEqual(r.status_code, 200)
+        room.refresh_from_db()
+        self.assertNotIn("equity_table", room.settings)
+        # 設定欄只在選真人對戰時出現（網頁依 data-pvp-only 切換）
+        self.assertContains(self.clients["alice"].get("/holdem/"), 'data-pvp-only hidden>勝率表')
+
     def test_leaving_the_room(self):
         game = self.room()
         url = f"/api/gomoku/games/{game.id}"
@@ -2899,3 +2952,105 @@ class RoomLobbyTests(RefusalAssertions, TestCase):
         operations.kick_player(game, self.users["alice"], "bob")
         consumer.game_changed(None)
         self.assertEqual(sent[-2:], [{"type": "left"}, "closed"])
+
+
+class RoomListAndLockTests(TestCase):
+    """房間列表與房間鎖（使用者要求，2026-11-18：「新增房間列表 房間預設公開 房主可自行設定房間是否上鎖 密碼可以自己設定或是隨機」）。
+    房間預設公開：有人在線上的房間都列在房間列表，誰都能加入或觀戰。房主上鎖後照樣列出、標鎖頭（使用者決定），
+    但不在房間裡的人加入、觀戰都要密碼（使用者決定觀戰也要），否則上鎖擋不住陌生人進來看。
+    密碼只給房主看（要傳給朋友），也不寫進給模型的任務說明。"""
+
+    def setUp(self):
+        self.users = {name: User.objects.create_user(name, password="x") for name in ("alice", "bob", "carol")}
+        self.clients = {}
+        for name, user in self.users.items():
+            self.clients[name] = Client()
+            self.clients[name].force_login(user)
+        self.prompts = []
+
+        def no_model(messages, *args, **kwargs):
+            self.prompts.append(json.dumps(messages, ensure_ascii=False))
+            raise OSError("測試不連模型")
+        patcher = patch.object(orchestrator, "_chat", side_effect=no_model)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.game, _ = operations.start_game(GOMOKU, 1, {}, self.users["alice"], "pvp")
+        self.url = f"/api/gomoku/games/{self.game.id}"
+
+    def post(self, who, url, body=None):
+        return self.clients[who].post(url, json.dumps(body or {}), content_type="application/json")
+
+    def enter(self, who, action="join", password=None):
+        data = {"code": self.game.room_code, "action": action}
+        if password is not None:
+            data["password"] = password
+        return self.clients[who].post("/join/", data)
+
+    def test_rooms_are_public_by_default_and_listed_while_someone_is_there(self):
+        # 房間裡沒有人在線上（沒人在網站上活動）：沒人管的舊房間不列出
+        self.assertNotContains(self.clients["bob"].get("/join/"), self.game.room_code)
+        self.clients["alice"].get("/")  # 房主在線上
+        page = self.clients["bob"].get("/join/")
+        self.assertContains(page, self.game.room_code)
+        self.assertContains(page, "公開")
+        self.assertContains(page, "座位 1／2 人")
+        # 公開的房間不用密碼
+        self.assertRedirects(self.enter("bob"), f"/gomoku/?resume={self.game.id}", fetch_redirect_response=False)
+        self.assertContains(self.clients["bob"].get("/join/"), "你在這個房間")
+        # 打完一盤回到房間：列表上是同一個房間（現在這一盤），不會一盤列一次
+        start_now(self.game)
+        nxt = self.post("alice", f"{self.url}/move/", {"action": "resign"}).json()["next_round"]
+        page = self.clients["carol"].get("/join/").content.decode()
+        self.assertEqual(page.count(f"房間編號 {self.game.room_code}"), 1)
+        self.assertEqual(Game.objects.get(pk=nxt).room_code, self.game.room_code)
+        # 房主關閉的房間不列出
+        operations.close_room(Game.objects.get(pk=nxt), self.users["alice"])
+        self.assertNotContains(self.clients["carol"].get("/join/"), self.game.room_code)
+
+    def test_a_locked_room_needs_its_password_to_join_or_watch(self):
+        operations.join_game(self.game.room_code, self.users["bob"])  # 上鎖前就在房間裡
+        r = self.post("alice", f"{self.url}/lock/", {"lock": True, "password": "tea42"})
+        self.assertEqual((r.status_code, r.json()["room_password"]), (200, "tea42"))
+        # 密碼只給房主；別人只知道上鎖了
+        self.assertEqual(self.clients["alice"].get(f"{self.url}/").json()["room_password"], "tea42")
+        bob = self.clients["bob"].get(f"{self.url}/").json()
+        self.assertNotIn("room_password", bob)
+        self.assertTrue(bob["game"]["locked"])
+        self.assertNotIn("tea42", json.dumps(self.game.summary(), ensure_ascii=False))
+        # 不在房間裡的人：加入、觀戰都要密碼，錯的也不行
+        self.assertContains(self.enter("carol"), "請輸入房間密碼")
+        self.assertContains(self.enter("carol", "watch"), "請輸入房間密碼")
+        self.assertContains(self.enter("carol", "watch", "TEA42"), "房間密碼不對")
+        self.assertEqual(self.clients["carol"].get(f"{self.url}/").status_code, 404)
+        self.assertRedirects(self.enter("carol", "watch", "tea42"), f"/gomoku/?watch={self.game.id}",
+                             fetch_redirect_response=False)
+        # 已經在房間裡的人不必再輸入（重新整理、從列表回到房間）
+        self.assertEqual(operations.join_game(self.game.room_code, self.users["bob"]), (self.game, 2))
+        self.assertEqual(operations.watch_game(self.game.room_code, self.users["carol"]), (self.game, None))
+        # 房間列表照樣列出，標鎖頭
+        self.clients["alice"].get("/")
+        page = self.clients["carol"].get("/join/").content.decode()
+        self.assertIn(self.game.room_code, page)
+        self.assertIn("🔒 上鎖", page)
+        # 下一盤（回到房間）沿用房間鎖；解鎖後誰都能進來
+        start_now(self.game)
+        nxt = Game.objects.get(pk=self.post("alice", f"{self.url}/move/", {"action": "resign"}).json()["next_round"])
+        self.assertEqual(nxt.room_password, "tea42")
+        self.assertEqual(self.post("alice", f"/api/gomoku/games/{nxt.id}/lock/", {"lock": False}).status_code, 200)
+        nxt.refresh_from_db()
+        self.assertEqual(nxt.room_password, "")
+        # 密碼從沒寫進給模型的任務說明（上鎖、加入、觀戰都經過 AI 助理）
+        self.assertTrue(self.prompts)
+        self.assertFalse([p for p in self.prompts if "tea42" in p.lower()])
+
+    def test_the_password_is_random_when_left_blank_and_only_the_owner_sets_it(self):
+        r = self.post("alice", f"{self.url}/lock/", {"lock": True})
+        password = r.json()["room_password"]
+        self.assertEqual(len(password), 6)
+        self.assertNotEqual(password, self.game.room_code)
+        operations.join_game(self.game.room_code, self.users["bob"], password)
+        self.assertEqual(self.post("bob", f"{self.url}/lock/", {"lock": False}).status_code, 400)
+        self.assertEqual(self.post("alice", f"{self.url}/lock/", {"lock": True, "password": "x" * 13}).status_code, 400)
+        self.assertEqual(self.post("alice", f"{self.url}/lock/", {"lock": True, "password": "a b"}).status_code, 400)
+        self.game.refresh_from_db()
+        self.assertEqual(self.game.room_password, password)

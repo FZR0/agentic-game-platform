@@ -130,6 +130,10 @@ class HoldemModule(GameModule):
          "options": [["agent_bots", "1 位 Agent＋風格機器人"], ["all_agent", "全部 Agent（較慢）"]], "default": "agent_bots"},
         {"name": "stack", "label": "起始籌碼（盲注 10/20）",
          "options": [[1000, "1000（50 個大盲）"], [2000, "2000（100 個大盲）"], [4000, "4000（200 個大盲）"]], "default": 2000},
+        # 真人房間由房主決定能不能看「勝率表」（使用者要求，2026-11-18「德州撲克多一個設定 禁用概率列表 讓玩家不能看」；
+        # 使用者決定只在真人房間，和 AI 對局時不受影響）。pvp_only：只在對手選真人時出現，和 AI 對局時 operations 拿掉
+        {"name": "equity_table", "label": "勝率表", "pvp_only": True,
+         "options": [["show", "大家都能看"], ["hide", "禁用：玩家不能看"]], "default": "show"},
     ]
     tools = [
         {"type": "function", "function": {
@@ -192,6 +196,10 @@ class HoldemModule(GameModule):
         if stack not in (1000, 2000, 4000):
             raise ValueError("起始籌碼必須是 1000、2000 或 4000")
         cleaned = {"players": players, "ai_mode": ai_mode, "stack": stack, "sb": SB, "bb": BB}
+        if data.get("equity_table", "show") not in ("show", "hide"):
+            raise ValueError("勝率表只能是「大家都能看」或「禁用」")
+        if data.get("equity_table") == "hide":  # 預設能看，所以只記禁用
+            cleaned["equity_table"] = "hide"
         # 真人對戰（2026-11-05）：開桌的人自選哪些座位是真人，其他座位照 ai_mode 由 AI 坐；開桌的人固定 1 號位
         humans = sorted({int(s) for s in data.get("humans") or [HUMAN]})
         if HUMAN not in humans or not all(1 <= s <= players for s in humans):

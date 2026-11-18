@@ -127,8 +127,9 @@ def join(request, code=""):
         code = request.POST.get("code", "")
         watch = request.POST.get("action") == "watch"  # 「觀戰」按鈕（2026-11-08）；其他都是「加入」
         try:
-            data, handled = orchestrator.handle("watch" if watch else "join",
-                                                _with_user(request, {"params": {"code": code.strip().upper()}}))
+            # 房間鎖的密碼（2026-11-18）放在 params 外面：params 會寫進給模型的任務說明
+            data, handled = orchestrator.handle("watch" if watch else "join", _with_user(request, {
+                "params": {"code": code.strip().upper()}, "room_password": request.POST.get("password", "")}))
         except ValueError as exc:
             error = str(exc)
         else:
@@ -208,6 +209,24 @@ def api_room_settings(request, game_key, game_id):
                                                            "game_type": target.key}})
     if response.status_code == 200:
         realtime.notify(game)  # 觀戰中的人跟著換成新的棋盤
+    return response
+
+
+@require_POST
+def api_room_lock(request, game_key, game_id):
+    """房主幫房間上鎖或解鎖（2026-11-18）：{"lock": true/false, "password": "..."}，上鎖時密碼空白就隨機產生。
+    成功後通知房間裡的人（房間列表與房間頁的鎖頭）。"""
+    module = _module(game_key)
+    game = _game(request, module, game_id, watch=True)  # 房主可能在觀戰
+    try:
+        data = _read_json(request)
+        password = str(data.get("password") or "")
+    except (ValueError, TypeError) as exc:
+        return _error(exc)
+    response = _json(request, "room_lock", {"module": module, "game": game, "room_password": password,
+                                            "params": {"game_id": game.id, "lock": "lock" if data.get("lock") else "unlock"}})
+    if response.status_code == 200:
+        realtime.notify(game)
     return response
 
 
@@ -321,6 +340,22 @@ def api_table_end(request, game_key, game_id):
 @require_POST
 def api_room_seat(request, game_key, game_id):
     return _room_action(request, game_key, game_id, "room_seat", seat=True)
+
+
+@require_POST
+def api_room_ai(request, game_key, game_id):
+    """房主請 AI 坐空的座位或離座（2026-11-18）：{"seat": N, "on": true/false}。成功後通知房間裡的人。"""
+    module = _module(game_key)
+    game = _game(request, module, game_id, watch=True)  # 房主可能在觀戰
+    try:
+        data = _read_json(request)
+        params = {"game_id": game.id, "seat": int(data["seat"]), "ai": "add" if data.get("on") else "remove"}
+    except (ValueError, KeyError, TypeError) as exc:
+        return _error(exc)
+    response = _json(request, "room_ai", {"module": module, "game": game, "params": params})
+    if response.status_code == 200:
+        realtime.notify(game)
+    return response
 
 
 @require_POST

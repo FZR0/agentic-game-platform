@@ -69,7 +69,7 @@
             </select>
           </label>
           {% for field in module.settings_fields %}
-          <label>{{ field.label }}
+          <label{% if field.pvp_only %} data-pvp-only hidden{% endif %}>{{ field.label }}
             <select class="game-setting" data-name="{{ field.name }}">
               {% for value, text in field.options %}<option value="{{ value }}"{% if value == field.default %} selected{% endif %}>{{ text }}</option>{% endfor %}
             </select>
@@ -150,7 +150,7 @@
       <p id="game-status" class="game-status"></p>
       {# 真人對戰等對手加入時：房間密碼與邀請連結 #}
       <div id="invite" class="invite" hidden>
-        <p>把房間密碼 <strong id="room-code" class="room-code"></strong> 或下面的連結傳給朋友，朋友登入後就能加入。</p>
+        <p>把房間編號 <strong id="room-code" class="room-code"></strong> 或下面的連結傳給朋友，朋友登入後就能加入；房間上鎖時也要給房間密碼。</p>
         <div class="invite-link"><input id="invite-link" type="text" readonly aria-label="邀請連結"><button id="copy-invite" type="button">複製連結</button></div>
       </div>
       {% comment %}
@@ -166,6 +166,16 @@
       <section id="room-members" class="room-card" aria-labelledby="room-members-title" hidden>
         <h3 id="room-members-title" class="room-card-title">房間成員 <span id="room-member-count" class="muted"></span></h3>
         <ul id="room-member-list" class="room-members"></ul>
+        {% comment %}房間鎖（2026-11-18）：大家都看得到公開或上鎖；房主可以上鎖（密碼自訂，空白就隨機）、改密碼、解鎖。app.js::renderRoomLock{% endcomment %}
+        <div id="room-lock" class="room-lock" hidden>
+          <p id="room-lock-state" class="muted"></p>
+          <form id="room-lock-form" class="room-lock-form" hidden>
+            <input id="room-lock-password" type="text" maxlength="12" autocomplete="off" spellcheck="false"
+              placeholder="自訂密碼（空白就隨機）" aria-label="房間密碼">
+            <button id="room-lock-apply" type="submit" class="room-action">上鎖</button>
+            <button id="room-unlock" type="button" class="room-action" hidden>解鎖</button>
+          </form>
+        </div>
         <div id="room-footer" class="room-footer">
           {# 房主在按開始前可以關閉房間（2026-11-13） #}
           <button id="close-room" type="button" class="end-button" hidden>關閉房間</button>

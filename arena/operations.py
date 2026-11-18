@@ -14,13 +14,13 @@ from pathlib import Path
 from django.contrib.staticfiles import finders
 from django.core.paginator import Paginator
 from django.db import transaction
-from django.db.models import Count, Q
+from django.db.models import Count, Max, Q
 from django.urls import reverse
 from django.utils import timezone
 
 from . import agent, games, narrator
 from .base import ESTIMATE, RULE
-from .models import AiNote, ChatMessage, Game, GamePlayer, GameSpectator, ModelRun
+from .models import AiNote, ChatMessage, Game, GamePlayer, GameSpectator, ModelRun, Presence
 
 MOVE_REF_RE = re.compile(r"第\s*(\d{1,3})\s*[手步](?!牌)")  # 撲克的「第 3 手牌」不是第 3 步
 
@@ -162,7 +162,7 @@ def _room_status(game):
     if not game.pvp or game.finished or game.started:
         return ""
     if game.waiting:
-        return f"等朋友加入（房間密碼 {game.room_code}）"
+        return f"等朋友加入（房間編號 {game.room_code}）"
     return "等房主按「開始」" if game.started_at is None else "倒數中"
 
 
@@ -223,8 +223,41 @@ def guide_context():
     return _site_context("guide")
 
 
-def join_context():
-    return _site_context("join")
+def join_context(user):
+    """房間列表頁（2026-11-18 使用者要求「新增房間列表 房間預設公開」，原本的「加入真人對戰」頁）。"""
+    return {**_site_context("join"), "rooms": room_list(user)}
+
+
+def room_list(user):
+    """房間列表：每個房間（房間編號）現在的那一盤，還沒結束、而且房間裡有人在線上（Presence.ONLINE 內有活動）的才列出，
+    沒人管的舊房間不會一直留在列表上。上鎖的房間照樣列出、標鎖頭（使用者決定），加入或觀戰時要輸入密碼。
+    自己在裡面的房間排前面，其他依最近有動靜的先後。"""
+    latest = (Game.objects.filter(mode="pvp").exclude(room_code="").order_by().values("room_code")
+              .annotate(last=Max("id")).values("last"))
+    rooms = (Game.objects.filter(pk__in=latest, game_type__in=list(games.GAMES), ended=False, winner__isnull=True,
+                                 draw=False).select_related("owner").prefetch_related("players", "spectators")
+             .order_by("-updated_at"))
+    online = set(Presence.objects.filter(last_seen__gte=timezone.now() - Presence.ONLINE, user__isnull=False)
+                 .values_list("user_id", flat=True))
+    rows = []
+    for game in rooms:
+        people = {p.user_id for p in game.players.all() if p.user_id and not p.left}
+        watching = {s.user_id for s in game.spectators.all()}
+        members = people | watching | ({game.owner_id} if game.owner_id else set())
+        if not members & online:
+            continue
+        module = games.get(game.game_type)
+        if open_table(game):
+            seats = f"牌桌 {len(module.replay(settings_of(game), game.actions).occupant)}／{game.settings.get('players')} 人"
+        else:
+            seats = f"座位 {sum(1 for p in game.players.all() if p.user_id or p.ai)}／{len(game.players.all())} 人"
+        mine = user.id in members
+        rows.append({"code": game.room_code, "module": module, "owner": game.owner.username if game.owner else "",
+                     "seats": seats, "watching": len(watching), "locked": bool(game.room_password), "mine": mine,
+                     "status": "對戰中" if game.started_at is not None
+                     else "等人加入" if game.waiting else "等房主按「開始」",
+                     "url": f"{reverse('arena:play', args=[module.key])}?{'resume' if game.seat_of(user) is not None else 'watch'}={game.id}"})
+    return sorted(rows, key=lambda r: not r["mine"])
 
 
 def play_context(module):
@@ -298,6 +331,7 @@ def change_room(module, game, user, seat, settings):
         # 觀戰中的房主（2026-11-18）改完設定照樣觀戰；從撲克開放牌桌換過來時照舊坐 seat（牌桌的房主預設在觀戰席）
         watching = not open_table(game) and game.seat_of(user) is None
         friends = [p.user for p in game.players.exclude(user=user).filter(user__isnull=False).select_related("user")]
+        ai_seats = [p.seat for p in game.players.filter(ai=True)]  # 房主請 AI 坐的座位（2026-11-18）改設定後照樣由 AI 坐
         game.players.all().delete()
         if not watching:
             GameSpectator.objects.filter(game=game, user=user).delete()  # 從撲克的觀戰席換過來的房主
@@ -305,7 +339,10 @@ def change_room(module, game, user, seat, settings):
         game.actions, game.table = [], {}  # 撲克牌桌的入座紀錄不帶到別的遊戲
         game.save()
         _seat_players(game, seats, None if watching else seat, user)
-        free = list(game.players.filter(user__isnull=True).order_by("seat"))
+        game.players.filter(seat__in=ai_seats, user__isnull=True).update(ai=True)
+        if not game.players.filter(ai=False).exists():  # 不能全是 AI：留一個座位給真人
+            game.players.filter(seat=max(ai_seats)).update(ai=False)
+        free = list(game.players.filter(user__isnull=True, ai=False).order_by("seat"))
         for place, friend in zip(free, friends):
             place.user, place.joined_at = friend, timezone.now()
             place.save()
@@ -354,8 +391,9 @@ def _open_next_round(game):
         return _next_table(module, game)
     with transaction.atomic():
         nxt = Game.objects.create(game_type=game.game_type, owner=game.owner, human_seat=game.human_seat, mode="pvp",
-                                  settings=game.settings, secret=module.new_secret(), room_code=game.room_code)
-        GamePlayer.objects.bulk_create([GamePlayer(game=nxt, seat=p.seat, user=p.user, joined_at=p.joined_at)
+                                  settings=game.settings, secret=module.new_secret(), room_code=game.room_code,
+                                  room_password=game.room_password)
+        GamePlayer.objects.bulk_create([GamePlayer(game=nxt, seat=p.seat, user=p.user, joined_at=p.joined_at, ai=p.ai)
                                         for p in GamePlayer.objects.filter(game=game)])
         GameSpectator.objects.bulk_create([GameSpectator(game=nxt, user_id=s.user_id)
                                            for s in GameSpectator.objects.filter(game=game)])
@@ -370,7 +408,7 @@ def _next_table(module, game):
     with transaction.atomic():
         nxt = Game.objects.create(game_type=game.game_type, owner=game.owner, human_seat=game.human_seat, mode="pvp",
                                   settings=game.settings, secret=module.new_secret(), room_code=game.room_code,
-                                  actions=keep)
+                                  room_password=game.room_password, actions=keep)
         tokens = {int(a.split()[2]) for a in keep if a.split()[2].isdigit()}
         GamePlayer.objects.bulk_create([GamePlayer(game=nxt, seat=t, user_id=t - module.member_token_base,
                                                    joined_at=timezone.now()) for t in sorted(tokens)])
@@ -427,6 +465,8 @@ def move_player(module, game, actor, name, seat):
             return game
         if seat is not None and seat not in places:
             raise ValueError("沒有這個真人座位")
+        if seat is not None and places[seat].ai:
+            raise ValueError("這個座位由 AI 坐；要坐的話請房主先請 AI 離座")
         occupant = places[seat].user_id if seat is not None else None
         if occupant and not host:
             raise ValueError("這個座位已經有人了")
@@ -450,6 +490,41 @@ def move_player(module, game, actor, name, seat):
         if moved.get(game.owner_id) is not None:  # 房主改成觀戰時 human_seat 不變
             game.human_seat = moved[game.owner_id]
         game.save()
+    return game
+
+
+def set_ai_seat(module, game, actor, seat, on):
+    """房主請 AI 坐空的座位，或請 AI 離座（使用者要求，2026-11-18「5個遊戲都可以讓ai進來」；
+    使用者決定做法是房主在空位補 AI，撲克開放牌桌照舊用「補 AI」）。只在開始前（_lobby）。
+    AI 用觸發它行動的請求帶的模型設定（開始時是房主的，之後是下了一步的那個人的），和撲克牌桌的 AI 一樣。
+    至少要留一個座位給真人：全是 AI 的話開始那個請求要一路下到終局。回傳對局。"""
+    _lobby(game)
+    if game.owner_id != actor.id:
+        raise ValueError("只有房主能請 AI 入座")
+    if open_table(game):
+        raise ValueError("德州撲克的牌桌請用「補 AI」")
+    if _fixed_host_seat(module):
+        raise ValueError("這個遊戲的房間不能請 AI 入座")
+    with transaction.atomic():
+        game = Game.objects.select_for_update().get(pk=game.pk)
+        _lobby(game)
+        place = game.players.select_for_update().filter(seat=seat).first()
+        if place is None:
+            raise ValueError("沒有這個座位")
+        if on:
+            if place.ai:
+                return game
+            if place.user_id is not None:
+                raise ValueError("這個座位已經有人了；要請 AI 坐的話，先把他換到別的座位或改成觀戰")
+            if not game.players.filter(ai=False).exclude(pk=place.pk).exists():
+                raise ValueError("至少要留一個座位給真人")
+            place.ai = True
+        else:
+            if not place.ai:
+                raise ValueError("這個座位不是 AI")
+            place.ai = False
+        place.save(update_fields=["ai"])
+        game.save(update_fields=["updated_at"])
     return game
 
 
@@ -602,14 +677,15 @@ def _leave_table_room(module, game, user):
     return game
 
 
-def watch_game(code, user):
+def watch_game(code, user, password=""):
     """用房間密碼觀戰（2026-11-08）：記成觀戰者，回傳 (對局, 座位)。本來就坐在這盤的人照樣用自己的座位，
     座位是 None 表示觀戰。等人中、對戰中、已結束都能看。"""
     game = _latest_round(code)  # 房間打過好幾盤時是目前那一盤（2026-11-15）
     if game is None:
-        raise ValueError("找不到這個房間密碼，請確認有沒有打錯")
+        raise ValueError("找不到這個房間編號，請確認有沒有打錯")
     if closed_room(game):
         raise ValueError("房主已經關閉這個房間了")
+    _check_password(game, user, password)
     if open_table(game):
         return _enter_table_room(game, user)
     seat = game.seat_of(user)
@@ -657,6 +733,38 @@ def start_room(game, user):
     return game
 
 
+ROOM_PASSWORD_MAX = 12  # 房間密碼最多幾個字（和 Game.room_password 的 max_length 一樣）
+
+
+def _check_password(game, user, password):
+    """房間鎖（2026-11-18）：上鎖的房間，不在房間裡的人要輸入正確的密碼才能加入或觀戰（使用者決定觀戰也要）。
+    已經在房間裡的人（坐著、觀戰）與房主不必再輸入，重新整理、從清單回到房間都照常。"""
+    if not game.room_password or game.owner_id == user.id or game.in_room(user):
+        return
+    if not password:
+        raise ValueError("這個房間上了鎖，請輸入房間密碼")
+    if not secrets.compare_digest(password.strip(), game.room_password):
+        raise ValueError("房間密碼不對，請向房主確認")
+
+
+def set_room_lock(game, user, lock, password=""):
+    """房主幫房間上鎖或解鎖（2026-11-18 使用者要求「房間預設公開 房主可自行設定房間是否上鎖 密碼可以自己設定或是隨機」）。
+    lock 為真時用 password，沒填就隨機產生（和房間編號同一組不容易看錯的字）；解鎖時清掉密碼。
+    開始後也能改：鎖只管之後誰能進來，不影響已經在房間裡的人。回傳更新後的對局。"""
+    if not game.pvp or game.owner_id != user.id:
+        raise ValueError("只有房主能幫房間上鎖")
+    if game.finished:
+        raise ValueError("這一盤已經結束了，請在房間現在的這一盤設定")
+    password = password.strip() if lock else ""
+    if lock and not password:
+        password = "".join(secrets.choice("ABCDEFGHJKMNPQRSTUVWXYZ23456789") for _ in range(6))
+    if len(password) > ROOM_PASSWORD_MAX or any(c.isspace() for c in password):
+        raise ValueError(f"房間密碼最多 {ROOM_PASSWORD_MAX} 個字，不能有空白")
+    game.room_password = password
+    game.save(update_fields=["room_password", "updated_at"])
+    return game
+
+
 def closed_room(game):
     """房主在開始前關掉的房間（使用者要求，2026-11-13）：記成「結束（不計勝負）」而且從沒開始過。"""
     return game.pvp and game.ended and game.started_at is None
@@ -690,14 +798,15 @@ def wait_for_start(game):
         time.sleep(left + 0.05)
 
 
-def join_game(code, user):
+def join_game(code, user, password=""):
     """用房間密碼加入真人對戰：坐進第一個空的真人座位。回傳 (對局, 座位)。已經在這盤裡就直接回傳原本的座位。
     座位都坐滿時改成觀戰（使用者要求，2026-11-13），座位是 None。"""
     game = _latest_round(code)  # 房間打過好幾盤時是目前那一盤（2026-11-15）
     if game is None:
-        raise ValueError("找不到這個房間密碼，請確認有沒有打錯")
+        raise ValueError("找不到這個房間編號，請確認有沒有打錯")
     if closed_room(game):
         raise ValueError("房主已經關閉這個房間了")
+    _check_password(game, user, password)
     if open_table(game):
         return _enter_table_room(game, user)
     seat = game.seat_of(user)
@@ -707,8 +816,8 @@ def join_game(code, user):
         raise ValueError("這盤已經結束了")
     # 只有座位還空著時才寫入（條件式更新）：兩個人同時按「加入」時，先讀再存的話後存的會蓋掉先存的，
     # 被蓋掉的人以為加入了其實沒有座位（2026-11-05 審核 #10 時發現）。沒搶到就換下一個空位
-    for empty in game.players.filter(user__isnull=True).order_by("seat"):
-        if GamePlayer.objects.filter(pk=empty.pk, user__isnull=True).update(user=user, joined_at=timezone.now()):
+    for empty in game.players.filter(user__isnull=True, ai=False).order_by("seat"):
+        if GamePlayer.objects.filter(pk=empty.pk, user__isnull=True, ai=False).update(user=user, joined_at=timezone.now()):
             game.save(update_fields=["updated_at"])
             return game, empty.seat
     GameSpectator.objects.get_or_create(game=game, user=user)
@@ -735,6 +844,9 @@ def _table_settings(module, mode, settings):
     if mode == "pvp" and getattr(module, "open_table", False):
         settings = {k: v for k, v in settings.items() if k != "humans"}
         settings["table"] = True
+    if mode != "pvp":  # 只有真人房間的設定（撲克的勝率表，2026-11-18）：和 AI 對局時不受影響
+        pvp_only = {f["name"] for f in module.settings_fields if f.get("pvp_only")}
+        settings = {k: v for k, v in settings.items() if k not in pvp_only}
     return settings
 
 
@@ -940,6 +1052,8 @@ def game_detail(module, game, seat, user=None):
                     [n.to_dict() for n in game.ai_notes.all()])
     detail = {"game": game.summary(), "my_seat": seat, "actions": game.actions, "frames": _frames(module, game, seat),
               "notes": notes, "is_owner": user is not None and game.owner_id == user.id}
+    if detail["is_owner"] and game.pvp:  # 房間鎖的密碼只給房主（要傳給朋友），2026-11-18
+        detail["room_password"] = game.room_password
     if open_table(game) and user is not None:  # 撲克開放牌桌：觀戰中的人也要知道自己在不在隊列裡
         detail["my_token"] = module.member_token(user)
     return detail
