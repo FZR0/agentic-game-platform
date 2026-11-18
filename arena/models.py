@@ -17,7 +17,8 @@ class Game(models.Model):
     game_type = models.CharField(max_length=20)  # 遊戲模組的 key，例如 "gomoku"
     # 開局的人（2026-11-05 加帳號）；空的＝加帳號之前的舊對局，只有管理員（superuser）看得到（使用者決定）
     owner = models.ForeignKey(USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="games")
-    human_seat = models.PositiveSmallIntegerField()  # 玩家的座位（真人對戰時是開局的人的座位）；五子棋 1＝黑、2＝白
+    # 玩家的座位；五子棋 1＝黑、2＝白。真人對戰時是房主最後坐的座位，房主觀戰時不變（只供參考，認座位用 seat_of）
+    human_seat = models.PositiveSmallIntegerField()
     # 真人對戰（2026-11-05，docs/交接.md 4.10）：pvp 時真人的座位在 GamePlayer，對手用房間密碼加入
     MODES = {"ai": "和 AI 對戰", "pvp": "真人對戰"}
     mode = models.CharField(max_length=4, default="ai")
@@ -43,8 +44,10 @@ class Game(models.Model):
 
     @classmethod
     def visible_to(cls, user):
-        """這位使用者看得到的對局：自己開的、真人對戰裡坐了一個座位的；沒有擁有者的舊對局只給管理員看。"""
-        mine = models.Q(owner=user) | models.Q(players__user=user)
+        """這位使用者看得到的對局：自己和 AI 下的、真人對戰裡坐了一個座位的；沒有擁有者的舊對局只給管理員看。
+        真人對戰只看座位，不看房主（2026-11-18 房主可以觀戰）：觀戰中的房主和其他觀戰的人一樣，
+        這盤不算他的（不進戰績、不能復盤），房主的操作改用 watchable_by 找對局，再由 operations 檢查是不是房主。"""
+        mine = (models.Q(owner=user) & ~models.Q(mode="pvp")) | models.Q(players__user=user)
         if user.is_superuser:
             mine |= models.Q(owner__isnull=True)
         return cls.objects.filter(pk__in=cls.objects.filter(mine).values("pk"))  # 子查詢避免 join 造成重複
@@ -132,6 +135,8 @@ class Game(models.Model):
                 "action_count": len(self.actions), "created_at": self.created_at.isoformat()}
         if self.pvp:
             data["players"] = {p.seat: p.user.username if p.user else None for p in self.players.all()}
+            # 房主的帳號名稱：房主可能在觀戰（2026-11-18），網頁不能再用 human_seat 認房主
+            data["owner"] = self.owner.username if self.owner else None
             # 房間的玩家列表也列出觀戰的人（2026-11-13 使用者要求「房間內要有玩家列表」），依進來的先後
             data["spectators"] = [s.user.username for s in self.spectators.select_related("user").order_by("joined_at", "id")]
             data["waiting"] = self.waiting

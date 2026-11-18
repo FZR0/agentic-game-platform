@@ -295,20 +295,23 @@ def change_room(module, game, user, seat, settings):
             game = _change_table(module, game, settings)
             seat = game.seat_of(user)  # 房主的成員代號（坐在桌上）或 None（在觀戰席）
             return game, module.frame(module.replay(settings_of(game), game.actions), seat)
+        # 觀戰中的房主（2026-11-18）改完設定照樣觀戰；從撲克開放牌桌換過來時照舊坐 seat（牌桌的房主預設在觀戰席）
+        watching = not open_table(game) and game.seat_of(user) is None
         friends = [p.user for p in game.players.exclude(user=user).filter(user__isnull=False).select_related("user")]
         game.players.all().delete()
-        GameSpectator.objects.filter(game=game, user=user).delete()  # 從撲克的觀戰席換過來的房主
+        if not watching:
+            GameSpectator.objects.filter(game=game, user=user).delete()  # 從撲克的觀戰席換過來的房主
         game.game_type, game.human_seat, game.settings, game.secret = module.key, seat, settings, module.new_secret()
         game.actions, game.table = [], {}  # 撲克牌桌的入座紀錄不帶到別的遊戲
         game.save()
-        _seat_players(game, seats, seat, user)
+        _seat_players(game, seats, None if watching else seat, user)
         free = list(game.players.filter(user__isnull=True).order_by("seat"))
         for place, friend in zip(free, friends):
             place.user, place.joined_at = friend, timezone.now()
             place.save()
         for friend in friends[len(free):]:
             GameSpectator.objects.get_or_create(game=game, user=friend)
-    return game, module.frame(module.new_state(settings_of(game)), seat)
+    return game, module.frame(module.new_state(settings_of(game)), None if watching else seat)
 
 
 def _change_table(module, game, settings):
@@ -406,7 +409,8 @@ def _fixed_host_seat(module):
 def move_player(module, game, actor, name, seat):
     """換座位（2026-11-15）：seat 是要坐的座位，None 是改成觀戰。
     每個人都能自己坐到空的座位或起身觀戰；房主還能替別人換：坐到有人的座位時兩人交換
-    （被換的人坐到對方原本的位置，對方原本在觀戰就改成觀戰）。房主要一直坐在座位上。回傳對局。"""
+    （被換的人坐到對方原本的位置，對方原本在觀戰就改成觀戰）。房主也可以觀戰（2026-11-18 使用者決定：
+    原本規定房主要一直坐著，使用者說這是錯的規則）；只有舊版撲克的房主固定 1 號位。回傳對局。"""
     _lobby(game)
     if open_table(game):
         raise ValueError("德州撲克的座位是隨機的，請用「上桌」「下桌」")
@@ -432,8 +436,6 @@ def move_player(module, game, actor, name, seat):
         moved = {target.id: seat}
         if occupant:
             moved[occupant] = current
-        if game.owner_id in moved and moved[game.owner_id] is None:
-            raise ValueError("房主要坐在座位上；想觀戰請先把房主轉讓給別人")
         if current is not None:
             places[current].user_id, places[current].joined_at = occupant, timezone.now() if occupant else None
             places[current].save()
@@ -445,7 +447,7 @@ def move_player(module, game, actor, name, seat):
                 GameSpectator.objects.get_or_create(game=game, user_id=user_id)
             else:
                 GameSpectator.objects.filter(game=game, user_id=user_id).delete()
-        if game.owner_id in moved:
+        if moved.get(game.owner_id) is not None:  # 房主改成觀戰時 human_seat 不變
             game.human_seat = moved[game.owner_id]
         game.save()
     return game
@@ -482,7 +484,8 @@ def _remove_from_room(game, user):
 
 
 def transfer_host(module, game, actor, name):
-    """房主把房主交給房間裡坐在座位上的另一個人（2026-11-15）。撲克的新房主換到 1 號位，原房主坐到他原本的位置。"""
+    """房主把房主交給房間裡的另一個人（2026-11-15；2026-11-18 起觀戰的人也可以，房主不一定坐著）。
+    舊版撲克的新房主換到 1 號位，原房主坐到他原本的位置，所以只能交給坐著的人。"""
     _lobby(game)
     if game.owner_id != actor.id:
         raise ValueError("只有房主能轉讓房主")
@@ -490,7 +493,7 @@ def transfer_host(module, game, actor, name):
     if target.id == actor.id:
         raise ValueError("你已經是房主了")
     seat = game.seat_of(target)
-    if seat is None and not open_table(game):  # 撲克開放牌桌的房主不一定坐在桌上（2026-11-16）
+    if seat is None and _fixed_host_seat(module) and not open_table(game):
         raise ValueError(f"{name} 在觀戰；要先請他坐下，才能把房主交給他")
     with transaction.atomic():
         game = Game.objects.select_for_update().get(pk=game.pk)
@@ -498,7 +501,7 @@ def transfer_host(module, game, actor, name):
         if _fixed_host_seat(module):
             GamePlayer.objects.filter(game=game, seat=seat).update(user=actor, joined_at=timezone.now())
             GamePlayer.objects.filter(game=game, seat=game.human_seat).update(user=target, joined_at=timezone.now())
-        elif not open_table(game):
+        elif not open_table(game) and seat is not None:
             game.human_seat = seat
         game.owner = target
         game.save()
@@ -507,42 +510,63 @@ def transfer_host(module, game, actor, name):
 
 def leave_room(module, game, user):
     """離開房間（2026-11-15）：觀戰的人隨時可以走；坐在座位上的人只能在開始前離開（對局中要認輸）。
-    房主離開時，房主交給坐在座位上、座位號碼最小的人（撲克換到 1 號位）；沒有別人坐著就關閉房間。回傳對局。"""
+    房主離開時，房主交給房間裡的下一個人：先找坐在座位上的人（座位號碼小的先），再找觀戰的人（先進來的先）；
+    房間裡沒有別人才關閉房間（2026-11-18 使用者要求：「就算對局桌沒有人，只要房間內有人房間就能繼續存在」）。
+    觀戰中的房主也一樣要交出去。舊版撲克的房主固定 1 號位，只交給坐著的人。回傳對局。"""
     if not game.pvp:
         raise ValueError("只有真人對戰的房間能離開")
     if open_table(game):
         return _leave_table_room(module, game, user)
     seat = game.seat_of(user)
-    if seat is None:
+    if seat is None and (game.owner_id != user.id or game.finished):
         GameSpectator.objects.filter(game=game, user=user).delete()
         return game
-    if game.finished:
-        return game
-    if game.started_at is not None:
-        raise ValueError("對局進行中不能離開房間；要結束請認輸")
-    _lobby(game)
+    if seat is not None:
+        if game.finished:
+            return game
+        if game.started_at is not None:
+            raise ValueError("對局進行中不能離開房間；要結束請認輸")
+        _lobby(game)
     with transaction.atomic():
         game = Game.objects.select_for_update().get(pk=game.pk)
-        _lobby(game)
+        if seat is not None:
+            _lobby(game)
         if game.owner_id == user.id:
-            heirs = list(game.players.exclude(user=user).filter(user__isnull=False).order_by("seat"))
-            if not heirs:
-                game.ended = True  # 和房主在開始前關閉房間一樣（closed_room）
-                game.save()
-                return game
-            heir = heirs[0]
-            game.owner_id = heir.user_id
             if _fixed_host_seat(module):
+                heirs = list(game.players.exclude(user=user).filter(user__isnull=False).order_by("seat"))
+                if not heirs:
+                    return _close_empty_room(game)
+                heir = heirs[0]
+                game.owner_id = heir.user_id
                 GamePlayer.objects.filter(game=game, seat=game.human_seat).update(user=heir.user_id,
                                                                                     joined_at=heir.joined_at)
                 heir.user, heir.joined_at = None, None
                 heir.save()
-            else:
-                game.human_seat = heir.seat
-                _remove_from_room(game, user)
-        else:
-            _remove_from_room(game, user)
+                game.save()
+                return game
+            heirs = _heirs(game, user)
+            if not heirs:
+                return _close_empty_room(game)
+            game.owner_id = heirs[0]
+            place = game.players.filter(user_id=heirs[0]).first()
+            if place:
+                game.human_seat = place.seat
+        _remove_from_room(game, user)
         game.save()
+    return game
+
+
+def _heirs(game, user):
+    """房主離開時可以接手的人（帳號編號），依序：坐在座位上的人（座位號碼小的先）、觀戰的人（先進來的先）。"""
+    seated = game.players.exclude(user=user).filter(user__isnull=False).order_by("seat").values_list("user_id", flat=True)
+    watching = game.spectators.exclude(user=user).order_by("joined_at", "id").values_list("user_id", flat=True)
+    return list(dict.fromkeys([*seated, *watching]))
+
+
+def _close_empty_room(game):
+    """房間裡沒有別人了：和房主在開始前關閉房間一樣（closed_room）。開始後一定還有坐著的人，不會走到這裡。"""
+    game.ended = True
+    game.save()
     return game
 
 

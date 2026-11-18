@@ -339,7 +339,7 @@ def _change_room(ctx):
     p = ctx["params"]
     module = games.get(p["game_type"])  # 房主可以換別的遊戲（2026-11-15）
     game, frame = operations.change_room(module, _game(ctx), ctx["user"], p["seat"], p["settings"])
-    seat = game.seat_of(ctx["user"]) if operations.open_table(game) else p["seat"]  # 撲克牌桌的房主可能在觀戰席
+    seat = game.seat_of(ctx["user"])  # 房主可能在觀戰（撲克牌桌的觀戰席，2026-11-18 起每種遊戲都可以）
     return {"game": game.summary(), "my_seat": seat, "frame": frame}
 
 

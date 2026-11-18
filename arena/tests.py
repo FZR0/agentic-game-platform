@@ -2740,8 +2740,7 @@ class RoomLobbyTests(RefusalAssertions, TestCase):
         self.assertEqual(game.summary()["spectators"], ["bob"])
         self.assertRefused(self.post("bob", f"{url}/seat/", {"seat": 2}), "已經有人")
         self.assertRefused(self.post("bob", f"{url}/seat/", {"seat": 1, "player": "carol"}), "只有房主")
-        self.assertRefused(self.post("alice", f"{url}/seat/", {"seat": 0}), "房主要坐在座位上")
-        self.assertEqual(ModelRun.objects.filter(kind="req_room_seat").count(), 5)  # 每個操作都經過 AI 助理
+        self.assertEqual(ModelRun.objects.filter(kind="req_room_seat").count(), 4)  # 每個操作都經過 AI 助理
         # 開始後不能換座位、起身（不然快輸的一方就能逃掉）
         start_now(game)
         self.assertRefused(self.post("carol", f"{url}/seat/", {"seat": 0}), "已經開始")
@@ -2764,8 +2763,7 @@ class RoomLobbyTests(RefusalAssertions, TestCase):
         self.assertEqual(self.seats(game), {1: None, 2: "alice"})
         self.assertEqual(self.clients["carol"].get(f"{url}/").status_code, 404)
         self.assertEqual(operations.join_game(game.room_code, self.users["carol"]), (game, 1))
-        # 轉讓房主：只能交給坐在座位上的人；交出去之後原房主就不能再管房間
-        self.assertRefused(self.post("alice", f"{url}/host/", {"player": "bob"}), "在觀戰")
+        # 轉讓房主：交出去之後原房主就不能再管房間（交給觀戰的人見 test_the_host_can_watch_and_still_runs_the_room）
         self.assertEqual(self.post("alice", f"{url}/host/", {"player": "carol"}).status_code, 200)
         game.refresh_from_db()
         self.assertEqual((game.owner.username, game.human_seat), ("carol", 1))
@@ -2802,6 +2800,69 @@ class RoomLobbyTests(RefusalAssertions, TestCase):
         self.post("alice", f"/api/holdem/games/{game.id}/host/", {"player": "bob"})
         game.refresh_from_db()
         self.assertEqual(game.owner.username, "bob")
+
+    def test_the_host_can_watch_and_still_runs_the_room(self):
+        # 2026-11-18 使用者：「為什麼房主還是不能自己到觀戰去」「這是錯誤的規則」。房主改成觀戰後仍然是房主：
+        # 改設定、開始、轉讓、請人離開照樣能做；但他和其他觀戰的人一樣沒有座位，這盤不算他的（不進戰績、不能復盤），
+        # 否則觀戰的房主會被算成輸棋（_result 拿 None 比贏家），還能用 AI 教練分析別人下的棋
+        game = self.room()
+        url = f"/api/gomoku/games/{game.id}"
+        self.assertEqual(self.post("alice", f"{url}/seat/", {"seat": 0}).status_code, 200)
+        self.assertEqual(self.seats(game), {1: None, 2: "bob"})
+        self.assertEqual(sorted(game.summary()["spectators"]), ["alice", "carol"])
+        detail = self.clients["alice"].get(f"{url}/").json()
+        self.assertEqual((detail["my_seat"], detail["is_owner"], detail["game"]["owner"]), (None, True, "alice"))
+        # 觀戰中改設定：照樣觀戰，坐著的人照樣坐著
+        r = self.post("alice", f"{url}/room/", {"seat": 1, "settings": {}})
+        self.assertEqual((r.status_code, r.json()["my_seat"]), (200, None))
+        self.assertEqual(self.seats(game), {1: "bob", 2: None})
+        self.assertIn("alice", game.summary()["spectators"])
+        # 觀戰中幫人換座位、把房主交給觀戰的人再拿回來
+        self.assertEqual(self.post("alice", f"{url}/seat/", {"player": "carol", "seat": 2}).status_code, 200)
+        self.assertEqual(self.seats(game), {1: "bob", 2: "carol"})
+        self.assertEqual(self.post("alice", f"{url}/host/", {"player": "dave"}).status_code, 400)  # 不在房間裡
+        operations.watch_game(game.room_code, self.users["dave"])
+        self.assertEqual(self.post("alice", f"{url}/host/", {"player": "dave"}).status_code, 200)
+        self.assertEqual(self.post("dave", f"{url}/host/", {"player": "alice"}).status_code, 200)
+        # 觀戰中按開始
+        with patch.object(operations.time, "sleep"), patch.object(operations, "START_COUNTDOWN", 0):
+            self.assertEqual(self.post("alice", f"{url}/start/").status_code, 200)
+        self.assertEqual(self.post("alice", f"{url}/move/", {"action": "H8"}).status_code, 404)  # 觀戰不能下
+        r = self.post("bob", f"{url}/move/", {"action": "resign"})  # bob 執黑認輸，carol 贏
+        nxt = Game.objects.get(pk=r.json()["next_round"])
+        game.refresh_from_db()
+        # 這盤不是房主的：不列在他的對局紀錄、不進戰績、不能復盤；下一盤他照樣是觀戰的房主
+        self.assertNotIn(game, operations._played_games(self.users["alice"]))
+        self.assertEqual(self.clients["alice"].get(f"{url}/review/").status_code, 404)
+        self.assertEqual(self.clients["bob"].get(f"{url}/review/").status_code, 200)
+        self.assertEqual((nxt.owner.username, self.seats(nxt)), ("alice", {1: "bob", 2: "carol"}))
+        self.assertIn("alice", nxt.summary()["spectators"])
+        # 頂端的「回到房間」照樣帶房主回去
+        self.assertEqual([r["id"] for r in operations.active_rooms(self.users["alice"])], [nxt.id])
+
+    def test_the_room_stays_while_anyone_is_in_it(self):
+        # 2026-11-18 使用者：「就算對局桌沒有人，但只要房間內有人房間就能繼續存在」。
+        # 房主離開時先交給坐著的人，沒有人坐著就交給觀戰的人；房間裡沒有別人才關閉
+        game = self.room()
+        url = f"/api/gomoku/games/{game.id}"
+        self.post("bob", f"{url}/leave/")
+        self.post("alice", f"{url}/seat/", {"seat": 0})
+        self.assertEqual(self.seats(game), {1: None, 2: None})
+        self.assertEqual(self.post("alice", f"{url}/leave/").status_code, 200)  # 觀戰中的房主離開
+        game.refresh_from_db()
+        self.assertFalse(operations.closed_room(game))
+        self.assertEqual((game.owner.username, game.summary()["spectators"]), ("carol", ["carol"]))
+        self.assertEqual(operations.join_game(game.room_code, self.users["bob"]), (game, 1))  # 房間密碼照樣能用
+        # 坐著的人優先接手
+        operations.watch_game(game.room_code, self.users["dave"])
+        self.post("carol", f"{url}/leave/")
+        game.refresh_from_db()
+        self.assertEqual(game.owner.username, "bob")
+        # 剩最後一個人離開才關閉
+        self.post("dave", f"{url}/leave/")
+        self.post("bob", f"{url}/leave/")
+        game.refresh_from_db()
+        self.assertTrue(operations.closed_room(game))
 
     def test_leaving_the_room(self):
         game = self.room()

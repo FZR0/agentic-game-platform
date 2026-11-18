@@ -51,7 +51,8 @@ const state = {
   pvp: false, // 真人對戰（2026-11-05）：對手也是真人，對局中不能用 AI 教練
   players: {}, // 真人對戰的 {座位: 帳號名稱}；null 是還在等人加入
   spectators: [], // 觀戰的人的帳號名稱（玩家列表用，2026-11-13）
-  hostSeat: null, // 房主坐的座位（玩家列表標「房主」）
+  hostSeat: null, // 房主坐的座位（玩家列表標「房主」；房主觀戰中是 null）
+  ownerName: null, // 房主的帳號名稱（2026-11-18 房主可以觀戰，認房主用名稱）
   closed: false, // 房主在開始前關閉了這個房間（2026-11-13）
   watching: false, // 觀戰中（2026-11-08）：沒有座位，不能下、不能用 AI 教練
   owner: false, // 自己是房主（伺服器的 is_owner，可以轉讓）：開始前改設定會套用到同一個房間
@@ -287,7 +288,7 @@ function updateButtons() {
   // 真人對戰不能不計勝負（快輸的一方按了就能讓輸棋不算），要結束請認輸
   $("end-game").hidden = state.gameId === null || state.over || state.reviewing || state.pvp;
   $("end-game").disabled = state.busy;
-  $("room-start").hidden = !(state.pvp && state.owner && (!state.watching || isTable()) && state.gameId !== null
+  $("room-start").hidden = !(state.pvp && state.owner && state.gameId !== null
     && !state.over && !waitingForPlayers() && state.startsAt === null);
   const seated = tableSeated().length;
   $("start-room").disabled = state.busy || state.starting || (isTable() && seated < 2);
@@ -355,7 +356,7 @@ function resetView(human, settings, actions, frames, pvp = false, players = {}, 
   Object.assign(state, {
     human, settings, actions, frames, over: false, reviewing: false, viewAt: 0, marks: null,
     hover: null, highlight: null, hoverHighlight: null, hiddenNotes: false, pvp, players, watching, owner: false,
-    startsAt: null, starting: false, spectators: [], hostSeat: null, closed: false, table: null, myToken: null,
+    startsAt: null, starting: false, spectators: [], hostSeat: null, ownerName: null, closed: false, table: null, myToken: null,
   });
   stopCountdown(); // 聊天不清掉：房主改房間設定時仍是同一個房間；開新局時由 newGame 清掉
   $("invite").hidden = true;
@@ -429,7 +430,7 @@ function statusAfterMove(data) {
   }
   if (data.winner || data.draw || data.ended) finishGame(data.winner, data.draw, state.pvp ? data.next_round : null);
   else if (waitingForPlayers()) {
-    setStatus(state.owner && !state.watching
+    setStatus(state.owner
       ? "等朋友加入中…把房間密碼傳給朋友。按「開始」之前都可以在「設定」改設定或換遊戲，改了馬上套用到這個房間。"
       : "等朋友加入中…大家到齊後，由房主按「開始」。");
   }
@@ -438,7 +439,7 @@ function statusAfterMove(data) {
     setStatus(state.owner ? `${seat}房主可以補 AI；牌桌上有兩個人以上就能按「開始」。` : `${seat}等房主按「開始」…`);
   }
   else if (state.pvp && state.startsAt === null) {
-    setStatus(state.owner && !state.watching ? "大家都到齊了，按「開始」開始對局。" : "大家都到齊了，等房主按「開始」…");
+    setStatus(state.owner ? "大家都到齊了，按「開始」開始對局。" : "大家都到齊了，等房主按「開始」…");
   }
   else if (!roomStarted()) setStatus("倒數中，馬上開始…");
   else if (isTable() && currentFrame()?.hand_over) {
@@ -456,7 +457,7 @@ function statusAfterMove(data) {
 // ---- 真人對戰（2026-11-05）：邀請朋友、WebSocket 即時同步 ----
 
 function showInvite(code) {
-  if (state.watching && !isTable()) code = ""; // 撲克開放牌桌的房主常在觀戰席，房間裡的人都能看密碼邀人
+  if (state.watching && !isTable() && !state.owner) code = ""; // 房主觀戰時也要能邀人（撲克開放牌桌的房間裡的人都能看密碼）
   $("invite").hidden = !code;
   if (!code) return;
   $("room-code").textContent = code;
@@ -568,7 +569,10 @@ function setRoomPeople(game) {
   state.players = game.players || {};
   state.table = game.table || null; // 撲克開放牌桌的隊列、要下桌的座位、房主（2026-11-16）
   state.spectators = game.spectators || [];
-  state.hostSeat = game.human_seat ?? null; // 真人對戰的 human_seat 是開房的人坐的座位
+  // 房主的帳號名稱與座位：房主可能在觀戰（2026-11-18），所以照伺服器給的名稱找，觀戰中座位是 null
+  state.ownerName = game.owner ?? game.table?.owner ?? null;
+  const hostSeat = Object.entries(state.players).find(([, name]) => name !== null && name === state.ownerName);
+  state.hostSeat = hostSeat ? Number(hostSeat[0]) : null;
   state.closed = Boolean(game.closed);
 }
 
@@ -583,19 +587,19 @@ function roomButton(label, onClick, className = "") {
 }
 
 // 房主把某個人換到別的座位（坐到有人的座位時兩人交換）或改成觀戰；current 是他現在的座位，觀戰中是 null。
-// 房主換自己（2026-11-18 使用者要求）：name 傳空字串、current 是房主的座位，沒有「觀戰」（房主要一直坐著）
+// 房主換自己（2026-11-18 使用者要求）：name 傳空字串，current 是房主的座位（觀戰中是 null）。
+// 房主也可以改成觀戰（2026-11-18 使用者決定）；只有舊版撲克的房主固定 1 號位，誰都不能換進或換出
 function seatPicker(name, current) {
   const select = document.createElement("select");
   select.className = "room-action";
   select.disabled = state.busy || state.starting;
   select.setAttribute("aria-label", name ? `把 ${name} 換到` : "把自己換到");
-  // 房主要一直坐著：觀戰的人不能換進房主的座位；撲克的房主固定 1 號位，誰都不能換進去
-  const blocked = (s) => s === state.hostSeat && (CONFIG.pickHumanSeats || current === null);
+  const fixed = (s) => CONFIG.pickHumanSeats && s === state.hostSeat && s !== null;
   select.append(new Option("換到…", ""));
   for (const s of Object.keys(state.players).map(Number)) {
-    if (s !== current && !blocked(s)) select.append(new Option(seatName(s), String(s)));
+    if (s !== current && !fixed(s)) select.append(new Option(seatName(s), String(s)));
   }
-  if (current !== null && name) select.append(new Option("觀戰", "0"));
+  if (current !== null && !fixed(current)) select.append(new Option("觀戰", "0"));
   select.addEventListener("change", () => {
     if (select.value !== "") moveTo(name, Number(select.value));
   });
@@ -759,16 +763,17 @@ async function endTable() {
 // 一般的真人對戰（每個座位一個人）：座位、空位、輪到誰；房間成員是坐著的人和觀戰的人
 function renderSeatPlayers() {
   const turn = !state.over && roomStarted() && !waitingForPlayers() ? currentFrame()?.to_move : null;
-  // 房間大廳（按開始之前，2026-11-15）：自己坐下或起身觀戰；房主還能幫人換座位、轉讓房主、請人離開
+  // 房間大廳（按開始之前，2026-11-15）：自己坐下或起身觀戰；房主還能幫人換座位、轉讓房主、請人離開。
+  // 房主也可以觀戰（2026-11-18），觀戰中照樣管理房間；只有舊版撲克（CONFIG.pickHumanSeats）的房主固定 1 號位
   const lobby = inLobby();
-  const host = lobby && state.owner && !state.watching;
+  const host = lobby && state.owner;
+  const fixedHost = CONFIG.pickHumanSeats;
   const mySeat = state.watching ? null : state.human;
   const seats = Object.entries(state.players).map(([key, name]) => [Number(key), name]);
   $("room-seats").replaceChildren(...seats.map(([seat, name]) => {
     const buttons = [];
-    // 撲克的房主固定 1 號位，不能自己換到別的座位
-    if (lobby && name === null && !(host && CONFIG.pickHumanSeats)) buttons.push(roomButton("坐這裡", () => moveTo("", seat)));
-    if (lobby && seat === mySeat && !state.owner) buttons.push(roomButton("改成觀戰", () => moveTo("", 0)));
+    if (lobby && name === null && !(host && fixedHost)) buttons.push(roomButton("坐這裡", () => moveTo("", seat)));
+    if (lobby && seat === mySeat && !(state.owner && fixedHost)) buttons.push(roomButton("改成觀戰", () => moveTo("", 0)));
     const tags = [seat === state.hostSeat && "房主", seat === mySeat && "你", seat === turn && "輪到"];
     return seatItem(seatName(seat), name ?? "等待加入…", tags, buttons, { empty: name === null, turn: seat === turn });
   }));
@@ -781,12 +786,15 @@ function renderSeatPlayers() {
   const rows = taken.map(([seat, name]) => memberItem(name, seatName(seat),
     [seat === state.hostSeat && "房主", seat === mySeat && "你"],
     !host ? [] : seat === mySeat
-      ? (seats.length > 1 ? [seatPicker("", seat)] : [])
+      ? (fixedHost ? [] : [seatPicker("", seat)])
       : [seatPicker(name, seat), roomButton("交給他當房主", () => transferHost(name)),
         roomButton("請離開", () => kickPlayer(name), "danger")]));
   for (const name of state.spectators) {
-    rows.push(memberItem(name, "觀戰", [name === ME && "你"],
-      host ? [seatPicker(name, null), roomButton("請離開", () => kickPlayer(name), "danger")] : []));
+    const me = name === ME;
+    rows.push(memberItem(name, "觀戰", [name === state.ownerName && "房主", me && "你"],
+      !host ? [] : me ? [seatPicker("", null)]
+        : [seatPicker(name, null), ...(fixedHost ? [] : [roomButton("交給他當房主", () => transferHost(name))]),
+          roomButton("請離開", () => kickPlayer(name), "danger")]));
   }
   $("room-member-list").replaceChildren(...rows);
   $("room-member-count").textContent = `${rows.length} 人`;
@@ -799,8 +807,8 @@ function renderRoomPlayers() {
   if (!show) return;
   if (isTable()) renderTablePlayers();
   else renderSeatPlayers();
-  // 撲克開放牌桌的房主可以不上桌，在觀戰席也能關閉房間
-  $("close-room").hidden = !(state.owner && (!state.watching || isTable()) && state.startsAt === null && !state.over);
+  // 房主在觀戰中也能關閉房間（撲克開放牌桌的觀戰席；2026-11-18 起每種遊戲都可以觀戰）
+  $("close-room").hidden = !(state.owner && state.startsAt === null && !state.over);
   $("close-room").disabled = state.busy || state.starting;
   $("room-footer").hidden = $("close-room").hidden && $("leave-room").hidden;
 }
@@ -847,8 +855,8 @@ function transferHost(name) {
 }
 
 async function leaveRoom() {
-  const text = state.owner && !state.watching
-    ? "離開房間？房主會交給還坐在座位上的人；沒有別人就關閉房間。"
+  const text = state.owner
+    ? "離開房間？房主會交給房間裡的下一個人（先找坐在座位上的人，再找觀戰的人）；房間裡沒有別人才關閉房間。"
     : "離開房間？之後可以再用房間密碼回來。";
   if (!window.confirm(text)) return;
   state.busy = true;
@@ -895,7 +903,7 @@ function roomClosed() {
   stopCountdown();
   showInvite("");
   rememberRoom();
-  setStatus(state.owner && !state.watching ? "房間已關閉。可以按「新對局」，或回首頁再開一間。" : "房主已經關閉這個房間。");
+  setStatus(state.owner ? "房間已關閉。可以按「新對局」，或回首頁再開一間。" : "房主已經關閉這個房間。");
   updateButtons();
 }
 
@@ -956,8 +964,8 @@ async function newPvpGame(settings) {
 // 房主在開始前改設定（2026-11-08；2026-11-15 起朋友坐下後也能改）：套用到同一個房間（房間密碼不變），大家跟著換
 // 房間大廳：真人對戰按「開始」之前（2026-11-15 起朋友坐下後房主也能改設定、換遊戲）
 const inLobby = () => state.pvp && state.gameId !== null && state.startsAt === null && !state.over && !state.closed;
-// 撲克開放牌桌的房主可以不上桌（在觀戰席）也能改設定
-const canChangeRoom = () => inLobby() && state.owner && (!state.watching || isTable());
+// 房主在觀戰中也能改設定（撲克開放牌桌的觀戰席；2026-11-18 起每種遊戲都可以觀戰）
+const canChangeRoom = () => inLobby() && state.owner;
 
 async function changeRoom() {
   if (!pvpChosen()) {
@@ -972,9 +980,10 @@ async function changeRoom() {
   try {
     const data = await api(`games/${state.gameId}/room/`, { seat, settings });
     const gameId = state.gameId;
-    if (data.game.settings.table) { // 撲克開放牌桌：還坐得下的人照樣坐著，重新打開這個房間
+    // 撲克開放牌桌（還坐得下的人照樣坐著）、觀戰中的房主（2026-11-18，改完照樣觀戰）：重新打開這個房間
+    if (data.game.settings.table || data.my_seat === null) {
       await openGame(gameId, "resume");
-      setStatus("牌桌設定已更新。按「開始」之前都還能改；房間密碼不變。");
+      setStatus(`${data.game.settings.table ? "牌桌" : "房間"}設定已更新。按「開始」之前都還能改；房間密碼不變。`);
       return;
     }
     resetView(seat, data.game.settings, [], [data.frame], true, data.game.players);

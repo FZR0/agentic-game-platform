@@ -193,7 +193,7 @@ def api_room_settings(request, game_key, game_id):
     """房主在開始前改房間設定（2026-11-08）：同一個房間、同一組房間密碼，換成新的設定重新開局。
     game_type 換成別的遊戲時（2026-11-15），設定與座位照新遊戲檢查。"""
     module = _module(game_key)
-    game = _game(request, module, game_id)
+    game = _game(request, module, game_id, watch=True)  # 房主可能在觀戰（2026-11-18）
     try:
         data = _read_json(request)
         target = _module(data.get("game_type") or module.key)
@@ -216,7 +216,7 @@ def api_room_start(request, game_key, game_id):
     """房主按「開始」（2026-11-13）：倒數後開始。AI 助理先通知大家顯示倒數，倒數完 AI 的座位才行動，
     所以這個請求至少要等倒數的秒數才回來；其他人的畫面靠 WebSocket 更新。"""
     module = _module(game_key)
-    game = _game(request, module, game_id)
+    game = _game(request, module, game_id, watch=True)  # 房主可能在觀戰
     try:
         model, steps = _agent_options(_read_json(request), module)
     except (ValueError, KeyError, TypeError) as exc:
@@ -240,7 +240,7 @@ def _closed(request, module, game, kind):
 def api_room_close(request, game_key, game_id):
     """房間頁的「關閉房間」：只有房主、只在按開始之前。"""
     module = _module(game_key)
-    game = _game(request, module, game_id)
+    game = _game(request, module, game_id, watch=True)  # 房主可能在觀戰
     try:
         data, handled = _closed(request, module, game, "close_room")
     except ValueError as exc:
@@ -251,7 +251,7 @@ def api_room_close(request, game_key, game_id):
 @require_POST
 def close_room(request, game_id):
     """首頁、對局紀錄清單上的「關閉房間」（表單送出）；關閉後回到原本的頁面。"""
-    game = get_object_or_404(Game.visible_to(request.user), pk=game_id)
+    game = get_object_or_404(Game.watchable_by(request.user), pk=game_id)
     try:
         _, handled = _closed(request, _module(game.game_type), game, "close_room")
     except ValueError as exc:
