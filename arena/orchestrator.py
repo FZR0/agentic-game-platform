@@ -48,8 +48,8 @@ def _same(got, want):
     return str(got).strip().lower() == str(want).strip().lower()
 
 
-def _chat(messages, tools):
-    config = narrator.model_config()
+def _chat(messages, tools, model=None):
+    config = narrator.model_config(model)
     body = {"model": config["name"], "stream": False, "think": config["think"], "keep_alive": settings.OLLAMA_KEEP_ALIVE,
             "tools": tools, "messages": messages, "options": {"temperature": 0.1, "num_predict": 300,
                                                             "num_ctx": settings.OLLAMA_NUM_CTX}}
@@ -61,6 +61,7 @@ class Request:
     kind = ""            # ModelRun 記成 req_<kind>
     game_scoped = True   # 對局的請求：只有 module.agentic_requests 的遊戲才交給 Agent；頁面不分遊戲，一律交給 Agent
     auto_finish = True   # 完成條件一達成就結束，不必再問模型一次
+    review = False       # 復盤的請求：AI 助理也用最聰明的模型（narrator.review_model，2026-11-16），其他用預設模型
     tools = []
 
     def task(self, ctx):
@@ -99,8 +100,8 @@ class Request:
 class OneStep(Request):
     """只要呼叫一個工具就完成的請求（載入頁面資料、結束對局、復盤…）。"""
 
-    def __init__(self, kind, tool, task, op, params=None, game_scoped=True, summary=None):
-        self.kind, self.task_text, self.op, self.game_scoped = kind, task, op, game_scoped
+    def __init__(self, kind, tool, task, op, params=None, game_scoped=True, summary=None, review=False):
+        self.kind, self.task_text, self.op, self.game_scoped, self.review = kind, task, op, game_scoped, review
         self.params = params or {}  # {參數: (JSON 型別, 說明, ctx["params"] 的 key)}
         self.summary = summary or (lambda data: "完成。")
         self.tools = [_tool(tool, task, **{k: (t, d) for k, (t, d, _) in self.params.items()})]
@@ -128,6 +129,7 @@ class OneStep(Request):
 
 GAME_ID = ("integer", "棋局編號", "game_id")
 GAME_KEY = ("string", "遊戲代號", "game")
+PLAYER = ("string", "房間裡的帳號名稱", "player")
 
 
 class NewGame(Request):
@@ -236,21 +238,25 @@ class Move(Request):
     def respond(self, ctx):
         game = ctx["game"]
         return {"action": ctx["params"]["action"], "frame": ctx["frame"], "ai_moves": ctx["ai_moves"],
-                "winner": game.winner, "draw": game.draw}
+                "winner": game.winner, "draw": game.draw,
+                "next_round": game.next_round_id() if game.finished else None}  # 真人對戰打完回到房間（2026-11-15）
 
 
 class Ask(Request):
     """復盤提問：由 Agent 決定要查哪些局面與哪幾步（以前用正規表示式猜），查到的事實再交給語言模型回答。"""
     kind = "ask"
     auto_finish = False  # 要查多少由 Agent 決定
+    review = True
     tools = [_tool("explain_position", "查詢使用者正在看的局面；focus 是問題提到的位置或行動（例如座標），沒有就填空字串",
                    focus=("string", "問題提到的位置或行動")),
              _tool("explain_action", "查詢這盤棋第 n 步（從 1 起算）的分析", n=("integer", "第幾步"))]
 
     def task(self, ctx):
         p = ctx["params"]
+        side = ctx["module"].seat_names.get(ctx["seat"])  # 「我這一步」指的是使用者自己那一方的步（2026-11-16 情境測試）
         return (f"使用者在{ctx['module'].name}第 {p['game_id']} 盤（共 {len(ctx['game'].actions)} 步）復盤，"
-                f"正在看第 {p['at']} 步之後的局面，問：「{p['question']}」。"
+                + (f"使用者是{side}，" if side else "")
+                + f"正在看第 {p['at']} 步之後的局面，問：「{p['question']}」。"
                 "請用工具查出回答這個問題需要的分析（可以查不只一項），查完回覆「完成」。")
 
     def call(self, ctx, name, args):
@@ -280,7 +286,8 @@ class Ask(Request):
 
     def respond(self, ctx):
         p = ctx["params"]
-        return operations.answer(ctx["module"], ctx["game"], p["question"], p["at"], ctx["points"], p["model"])
+        return operations.answer(ctx["module"], ctx["game"], p["question"], p["at"], ctx["points"], p["model"],
+                                 ctx["seat"])
 
 
 def _game(ctx):
@@ -289,7 +296,7 @@ def _game(ctx):
 
 def _detail(ctx):
     game = _game(ctx)
-    return {**operations.game_detail(ctx["module"], game, ctx["seat"]),
+    return {**operations.game_detail(ctx["module"], game, ctx["seat"], ctx["user"]),
             "chat": operations.chat_messages(game, ctx["seat"], ctx["user"])}
 
 
@@ -307,7 +314,10 @@ def _start_room(ctx):
     game = operations.start_room(_game(ctx), ctx["user"])
     realtime.notify(game)
     operations.wait_for_start(game)
-    operations.run_ai_turns(ctx["module"], game, p["model"], p["steps"], ctx["seat"])
+    if operations.open_table(game):  # 撲克開放牌桌：倒數完發第一手（2026-11-16）
+        operations.table_advance(ctx["module"], game, 0, p["model"], p["steps"], ctx["seat"])
+    else:
+        operations.run_ai_turns(ctx["module"], game, p["model"], p["steps"], ctx["seat"])
     return {"game": game.summary()}
 
 
@@ -327,18 +337,60 @@ def _watch(ctx):
 
 def _change_room(ctx):
     p = ctx["params"]
-    game, frame = operations.change_room(ctx["module"], _game(ctx), ctx["user"], p["seat"], p["settings"])
-    return {"game": game.summary(), "my_seat": p["seat"], "frame": frame}
+    module = games.get(p["game_type"])  # 房主可以換別的遊戲（2026-11-15）
+    game, frame = operations.change_room(module, _game(ctx), ctx["user"], p["seat"], p["settings"])
+    seat = game.seat_of(ctx["user"]) if operations.open_table(game) else p["seat"]  # 撲克牌桌的房主可能在觀戰席
+    return {"game": game.summary(), "my_seat": seat, "frame": frame}
+
+
+# 房間大廳（2026-11-15）：換座位、請人離開、轉讓房主、離開房間
+def _move_player(ctx):
+    p = ctx["params"]
+    game = operations.move_player(ctx["module"], _game(ctx), ctx["user"], p["player"], p["seat"] or None)
+    return {"game": game.summary()}
+
+
+def _kick(ctx):
+    return {"game": operations.kick_player(_game(ctx), ctx["user"], ctx["params"]["player"]).summary()}
+
+
+def _transfer_host(ctx):
+    return {"game": operations.transfer_host(ctx["module"], _game(ctx), ctx["user"], ctx["params"]["player"]).summary()}
+
+
+# 撲克開放牌桌（2026-11-16）：上桌／排隊、下桌／觀眾、補 AI、一手結束後補人發牌、房主結束牌局
+def _table(ctx):
+    p = ctx["params"]
+    game, advance = operations.table_action(ctx["module"], _game(ctx), ctx["user"], p["op"], p["kind"], p["seat"])
+    if advance:  # 牌桌在等人時排進來的人馬上補進去、發牌
+        operations.table_advance(ctx["module"], game, None, p["model"], p["steps"], ctx["seat"])
+    return {"game": game.summary()}
+
+
+def _table_deal(ctx):
+    p = ctx["params"]
+    operations.table_advance(ctx["module"], _game(ctx), p["hand"], p["model"], p["steps"], ctx["seat"])
+    return {"game": _game(ctx).summary()}
+
+
+def _table_end(ctx):
+    return {"game": operations.table_end(_game(ctx), ctx["user"]).summary()}
+
+
+def _leave_room(ctx):
+    return {"game": operations.leave_room(ctx["module"], _game(ctx), ctx["user"]).summary()}
 
 
 REQUESTS = {r.kind: r for r in [
     OneStep("home", "load_home", "使用者打開了首頁，請載入首頁的資料（未完成的對局、最近對局、戰績）。",
             lambda ctx: operations.home_context(ctx["user"]), game_scoped=False),
-    OneStep("history", "load_history", "使用者打開了對局紀錄，篩選條件：遊戲「{game}」、結果「{result}」、第 {page} 頁。請載入這一頁。",
-            lambda ctx: operations.history_context(ctx["user"], ctx["params"]["game"], ctx["params"]["result"], ctx["params"]["page"]),
+    OneStep("history", "load_history", "使用者打開了對局紀錄，篩選條件：遊戲「{game}」、結果「{result}」、房間（某一盤的編號，0 是不篩選）{room}、第 {page} 頁。請載入這一頁。",
+            lambda ctx: operations.history_context(ctx["user"], ctx["params"]["game"], ctx["params"]["result"],
+                                                   ctx["params"]["page"], ctx["params"]["room"]),
             game_scoped=False,
             params={"game": ("string", "遊戲代號，沒有篩選就填空字串", "game"),
                     "result": ("string", "結果，沒有篩選就填空字串", "result"),
+                    "room": ("integer", "房間裡某一盤的編號，沒有篩選就填 0", "room"),
                     "page": ("integer", "第幾頁", "page")}),
     OneStep("guide", "load_guide", "使用者打開了「怎麼玩」頁面，請載入各遊戲的規則。",
             lambda ctx: operations.guide_context(), game_scoped=False),
@@ -356,12 +408,12 @@ REQUESTS = {r.kind: r for r in [
             lambda ctx: operations.end_game(_game(ctx)) or {"game": _game(ctx).summary()}, params={"game_id": GAME_ID}),
     OneStep("review", "review_game", "使用者按了第 {game_id} 盤的「復盤」，請檢查這盤棋的問題。",
             lambda ctx: operations.review(ctx["module"], _game(ctx), ctx["seat"]), params={"game_id": GAME_ID},
-            summary=lambda data: f"找到 {len(data['moments'])} 個問題。"),
+            summary=lambda data: f"找到 {len(data['moments'])} 個問題。", review=True),
     OneStep("note", "explain_note", "使用者要看第 {game_id} 盤第 {index} 步 AI 的思路說明，請產生說明。",
             lambda ctx: operations.narrate_note(ctx["module"], ctx["note"], ctx["params"]["model"]),
             params={"game_id": GAME_ID, "index": ("integer", "第幾步（從 0 起算）", "index")}),
     OneStep("narrate", "explain_facts", "使用者要看一段分析的白話說明，請產生說明。",
-            lambda ctx: operations.narrate(ctx["module"], ctx["params"]["facts"], ctx["params"]["model"])),
+            lambda ctx: operations.narrate(ctx["module"], ctx["params"]["facts"], ctx["params"]["model"]), review=True),
     # 真人對戰（2026-11-05）：輸入房間密碼的頁面，與按下「加入」
     OneStep("join_page", "open_join_page", "使用者打開了「加入真人對戰」頁面，請載入頁面。",
             lambda ctx: operations.join_context(), game_scoped=False),
@@ -370,9 +422,32 @@ REQUESTS = {r.kind: r for r in [
     # 觀戰與房主改房間設定（2026-11-08）
     OneStep("watch", "watch_game", "使用者輸入房間密碼「{code}」要觀戰，請讓他進去看。", _watch, game_scoped=False,
             params={"code": ("string", "房間密碼", "code")}, summary=lambda data: f"可以觀戰第 {data['game'].id} 盤。"),
-    OneStep("room_settings", "change_room", "房主在朋友加入前改了第 {game_id} 盤的房間設定（座位 {seat}），請套用到這個房間。",
-            _change_room, params={"game_id": GAME_ID, "seat": ("integer", "房主的座位", "seat")},
+    OneStep("room_settings", "change_room",
+            "房主在開始前改了第 {game_id} 盤的房間設定（遊戲 {game_type}，座位 {seat}），請套用到這個房間。",
+            _change_room, params={"game_id": GAME_ID, "seat": ("integer", "房主的座位", "seat"),
+                                  "game_type": ("string", "遊戲代號", "game_type")},
             summary=lambda data: f"第 {data['game']['id']} 盤的設定已更新。"),
+    # 房間大廳（2026-11-15）
+    OneStep("room_seat", "move_player", "第 {game_id} 盤的房間裡，要把 {player} 換到座位 {seat}（0 是改成觀戰），請照做。",
+            _move_player, params={"game_id": GAME_ID, "player": PLAYER, "seat": ("integer", "座位，0 是改成觀戰", "seat")},
+            summary=lambda data: "座位已更新。"),
+    OneStep("kick", "kick_player", "房主要請 {player} 離開第 {game_id} 盤的房間，請照做。", _kick,
+            params={"game_id": GAME_ID, "player": PLAYER}, summary=lambda data: "已經請他離開房間。"),
+    OneStep("transfer_host", "transfer_host", "房主要把第 {game_id} 盤房間的房主交給 {player}，請照做。", _transfer_host,
+            params={"game_id": GAME_ID, "player": PLAYER}, summary=lambda data: "房主已經轉讓。"),
+    OneStep("leave_room", "leave_room", "使用者要離開第 {game_id} 盤的房間，請照做。", _leave_room,
+            params={"game_id": GAME_ID}, summary=lambda data: "已經離開房間。"),
+    OneStep("table", "table_action",
+            "第 {game_id} 盤的德州撲克牌桌，使用者要做牌桌操作「{op}」（AI 種類「{kind}」、座位或隊列第幾個 {seat}），請照做。",
+            _table, params={"game_id": GAME_ID, "op": ("string", "牌桌操作：sit、unqueue、stand、add_ai、remove_ai", "op"),
+                            "kind": ("string", "補哪種 AI：agent 或 bot，沒有就填空字串", "kind"),
+                            "seat": ("integer", "座位或隊列第幾個，沒有就填 0", "seat")},
+            summary=lambda data: "牌桌已更新。"),
+    OneStep("table_deal", "deal_next_hand", "第 {game_id} 盤的德州撲克第 {hand} 手牌結束了，請補人並發下一手。",
+            _table_deal, params={"game_id": GAME_ID, "hand": ("integer", "剛結束的是第幾手", "hand")},
+            summary=lambda data: "已經補人、發牌。"),
+    OneStep("table_end", "end_table", "房主要結束第 {game_id} 盤的德州撲克牌局（不計勝負），請照做。", _table_end,
+            params={"game_id": GAME_ID}, summary=lambda data: "牌局已結束。"),
     # 房主按開始、房間聊天室（2026-11-13）
     OneStep("start", "start_room", "房主按了第 {game_id} 盤的「開始」，請開始這盤真人對戰（倒數後開始，AI 的座位倒數完再行動）。",
             _start_room, params={"game_id": GAME_ID}, summary=lambda data: f"第 {data['game']['id']} 盤已開始。"),
@@ -395,8 +470,8 @@ def handle(kind, ctx):
         spec.fallback(ctx)
         return spec.respond(ctx), {"by": "direct"}
     start = time.perf_counter()
-    run = {"model": narrator.model_config()["name"], "steps": REQUEST_STEPS, "calls": 0, "model_seconds": 0.0,
-           "rejected": 0, "outcome": "ok", "problem": ""}
+    run = {"model": narrator.review_model() if spec.review else narrator.model_config()["name"],
+           "steps": REQUEST_STEPS, "calls": 0, "model_seconds": 0.0, "rejected": 0, "outcome": "ok", "problem": ""}
     try:
         outcome, problem = _run_agent(spec, ctx, run)
     except ValueError as exc:
@@ -433,7 +508,7 @@ def _run_agent(spec, ctx, run):
         started = time.perf_counter()
         run["calls"] += 1
         try:
-            message = _chat(messages, spec.tools)
+            message = _chat(messages, spec.tools, run["model"])
         except (OSError, ValueError, KeyError) as exc:
             return "error", f"{agent.UNREACHABLE}：{exc}"
         finally:

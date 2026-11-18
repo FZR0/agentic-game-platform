@@ -32,6 +32,9 @@ class Game(models.Model):
     # 真人對戰的開始時間（使用者要求，2026-11-13）：房主按「開始」時記成「現在＋倒數秒數」，到了這個時間才能下。
     # 空的＝房主還沒按開始；和 AI 的對局不用
     started_at = models.DateTimeField(null=True, blank=True)
+    # 撲克開放牌桌（2026-11-16）的隊列：{"queue": [{"token": 成員代號} 或 {"ai": "agent"／"bot"}],
+    # "leaving": [這手結束後要下桌的座位]}。誰坐哪裡不在這裡，在 actions 的入座、下桌（重播得出來）
+    table = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -69,6 +72,14 @@ class Game(models.Model):
             return self.human_seat
         return next((p.seat for p in self.players.all() if p.user_id == user.id), None)
 
+    def in_room(self, user):
+        """這位使用者現在在不在這個房間（坐著、觀戰，或開放牌桌上下過桌但還沒離開房間）。
+        開放牌桌打過牌後離開房間的人（GamePlayer.left）仍看得到這一盤、能復盤，但不在房間裡。"""
+        player = next((p for p in self.players.all() if p.user_id == user.id), None)
+        if player is not None:
+            return not player.left
+        return self.spectators.filter(user=user).exists()
+
     @property
     def waiting(self):
         """真人對戰還有空的真人座位：等對手用房間密碼加入，還不能開始下。"""
@@ -98,6 +109,23 @@ class Game(models.Model):
     def finished(self):
         return bool(self.winner or self.draw or self.ended)
 
+    def next_round_id(self):
+        """同一個房間的下一盤（使用者要求，2026-11-15：打完回到房間）。房間＝房間密碼相同的一串對局，
+        每一盤打完由 operations._open_next_round 用同一組密碼開下一盤。沒有下一盤時是 None。"""
+        if not self.pvp or not self.room_code:
+            return None
+        return (Game.objects.filter(mode="pvp", room_code=self.room_code, id__gt=self.id).order_by("id")
+                .values_list("id", flat=True).first())
+
+    def current_round(self):
+        """同一個房間現在的那一盤（最新開的，可能已經換了遊戲）：{"id", "game_type"}；這一盤就是最新的時是 None。
+        房間頁的網址停在打完的那一盤時（打完到回到房間之間重新整理、上一頁），網頁據此回到房間現在的那一盤，
+        而不是把打完的那盤當成復盤打開（2026-11-16 使用者回報：AI 教練出現在房間裡）。"""
+        if not self.pvp or not self.room_code:
+            return None
+        return (Game.objects.filter(mode="pvp", room_code=self.room_code, id__gt=self.id).order_by("-id")
+                .values("id", "game_type").first())
+
     def summary(self):
         data = {"id": self.id, "game_type": self.game_type, "human_seat": self.human_seat, "mode": self.mode,
                 "settings": self.settings, "winner": self.winner, "draw": self.draw, "ended": self.ended,
@@ -107,9 +135,16 @@ class Game(models.Model):
             # 房間的玩家列表也列出觀戰的人（2026-11-13 使用者要求「房間內要有玩家列表」），依進來的先後
             data["spectators"] = [s.user.username for s in self.spectators.select_related("user").order_by("joined_at", "id")]
             data["waiting"] = self.waiting
-            data["room_code"] = self.room_code if self.waiting else ""
+            # 開始前都顯示（2026-11-15）：座位坐滿了，別人還是可以用密碼進來觀戰、等下一盤
+            data["room_code"] = self.room_code if self.started_at is None and not self.ended else ""
+            data["next_round"] = self.next_round_id() if self.finished else None
+            data["current_round"] = self.current_round() if self.finished else None
             data["starts_in"] = self.starts_in()
             data["closed"] = self.ended and self.started_at is None  # 房主在開始前關閉了房間（2026-11-13）
+            if self.settings.get("table"):  # 撲克開放牌桌：隊列、這手結束要下桌的座位、已經離開房間的成員
+                data["table"] = {"owner": self.owner.username if self.owner else None,
+                                 "queue": self.table.get("queue", []), "leaving": self.table.get("leaving", []),
+                                 "away": [p.seat for p in self.players.all() if p.left]}
         return data
 
 
@@ -117,9 +152,11 @@ class GamePlayer(models.Model):
     """真人對戰的一個真人座位。user 是空的＝還在等人用房間密碼加入（2026-11-05）。"""
 
     game = models.ForeignKey(Game, on_delete=models.CASCADE, related_name="players")
-    seat = models.PositiveSmallIntegerField()
+    # 座位號碼；撲克開放牌桌（2026-11-16）是成員代號（holdem.rules.MEMBER＋帳號編號），所以不是 SmallInteger
+    seat = models.PositiveIntegerField()
     user = models.ForeignKey(USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="seats")
     joined_at = models.DateTimeField(null=True, blank=True)
+    left = models.BooleanField(default=False)  # 開放牌桌：打過牌後離開了房間（紀錄留著給他復盤）
 
     class Meta:
         ordering = ["seat"]
@@ -196,7 +233,11 @@ class ModelRun(models.Model):
              "req_list_games": "請求：對局清單", "req_detail": "請求：打開對局", "req_end": "請求：結束對局",
              "req_review": "請求：復盤", "req_note": "請求：AI 思路說明", "req_narrate": "請求：說明",
              "req_new_game": "請求：新對局", "req_move": "請求：下棋", "req_ask": "請求：提問",
-             "req_join_page": "請求：加入對戰頁", "req_join": "請求：加入對戰"}  # 真人對戰（2026-11-05）
+             "req_join_page": "請求：加入對戰頁", "req_join": "請求：加入對戰",  # 真人對戰（2026-11-05）
+             # 房間大廳（2026-11-15）
+             "req_room_seat": "請求：換座位", "req_kick": "請求：請人離開房間", "req_transfer_host": "請求：轉讓房主",
+             "req_leave_room": "請求：離開房間", "req_table": "請求：撲克牌桌操作", "req_table_deal": "請求：撲克補人發牌",
+             "req_table_end": "請求：結束撲克牌局"}
     # ok：模型完成了（Agent 自己決定、說明通過檢查）；fallback：模型有回應但沒完成（次數內沒決定、說明沒通過檢查）；
     # error：呼叫不到模型（連不上、逾時、伺服器暫停呼叫、HTTP 錯誤）。error 反映的是伺服器，不算進模型的成功率與秒數。
     OUTCOMES = {"ok": "成功", "fallback": "沒完成", "error": "呼叫失敗"}

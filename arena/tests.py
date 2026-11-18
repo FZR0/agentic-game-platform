@@ -8,6 +8,7 @@ import socket
 import tempfile
 import urllib.error
 import zipfile
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from io import StringIO
 from pathlib import Path
@@ -43,6 +44,23 @@ class AdminClient(Client):
         return super().request(**request)
 
 
+def poker_table(owner, others=(), ai=(), players=4, seed=None):
+    """撲克開放牌桌（2026-11-16）：owner 開房，others 用密碼進來，大家上桌、房主補 AI（ai 裡是 "agent"／"bot"）。
+    座位照空位順序坐（真的網站是隨機），測試才固定。還沒按開始。"""
+    from holdem.module import MODULE as HOLDEM
+    secret = patch.object(HOLDEM, "new_secret", return_value={"seed": seed}) if seed is not None else nullcontext()
+    with secret, patch("arena.operations.secrets.choice", side_effect=lambda seats: seats[0]):
+        game, _ = operations.start_game(HOLDEM, 1, {"players": players}, owner, "pvp")
+        for user in others:
+            operations.join_game(game.room_code, user)
+        for user in (owner, *others):
+            game, _ = operations.table_action(HOLDEM, game, user, "sit")
+        for kind in ai:
+            game, _ = operations.table_action(HOLDEM, game, owner, "add_ai", kind)
+    game.refresh_from_db()
+    return game
+
+
 def start_now(game):
     """房主按「開始」，倒數立刻結束（測試不等三秒）。真人對戰坐滿後要這樣才能下（2026-11-13）。"""
     game.refresh_from_db()
@@ -62,6 +80,35 @@ class NarrationCheckTests(SimpleTestCase):
 
     def test_accepts_faithful_text(self):
         self.assertIsNone(narrator.check_text("依引擎估計，我下在 H9 是為了形成橫向活三。", self.FACTS, GOMOKU.coord_re))
+
+    def test_the_solved_wording_needs_a_solved_fact(self):
+        # 2026-11-16 情境測試：約 9% 的說明把「在搜尋範圍內已確認」寫在條件式計算或引擎估計上
+        # （撲克「在搜尋範圍內已確認第 10 步沒有止損」），玩家會以為那是算到底確認的
+        conditional = {"kind": "review", "points": [{"evidence": "條件式計算", "text": "在這些假設下，跟注的期望值約 -19。"},
+                                                    {"evidence": "規則確認", "text": "第 1 手牌河牌：底池 80。"}]}
+        self.assertIsNotNone(narrator.check_text("在搜尋範圍內已確認跟注划不來。", conditional, GOMOKU.coord_re))
+        self.assertIsNone(narrator.check_text("在這些假設下，跟注划不來。", conditional, GOMOKU.coord_re))
+        solved = {"kind": "review", "points": [{"evidence": "求解確認", "text": "在搜尋範圍內已確認，黑棋下 H9 可以連續衝四取勝。"}]}
+        self.assertIsNone(narrator.check_text("在搜尋範圍內已確認，下 H9 就能連續衝四取勝。", solved, GOMOKU.coord_re))
+        # 引擎事實本身的「在搜尋範圍內未發現」是估計的說法，照寫沒問題
+        estimate = {"kind": "review", "points": [{"evidence": ESTIMATE, "text": "在搜尋範圍內未發現白棋有連續衝四。"}]}
+        self.assertIsNone(narrator.check_text("在搜尋範圍內未發現白棋有連續衝四。", estimate, GOMOKU.coord_re))
+
+    def test_the_overall_prompt_does_not_ask_for_mistakes_that_are_not_there(self):
+        # 2026-11-17 使用者回報：提示一律要模型寫「最值得改進的一兩點」，沒有失誤時它就把「建議」說成要檢討的失誤，
+        # 還自己下「表現不理想」的評語。沒有失誤就照實說，評語只能用事實裡寫好的
+        intro = narrator.INTROS["overall"]
+        self.assertIn("有失誤（關鍵時刻、小失誤）才說最值得改進的一兩點", intro)
+        self.assertIn("事實寫沒有失誤就照實說沒有失誤", intro)
+        self.assertIn("「建議」不是失誤", intro)
+        # 只點名「穩定」時，模型改說「精準」「良好」（2026-11-17 真模型重現），所以要求不用任何形容表現好壞的詞
+        self.assertIn("不要用任何形容整體表現好壞的詞", intro)
+
+    def test_a_hedge_is_not_a_certainty(self):
+        # 2026-11-16 情境測試：對手觀察的建議寫「他不一定找得到殺法」，模型照著說卻被當成「一定」擋下。
+        # 「不一定」正是估計該有的保留說法；「一定」照樣要擋
+        self.assertIsNone(narrator.check_text("依引擎估計，H9 不一定是最好的一手。", self.FACTS, GOMOKU.coord_re))
+        self.assertIsNotNone(narrator.check_text("H9 不錯，一定能贏。", self.FACTS, GOMOKU.coord_re))
 
     def test_thinking_only_model_is_called_with_thinking_on(self):
         # 只能思考的模型（例如原開發機的 qwen3:4b）關掉思考時會把推理過程寫進回答，所以必須開啟並留足生成長度。
@@ -470,9 +517,9 @@ class ModelRunTests(TestCase):
         for reply in ("重點：擋住。\n說明：先擋。", "重點：下 N2。\n說明：N2 比較好。", OSError("timed out")):
             with patch("arena.narrator._ask_ollama", side_effect=[reply]):
                 self.post("/api/gomoku/narrate/", {"facts": self.FACTS, "model": "qwen3:8b"})
+        smart = narrator.review_model()  # 復盤的說明一律用最聰明的模型（ReviewModelTests）
         self.assertEqual([(r.kind, r.model, r.outcome) for r in self.uses()],
-                         [("review", "qwen3:8b", "ok"), ("review", "qwen3:8b", "fallback"),
-                          ("review", "qwen3:8b", "error")])
+                         [("review", smart, "ok"), ("review", smart, "fallback"), ("review", smart, "error")])
 
     def test_a_saved_explanation_is_not_counted_again(self):
         game = Game.objects.create(game_type="gomoku", human_seat=1, actions=["H8", "H9"])
@@ -560,7 +607,7 @@ def obedient(seen=None, values=None):
     values = values or {}
     called = []
 
-    def chat(messages, tools):
+    def chat(messages, tools, model=None):
         if len(messages) == 2:
             called.clear()
         if seen is not None:
@@ -579,7 +626,7 @@ def scripted(*replies):
     """假的 AI 助理模型：每次依序回傳一組工具呼叫，用完就回覆完成；None 代表呼叫不到模型。"""
     replies = list(replies)
 
-    def chat(messages, tools):
+    def chat(messages, tools, model=None):
         reply = replies.pop(0) if replies else []
         if reply is None:
             raise OSError("timed out")
@@ -746,6 +793,17 @@ class RequestAgentTests(TestCase):
             r = self.post(f"/api/gomoku/games/{game.id}/ask/", {"question": "第 1 手好嗎？", "at": 3}).json()
         self.assertEqual(r["source"], "template")
 
+    def test_the_question_says_which_side_asked(self):
+        # 2026-11-16 情境測試：執白棋的玩家問「我這一步哪裡不好？」，AI 助理查了黑棋的上一步，模型也照著回答黑棋那一步。
+        # 交給 AI 助理的任務和交給模型的說明都要寫明提問的人是哪一方
+        game = Game.objects.create(game_type="gomoku", human_seat=2, actions=["H8", "H9", "I8"])
+        seen = []
+        with patch("arena.orchestrator._chat", side_effect=obedient(seen, {"explain_action": {"n": 2}})),                 patch("arena.narrator._ask_ollama", side_effect=OSError("timed out")):
+            r = self.post(f"/api/gomoku/games/{game.id}/ask/", {"question": "我這一步哪裡不好？", "at": 1}).json()
+        self.assertTrue(any("使用者是白棋" in text for text in seen), seen)
+        prompt = narrator.request_body(r["facts"], narrator.model_config(), GOMOKU.name)["messages"][1]["content"]
+        self.assertIn("提問的玩家（問題裡的「我」）是白棋。", prompt)
+
     def test_question_falls_back_to_the_old_lookup(self):
         game = Game.objects.create(game_type="gomoku", human_seat=1, actions=["H8", "H9", "I8"])
         with patch("arena.orchestrator._chat", side_effect=OSError("timed out")), \
@@ -771,6 +829,87 @@ class RequestAgentTests(TestCase):
         chat.assert_not_called()
         self.assertEqual(r["handled"], {"by": "direct"})
         self.assertFalse(ModelRun.objects.exists())
+
+
+SMART = {"name": "smart:70b", "label": "最聰明", "think": False, "agent": True}
+SMALL = {"name": "small:2b", "label": "最小", "think": False, "agent": True}
+DEFAULT = {"name": "default:26b", "label": "預設", "think": False, "agent": True}
+
+
+@override_settings(OLLAMA_MODELS=[SMART, DEFAULT, SMALL], OLLAMA_MODEL=DEFAULT["name"])
+class ReviewModelTests(TestCase):
+    # 使用者決定（2026-11-16）：復盤 AI 一律用最聰明的模型（OLLAMA_MODELS 依聰明程度排，第一個），
+    # 不跟著玩家在進階設定選的模型：玩家為了下棋快選小模型時，復盤的說明與回答不該跟著變差。
+    # AI 下棋那一手的思路說明不在內：它說明的是玩家選的那個模型自己下的棋。
+    client_class = AdminClient
+    FACTS = {"kind": "review", "points": [{"evidence": ESTIMATE, "text": "白棋下 H9。"}]}
+
+    def setUp(self):
+        self.narrated = []  # 每次說明用的模型
+
+        def ask(facts, config, game_name):
+            self.narrated.append((facts["kind"], config["name"]))
+            return "重點：擋住。\n說明：先擋。"
+        for target, effect in (("arena.narrator._ask_ollama", ask),
+                               ("arena.agent._chat", OSError("測試不連 Ollama"))):
+            patcher = patch(target, side_effect=effect)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.installed = {SMART["name"], DEFAULT["name"], SMALL["name"]}  # 這台 Ollama 伺服器上有的模型
+        patcher = patch("arena.narrator.installed_models", side_effect=lambda: self.installed)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.assistant = []  # AI 助理每次呼叫用的模型
+
+        def chat(messages, tools, model=None):
+            self.assistant.append(model)
+            return {"content": "完成", "tool_calls": []}
+        patcher = patch("arena.orchestrator._chat", side_effect=chat)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def post(self, url, body):
+        return self.client.post(url, json.dumps(body), content_type="application/json")
+
+    def test_review_explanations_use_the_smartest_model_whatever_the_player_picked(self):
+        for kind in ("review", "overall", "opponent"):
+            self.post("/api/gomoku/narrate/", {"facts": {**self.FACTS, "kind": kind}, "model": SMALL["name"]})
+        self.assertEqual(self.narrated, [("review", SMART["name"]), ("overall", SMART["name"]),
+                                         ("opponent", SMART["name"])])
+        # 模型使用紀錄記的是實際用的模型，報表才不會把最聰明的模型的秒數算到玩家選的小模型上
+        self.assertEqual({r.model for r in ModelRun.objects.exclude(kind__startswith="req_")}, {SMART["name"]})
+
+    def test_the_smartest_model_is_the_smartest_one_this_server_has(self):
+        # 本機 AI 模式的本機 Ollama 通常只有小模型：固定用清單第一個的話，每次復盤都找不到模型、只能顯示事實原文
+        self.installed = {DEFAULT["name"], SMALL["name"]}
+        self.post("/api/gomoku/narrate/", {"facts": self.FACTS, "model": SMALL["name"]})
+        self.assertEqual(self.narrated, [("review", DEFAULT["name"])])
+
+    def test_questions_are_answered_by_the_smartest_model(self):
+        game = Game.objects.create(game_type="gomoku", human_seat=1, actions=["H8", "H9", "I8"])
+        r = self.post(f"/api/gomoku/games/{game.id}/ask/", {"question": "第 1 手好嗎？", "at": 3, "model": SMALL["name"]})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.narrated, [("ask", SMART["name"])])
+
+    def test_the_ai_moves_own_explanation_keeps_the_players_model(self):
+        game = Game.objects.create(game_type="gomoku", human_seat=1, actions=["H8", "H9"])
+        AiNote.objects.create(game=game, index=1, seat=2, facts={**self.FACTS, "kind": "ai_move"})
+        self.post(f"/api/gomoku/games/{game.id}/notes/1/narrate/", {"model": SMALL["name"]})
+        self.assertEqual(self.narrated, [("ai_move", SMALL["name"])])
+
+    def test_the_assistant_handling_review_requests_is_the_smartest_model_too(self):
+        game = Game.objects.create(game_type="gomoku", human_seat=1, actions=["H8", "H9", "I8"])
+        self.client.get(f"/api/gomoku/games/{game.id}/review/")
+        self.post(f"/api/gomoku/games/{game.id}/ask/", {"question": "第 1 手好嗎？", "at": 3, "model": SMALL["name"]})
+        self.post("/api/gomoku/narrate/", {"facts": self.FACTS, "model": SMALL["name"]})
+        review_calls = list(self.assistant)
+        self.post(f"/api/gomoku/games/{game.id}/move/", {"action": "A1", "model": SMALL["name"]})
+        self.assertEqual(set(review_calls), {SMART["name"]})
+        # 其他請求（下棋、開頁面）照舊用預設模型：只有復盤改
+        self.assertEqual(set(self.assistant[len(review_calls):]), {DEFAULT["name"]})
+        self.assertEqual({r.kind: r.model for r in ModelRun.objects.filter(kind__startswith="req_")},
+                         {"req_review": SMART["name"], "req_ask": SMART["name"], "req_narrate": SMART["name"],
+                          "req_move": DEFAULT["name"]})
 
 
 class RulesPanelTests(TestCase):
@@ -1718,11 +1857,12 @@ class RealtimeTests(TestCase):
         sent = []
         consumer = realtime.GameConsumer()
         consumer.game_id, consumer.seat = self.game.id, 2
+        consumer.scope = {"user": self.bob}  # 每次推送都依這個帳號現在的座位重算（房間裡可以換座位，2026-11-15）
         consumer.send_json = sent.append
         with patch.object(orchestrator, "handle", side_effect=AssertionError("推送不經過 AI 助理")):
             consumer.game_changed({"type": "game.changed"})
         self.game.refresh_from_db()
-        self.assertEqual(sent, [{"type": "update", **operations.game_detail(GOMOKU, self.game, 2)}])
+        self.assertEqual(sent, [{"type": "update", **operations.game_detail(GOMOKU, self.game, 2, self.bob)}])
 
 
 class OpponentObservationTests(TestCase):
@@ -1754,6 +1894,12 @@ class OpponentObservationTests(TestCase):
         self.assertIn(GOMOKU.opponent_tips["沒有擋住對手的衝四"], " ".join(texts))
         self.assertIn(8, [s["index"] for s in rivals[0]["signs"]])
         self.assertEqual(rivals[0]["facts"]["kind"], "opponent")
+
+    def test_each_player_reads_the_result_from_their_own_side(self):
+        # 2026-11-16 情境測試：總評只寫「白棋（真人）贏了」時，兩個人看到同一句話，模型不一定說得清楚誰輸誰贏
+        game = self.play(["H8", "A1", "J10", "A2", "L3", "A3", "C12", "A4", "N14", "A5"])
+        first = {seat: operations.review(GOMOKU, game, seat)["overall"]["points"][0]["text"] for seat in (1, 2)}
+        self.assertEqual(first, {1: "結果：你（黑棋）輸了，白棋（真人）贏了。", 2: "結果：你（白棋）贏了。"})
 
     def test_advice_is_marked_as_experience_not_a_computed_fact(self):
         game = self.play(["H8", "A1", "J10", "A2", "L3", "A3", "C12", "A4", "N14", "A5"])
@@ -1957,8 +2103,9 @@ class ExpiredFormTests(TestCase):
 
 
 class RoomSettingsTests(TestCase):
-    """建立對戰房間（使用者要求，2026-11-08）：首頁一鍵開房，朋友加入前房主可以自由改設定。
-    改的是同一個房間（房間密碼不變，已經傳出去的邀請照樣能用）；朋友加入後就不能改，因為對方是看了設定才加入的。"""
+    """建立對戰房間（使用者要求，2026-11-08）：首頁一鍵開房，房主可以自由改設定。
+    改的是同一個房間（房間密碼不變，已經傳出去的邀請照樣能用）。原本朋友加入後就鎖住，
+    2026-11-15 使用者要求「房主可以自由選擇」：按「開始」之前都能改（朋友照樣坐著），開始後才不能改。"""
 
     def setUp(self):
         self.alice = User.objects.create_user("alice", password="x")
@@ -1978,11 +2125,19 @@ class RoomSettingsTests(TestCase):
         r = self.post("alice", f"/api/{game}/games/", {"seat": 1, "mode": "pvp", **body}).json()
         return Game.objects.get(pk=r["game"]["id"])
 
-    def test_the_home_page_links_to_creating_a_room_for_every_game(self):
+    def test_the_home_page_creates_a_room_in_one_click_and_the_host_picks_the_game_inside(self):
+        # 2026-11-16 使用者要求「建立對戰改成按下後直接建立對戰」：不先跳出選遊戲的選單，
+        # 一按就用第一個遊戲開房；要玩別的遊戲，房主在房間裡（按開始前）換
         page = self.clients["alice"].get("/").content.decode()
-        self.assertIn("建立對戰房間", page)
-        for key in games.GAMES:
-            self.assertIn(f"/{key}/?room=new", page)
+        first = next(iter(games.GAMES))
+        self.assertIn(f'href="/{first}/?room=new">建立對戰房間</a>', page)
+        self.assertEqual(page.count("?room=new"), 1)
+        game = self.open_room(game=first)
+        r = self.post("alice", f"/api/{first}/games/{game.id}/room/",
+                      {"seat": 1, "game_type": "weiqi", "settings": {"size": 9}})
+        self.assertEqual(r.status_code, 200)
+        game.refresh_from_db()
+        self.assertEqual(game.game_type, "weiqi")
 
     def test_the_host_changes_settings_in_the_same_room_before_anyone_joins(self):
         game = self.open_room(settings={"size": 9})
@@ -1997,14 +2152,21 @@ class RoomSettingsTests(TestCase):
         game.refresh_from_db()
         self.assertEqual((game.seat_of(self.alice), game.seat_of(self.bob)), (2, 1))
 
-    def test_settings_are_locked_once_a_friend_has_joined(self):
+    def test_the_host_can_still_change_settings_after_a_friend_sits_down(self):
+        # 原本朋友加入後就鎖住設定；2026-11-15 使用者決定房主在開始前都能自由改，朋友照樣坐著
         game = self.open_room(settings={"size": 9})
         self.clients["bob"].post("/join/", {"code": game.room_code})
         r = self.post("alice", f"/api/weiqi/games/{game.id}/room/", {"seat": 1, "settings": {"size": 19}})
+        self.assertEqual(r.status_code, 200)
+        game.refresh_from_db()
+        self.assertEqual(game.settings["size"], 19)
+        self.assertEqual(game.seat_of(self.bob), 2)  # 朋友的座位還在
+        # 按了開始就不能再改
+        start_now(game)
+        r = self.post("alice", f"/api/weiqi/games/{game.id}/room/", {"seat": 1, "settings": {"size": 9}})
         self.assertEqual(r.status_code, 400)
         game.refresh_from_db()
-        self.assertEqual(game.settings["size"], 9)
-        self.assertEqual(game.seat_of(self.bob), 2)  # 朋友的座位還在
+        self.assertEqual(game.settings["size"], 19)
 
     def test_only_the_host_can_change_the_room(self):
         game = self.open_room()
@@ -2013,19 +2175,22 @@ class RoomSettingsTests(TestCase):
         with self.assertRaises(ValueError):
             operations.change_room(WEIQI, game, self.bob, 1, {"size": 9})
 
-    def test_poker_host_can_change_the_table_size_and_the_seats_for_friends(self):
+    def test_poker_host_can_change_the_table_size_and_who_still_fits_stays_seated(self):
+        # 撲克開放牌桌（2026-11-16）：改人數時，座位號碼還在新人數內的人（真人、AI）照樣坐著，其他人改成觀戰
         from holdem.module import MODULE as HOLDEM
-        game = self.open_room("holdem", settings={"players": 4, "humans": [1, 2]})
+        game = self.open_room("holdem", settings={"players": 4})
         old_seed = game.secret["seed"]
-        r = self.post("alice", f"/api/holdem/games/{game.id}/room/",
-                      {"seat": 1, "settings": {"players": 6, "humans": [1, 3, 5]}})
+        with patch("arena.operations.secrets.choice", side_effect=lambda seats: seats[-1]):
+            self.post("alice", f"/api/holdem/games/{game.id}/table/", {"op": "sit"})  # 4 號位
+            self.post("alice", f"/api/holdem/games/{game.id}/table/", {"op": "add_ai", "kind": "agent"})  # 3 號位
+        r = self.post("alice", f"/api/holdem/games/{game.id}/room/", {"seat": 1, "settings": {"players": 3}})
         self.assertEqual(r.status_code, 200)
         game.refresh_from_db()
-        self.assertEqual(sorted(game.human_seats()), [1, 3, 5])
-        self.assertEqual(game.settings["players"], 6)
+        self.assertEqual(game.settings["players"], 3)
+        self.assertEqual(HOLDEM.replay(operations.settings_of(game), game.actions).occupant, {3: "agent"})
+        self.assertIn("alice", game.summary()["spectators"])
         self.assertNotEqual(game.secret["seed"], old_seed)  # 新的牌局，洗牌種子也換掉
-        self.assertNotIn("seed", json.dumps(r.json()))  # 洗牌種子絕不送到網頁
-        self.assertEqual(HOLDEM.pvp_seats(game.settings), [1, 3, 5])
+        self.assertNotIn("seed", json.dumps(r.json()))  # 洗牌種子不能送到網頁
 
 
 class SpectatorTests(TestCase):
@@ -2111,12 +2276,12 @@ class SpectatorTests(TestCase):
 
     def test_poker_spectators_never_see_hole_cards_before_showdown(self):
         from holdem.module import MODULE as HOLDEM
-        game, _ = operations.start_game(HOLDEM, 1, {"players": 4, "humans": [1, 2]}, self.alice, "pvp")
-        operations.join_game(game.room_code, self.bob)
+        game = poker_table(self.alice, [self.bob], ai=("agent", "bot"))
         game = start_now(game)
         with patch.object(agent, "_chat", side_effect=OSError("測試不連模型")):
-            operations.run_ai_turns(HOLDEM, game, settings.OLLAMA_MODEL, HOLDEM.default_steps, 1)
+            operations.table_advance(HOLDEM, game, 0, settings.OLLAMA_MODEL, HOLDEM.default_steps, None)
         operations.watch_game(game.room_code, self.carol)
+        game.refresh_from_db()
         detail = self.clients["carol"].get(f"/api/holdem/games/{game.id}/").json()
         state = HOLDEM.replay(operations.settings_of(game), game.actions)
         self.assertFalse(state.hand_over)  # 牌局進行中
@@ -2196,16 +2361,16 @@ class RoomStartTests(RefusalAssertions, TestCase):
         self.assertEqual(Game.objects.get(pk=game.pk).started_at, first)
 
     def test_everyone_sees_the_countdown_before_any_ai_seat_acts(self):
-        # 撲克的 AI 座位可能先說話：要先通知大家開始倒數，倒數完 AI 才行動，不能趁倒數先下
+        # 撲克有 AI 座位可能先行動：要先通知大家開始倒數，倒數完 AI 才行動，不能趕在倒數前下
         from holdem.module import MODULE as HOLDEM
         from . import realtime
-        game = self.full_room(HOLDEM, {"players": 4, "humans": [1, 2]})
+        game = poker_table(self.alice, [self.bob], ai=("agent",))
         events = []
         real_ai = operations.run_ai_turns
 
         def countdown_passes(seconds):
             events.append(("sleep", seconds))
-            # sleep 被換掉了，時間沒有真的過去：把開始時間撥到現在，讓 AI 在「倒數結束」後能行動
+            # sleep 被換掉了，時間沒有真的過去：把開始時間改成現在，讓 AI 在「倒數結束」後行動
             Game.objects.filter(pk=game.pk).update(started_at=django_timezone.now())
 
         def ai_turns(module, g, *args):
@@ -2220,6 +2385,35 @@ class RoomStartTests(RefusalAssertions, TestCase):
         self.assertEqual([e[0] for e in events][:3], ["notify", "sleep", "ai"])
         self.assertGreater(events[0][1], 0)  # 通知時還在倒數
         self.assertEqual(ModelRun.objects.filter(kind="req_start").count(), 1)  # 經過 AI 助理
+
+    def test_the_ai_seats_act_as_soon_as_the_countdown_ends(self):
+        # 使用者回報（2026-11-15）：撲克開房間、按開始後輪到 AI 的座位卻一直不行動，牌局卡住（第 140 盤）。
+        # 原因：倒數的等待照四捨五入到小數兩位的秒數睡，早醒幾毫秒時 run_ai_turns 以為還沒開始就不行動。
+        # 用假時鐘重現：按開始到開始等待之間經過 0.006 秒，剩 2.994 秒，四捨五入成 2.99 就會早醒
+        from holdem.module import MODULE as HOLDEM
+        from . import realtime
+        # 找一個發第一手後由 AI 先說話的洗牌種子（座位照空位順序：alice 1、bob 2、AI 3、4 號位）
+        tokens = [HOLDEM.member_token(self.alice), HOLDEM.member_token(self.bob)]
+        def first_actor(seed):
+            t = HOLDEM.new_state({**HOLDEM.clean_settings({"players": 4, "table": True}), "secret": {"seed": seed}})
+            for a in (f"sit 1 {tokens[0]}", f"sit 2 {tokens[1]}", "sit 3 agent", "sit 4 tag", "deal"):
+                t = HOLDEM.apply(t, a)
+            return t.to_act
+        seed = next(n for n in range(50) if first_actor(n) in (3, 4))
+        game = poker_table(self.alice, [self.bob], ai=("agent", "bot"), seed=seed)
+        clock = [django_timezone.now()]
+
+        def tick(seconds):
+            clock[0] += timedelta(seconds=seconds)
+
+        with patch("django.utils.timezone.now", side_effect=lambda: clock[0]), \
+                patch.object(realtime, "notify", side_effect=lambda g: tick(0.006)), \
+                patch.object(operations.time, "sleep", side_effect=tick):
+            self.assertEqual(self.post("alice", f"/api/holdem/games/{game.id}/start/").status_code, 200)
+        game.refresh_from_db()
+        state = HOLDEM.replay(operations.settings_of(game), game.actions)
+        self.assertGreater(len(game.actions), game.actions.index("deal") + 1, "倒數結束後輪到 AI 的座位要馬上行動")
+        self.assertIn(HOLDEM.to_move(state), game.human_seats())  # 行動到輪到真人為止，不會卡在 AI
 
     def test_the_ai_seats_never_act_before_the_start(self):
         from holdem.module import MODULE as HOLDEM
@@ -2401,3 +2595,246 @@ class RoomChatTests(RefusalAssertions, TestCase):
             with patch.object(orchestrator, "handle", side_effect=AssertionError("推送不經過 AI 助理")):
                 consumer.chat_changed({"type": "chat.changed"})
             self.assertEqual([m["text"] for m in sent[0]["chat"]], [expected])
+
+
+class RoomLobbyTests(RefusalAssertions, TestCase):
+    """打完回到房間（使用者要求，2026-11-15：「完成遊戲後應該是要回到房間，而不是只有復盤然後遊戲結束」）。
+    房間＝房間密碼相同的一串對局：每一盤打完，同樣的人回到房間大廳（下一盤，還沒按開始），房主再按開始打下一盤。
+    每一盤各自是一筆對局（戰績、復盤一盤一盤算，到對局紀錄找）；聊天跨盤保留。
+    在大廳裡（只有開始前）每個人能自己坐下或起身觀戰、離開房間；房主還能改設定、換遊戲、幫人換座位、請人離開（可以再回來）、
+    轉讓房主。對局中這些都不行，否則快輸的一方換座位或離開就能逃掉。"""
+
+    def setUp(self):
+        self.users = {name: User.objects.create_user(name, password="x") for name in ("alice", "bob", "carol", "dave")}
+        self.clients = {}
+        for name, user in self.users.items():
+            self.clients[name] = Client()
+            self.clients[name].force_login(user)
+        for patcher in (patch.object(orchestrator, "_chat", side_effect=OSError("測試不連模型")),
+                        patch.object(agent, "_chat", side_effect=OSError("測試不連模型"))):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def post(self, who, url, body=None):
+        return self.clients[who].post(url, json.dumps(body or {}), content_type="application/json")
+
+    def room(self, module=GOMOKU, settings=None, watcher="carol"):
+        """alice 開房、bob 坐下、carol 觀戰（還沒按開始）。"""
+        game, _ = operations.start_game(module, 1, settings or {}, self.users["alice"], "pvp")
+        operations.join_game(game.room_code, self.users["bob"])
+        if watcher:
+            operations.watch_game(game.room_code, self.users[watcher])
+        game.refresh_from_db()
+        return game
+
+    def finish(self, game):
+        """按開始後 alice（黑棋先下）認輸，回傳認輸的回應。"""
+        start_now(game)
+        return self.post("alice", f"/api/gomoku/games/{game.id}/move/", {"action": "resign"})
+
+    def seats(self, game):
+        game.refresh_from_db()
+        return {p.seat: p.user.username if p.user else None for p in game.players.all()}
+
+    def heard(self, who, game_id):
+        return [m["text"] for m in self.clients[who].get(f"/api/gomoku/games/{game_id}/").json()["chat"]]
+
+    def test_after_a_game_everyone_is_back_in_the_room_for_the_next_one(self):
+        game = self.room()
+        r = self.finish(game)
+        nxt = Game.objects.get(pk=r.json()["next_round"])
+        game.refresh_from_db()
+        self.assertEqual(game.winner, 2)
+        self.assertEqual(game.summary()["next_round"], nxt.id)
+        # 同一個房間：同一組密碼、房主、設定、座位、觀戰的人；還沒開始，由房主再按開始
+        self.assertEqual((nxt.room_code, nxt.owner, nxt.game_type, nxt.actions),
+                         (game.room_code, game.owner, "gomoku", []))
+        self.assertEqual(self.seats(nxt), {1: "alice", 2: "bob"})
+        self.assertEqual(nxt.summary()["spectators"], ["carol"])
+        self.assertIsNone(nxt.started_at)
+        self.assertEqual(nxt.summary()["room_code"], game.room_code)  # 座位坐滿了，別人仍可用密碼進來觀戰
+        # 每一盤是各自的一筆：打完的那盤在對局紀錄可以復盤，下一盤是「回到房間」
+        history = self.clients["alice"].get("/history/").content.decode()
+        self.assertIn(f"/gomoku/?review={game.id}", history)
+        self.assertIn(f"/gomoku/?resume={nxt.id}", history)
+        self.assertEqual(operations._result(game, self.users["bob"]), "win")
+        # 用房間密碼進來的人到的是現在這一盤（座位坐滿 → 觀戰）
+        self.assertEqual(operations.join_game(game.room_code, self.users["dave"]), (nxt, None))
+        # 第二盤打完再開第三盤，房間一直延續
+        r = self.finish(nxt)
+        self.assertEqual(Game.objects.get(pk=r.json()["next_round"]).room_code, game.room_code)
+
+    def test_a_room_closed_by_the_host_does_not_come_back(self):
+        game = self.room()
+        operations.close_room(game, self.users["alice"])
+        game.refresh_from_db()
+        self.assertIsNone(operations._open_next_round(game))
+        self.assertEqual(Game.objects.filter(room_code=game.room_code).count(), 1)
+
+    def test_both_players_find_every_finished_game_of_the_room_and_review_their_own_side(self):
+        # 2026-11-16 使用者要求：房間裡的「復盤」改成「對戰紀錄」，雙方都能復盤。
+        # 對戰紀錄＝對局紀錄只列這個房間打完的每一盤；每一盤照舊只給坐過的人看，所以雙方都看得到、
+        # 觀戰的人和外人看不到（不能拿別人房間的編號探出別人的對局）
+        first = self.room()
+        second = Game.objects.get(pk=self.finish(first).json()["next_round"])
+        lobby = Game.objects.get(pk=self.finish(second).json()["next_round"])
+        other, _ = operations.start_game(GOMOKU, 1, {}, self.users["alice"], "pvp")  # alice 的另一個房間
+        for who, seat in (("alice", 1), ("bob", 2)):
+            page = self.clients[who].get(f"/history/?room={lobby.id}").content.decode()
+            self.assertIn("這個房間的對戰紀錄", page)
+            for game in (first, second):
+                self.assertIn(f"/gomoku/?review={game.id}", page)
+                r = self.clients[who].get(f"/api/gomoku/games/{game.id}/review/")
+                self.assertEqual(r.status_code, 200)
+                self.assertEqual(r.json()["moments"], GOMOKU.review(game.settings, game.actions, seat))
+            # 還沒打的這一盤、別的房間都不在這個房間的紀錄裡（頂端的「回到房間」不算，只看清單）
+            listed = page[page.index('class="row-list"'):]
+            self.assertNotIn(f"={lobby.id}\"", listed)
+            self.assertNotIn(f"={other.id}\"", listed)
+        for who in ("carol", "dave"):  # 觀戰的人、外人
+            page = self.clients[who].get(f"/history/?room={lobby.id}").content.decode()
+            self.assertIn("這個房間還沒有打完的對局", page)
+            self.assertNotIn("?review=", page)
+
+    def test_a_finished_game_points_back_to_the_room_s_current_game(self):
+        # 2026-11-16 使用者回報 bug：AI 教練出現在房間裡。打完到回到房間之間重新整理（或按上一頁），
+        # 網址還是打完的那一盤，網頁把它當成復盤打開。打完的那一盤要告訴網頁房間現在是哪一盤（換了遊戲也一樣），
+        # 網頁才能回到房間；房間現在的那一盤沒有這個欄位，所以不會一直跳
+        first = self.room()
+        second = Game.objects.get(pk=self.finish(first).json()["next_round"])
+        third = Game.objects.get(pk=self.finish(second).json()["next_round"])
+        r = self.post("alice", f"/api/gomoku/games/{third.id}/room/", {"seat": 1, "game_type": "weiqi", "settings": {}})
+        self.assertEqual(r.status_code, 200)
+        for game in (first, second):
+            detail = self.clients["bob"].get(f"/api/gomoku/games/{game.id}/").json()
+            self.assertEqual(detail["game"]["current_round"], {"id": third.id, "game_type": "weiqi"})
+        self.assertIsNone(self.clients["bob"].get(f"/api/weiqi/games/{third.id}/").json()["game"]["current_round"])
+
+    def test_chat_carries_over_between_games_and_each_saved_game_keeps_its_own(self):
+        game = self.room()
+        url = f"/api/gomoku/games/{game.id}"
+        self.post("alice", f"{url}/chat/", {"text": "開始前"})
+        start_now(game)
+        self.post("bob", f"{url}/chat/", {"text": "玩家說"})
+        self.post("carol", f"{url}/chat/", {"text": "觀戰說"})
+        nxt = Game.objects.get(pk=self.post("alice", f"{url}/move/", {"action": "resign"}).json()["next_round"])
+        self.post("carol", f"/api/gomoku/games/{nxt.id}/chat/", {"text": "下一盤"})
+        # 回到房間後，上一盤兩邊的聊天都看得到（打完了，不會再替誰出主意）
+        for who in ("alice", "carol"):
+            self.assertEqual(self.heard(who, nxt.id), ["開始前", "玩家說", "觀戰說", "下一盤"])
+        # 從對局紀錄打開上一盤：看得到到那一盤為止的聊天
+        self.assertEqual(self.heard("bob", game.id), ["開始前", "玩家說", "觀戰說"])
+        # 下一盤開始後，兩邊又分開
+        start_now(nxt)
+        self.post("bob", f"/api/gomoku/games/{nxt.id}/chat/", {"text": "第二盤玩家"})
+        self.assertNotIn("第二盤玩家", self.heard("carol", nxt.id))
+
+    def test_people_sit_down_or_watch_by_themselves_only_in_the_room(self):
+        game = self.room()
+        url = f"/api/gomoku/games/{game.id}"
+        self.assertEqual(self.post("bob", f"{url}/seat/", {"seat": 0}).status_code, 200)  # 起身觀戰
+        self.assertEqual(self.seats(game), {1: "alice", 2: None})
+        self.assertEqual(sorted(game.summary()["spectators"]), ["bob", "carol"])
+        self.assertEqual(self.post("carol", f"{url}/seat/", {"seat": 2}).status_code, 200)  # 觀戰的人坐下
+        self.assertEqual(self.seats(game), {1: "alice", 2: "carol"})
+        self.assertEqual(game.summary()["spectators"], ["bob"])
+        self.assertRefused(self.post("bob", f"{url}/seat/", {"seat": 2}), "已經有人")
+        self.assertRefused(self.post("bob", f"{url}/seat/", {"seat": 1, "player": "carol"}), "只有房主")
+        self.assertRefused(self.post("alice", f"{url}/seat/", {"seat": 0}), "房主要坐在座位上")
+        self.assertEqual(ModelRun.objects.filter(kind="req_room_seat").count(), 5)  # 每個操作都經過 AI 助理
+        # 開始後不能換座位、起身（不然快輸的一方就能逃掉）
+        start_now(game)
+        self.assertRefused(self.post("carol", f"{url}/seat/", {"seat": 0}), "已經開始")
+        self.assertEqual(self.seats(game), {1: "alice", 2: "carol"})
+
+    def test_the_host_moves_people_kicks_and_hands_over_the_room(self):
+        game = self.room()
+        url = f"/api/gomoku/games/{game.id}"
+        # 房主把 bob 換到自己的座位：兩人交換，房主的座位跟著換
+        self.assertEqual(self.post("alice", f"{url}/seat/", {"player": "bob", "seat": 1}).status_code, 200)
+        self.assertEqual(self.seats(game), {1: "bob", 2: "alice"})
+        self.assertEqual(game.human_seat, 2)
+        # 房主把觀戰的 carol 換進 bob 的座位：bob 改成觀戰
+        self.post("alice", f"{url}/seat/", {"player": "carol", "seat": 1})
+        self.assertEqual(self.seats(game), {1: "carol", 2: "alice"})
+        self.assertEqual(game.summary()["spectators"], ["bob"])
+        # 請人離開：只有房主能請；被請出去的人可以再用密碼回來（使用者決定）
+        self.assertRefused(self.post("carol", f"{url}/kick/", {"player": "alice"}), "只有房主")
+        self.assertEqual(self.post("alice", f"{url}/kick/", {"player": "carol"}).status_code, 200)
+        self.assertEqual(self.seats(game), {1: None, 2: "alice"})
+        self.assertEqual(self.clients["carol"].get(f"{url}/").status_code, 404)
+        self.assertEqual(operations.join_game(game.room_code, self.users["carol"]), (game, 1))
+        # 轉讓房主：只能交給坐在座位上的人；交出去之後原房主就不能再管房間
+        self.assertRefused(self.post("alice", f"{url}/host/", {"player": "bob"}), "在觀戰")
+        self.assertEqual(self.post("alice", f"{url}/host/", {"player": "carol"}).status_code, 200)
+        game.refresh_from_db()
+        self.assertEqual((game.owner.username, game.human_seat), ("carol", 1))
+        self.assertRefused(self.post("alice", f"{url}/kick/", {"player": "bob"}), "只有房主")
+        self.assertTrue(self.clients["carol"].get(f"{url}/").json()["is_owner"])
+        self.assertFalse(self.clients["alice"].get(f"{url}/").json()["is_owner"])
+
+    def test_the_host_can_switch_games_and_whoever_does_not_fit_watches(self):
+        # 換成撲克（2026-11-16 起是開放牌桌）：牌桌是空的，房間裡的人都到觀戰席，自己上桌
+        from holdem.module import MODULE as HOLDEM
+        game = self.room(watcher="")
+        operations.join_game(game.room_code, self.users["carol"])  # 座位滿了：觀戰
+        r = self.post("alice", f"/api/gomoku/games/{game.id}/room/",
+                      {"game_type": "holdem", "seat": 1, "settings": {"players": 3}})
+        self.assertEqual(r.status_code, 200)
+        game.refresh_from_db()
+        self.assertEqual(game.game_type, "holdem")
+        self.assertEqual(r.json()["game"]["id"], game.id)
+        self.assertEqual(HOLDEM.replay(operations.settings_of(game), game.actions).occupant, {})
+        self.assertEqual(sorted(game.summary()["spectators"]), ["alice", "bob", "carol"])
+        self.assertEqual(self.clients["bob"].get(f"/api/holdem/games/{game.id}/").status_code, 200)
+        with patch("arena.operations.secrets.choice", side_effect=lambda seats: seats[-1]):
+            for who in ("bob", "carol"):
+                self.post(who, f"/api/holdem/games/{game.id}/table/", {"op": "sit"})  # bob 3 號位、carol 2 號位
+        # 座位變少：坐不下的人（3 號位的 bob）改成觀戰，不會被移出房間
+        self.post("alice", f"/api/holdem/games/{game.id}/room/", {"seat": 1, "settings": {"players": 2}})
+        game.refresh_from_db()
+        occupant = HOLDEM.replay(operations.settings_of(game), game.actions).occupant
+        self.assertEqual(occupant, {2: HOLDEM.member_token(self.users["carol"])})
+        self.assertIn("bob", game.summary()["spectators"])
+        # 撲克的座位是隨機的，房主不能幫人換座位；房主可以交給觀戰席的人（開放牌桌的房主不一定在桌上）
+        self.assertRefused(self.post("alice", f"/api/holdem/games/{game.id}/seat/", {"player": "carol", "seat": 1}),
+                           "隨機")
+        self.post("alice", f"/api/holdem/games/{game.id}/host/", {"player": "bob"})
+        game.refresh_from_db()
+        self.assertEqual(game.owner.username, "bob")
+
+    def test_leaving_the_room(self):
+        game = self.room()
+        url = f"/api/gomoku/games/{game.id}"
+        self.assertEqual(self.post("carol", f"{url}/leave/").status_code, 200)  # 觀戰的人離開
+        self.assertEqual(game.summary()["spectators"], [])
+        # 房主離開：房主交給還坐著的人
+        self.assertEqual(self.post("alice", f"{url}/leave/").status_code, 200)
+        game.refresh_from_db()
+        self.assertEqual((game.owner.username, game.human_seat, self.seats(game)), ("bob", 2, {1: None, 2: "bob"}))
+        self.assertNotIn(game, Game.visible_to(self.users["alice"]))
+        # 最後一個人離開：房間關閉，清單上也不再列出
+        self.post("bob", f"{url}/leave/")
+        game.refresh_from_db()
+        self.assertTrue(operations.closed_room(game))
+        self.assertEqual(operations.active_rooms(self.users["bob"]), [])
+        # 對局中不能離開（要認輸）
+        other = self.room(watcher="")
+        start_now(other)
+        self.assertRefused(self.post("bob", f"/api/gomoku/games/{other.id}/leave/"), "認輸")
+
+    def test_a_kicked_player_is_told_through_the_live_connection(self):
+        from . import realtime
+        game = self.room()
+        sent = []
+        consumer = realtime.GameConsumer()
+        consumer.game_id, consumer.seat, consumer.scope = game.id, 2, {"user": self.users["bob"]}
+        consumer.send_json = sent.append
+        consumer.close = lambda *args, **kwargs: sent.append("closed")
+        # 房主幫 bob 換到觀戰：推送依 bob 現在的身分（觀戰，座位 None）重算
+        operations.move_player(GOMOKU, game, self.users["alice"], "bob", None)
+        consumer.game_changed(None)
+        self.assertIsNone(sent[-1]["my_seat"])
+        operations.kick_player(game, self.users["alice"], "bob")
+        consumer.game_changed(None)
+        self.assertEqual(sent[-2:], [{"type": "left"}, "closed"])

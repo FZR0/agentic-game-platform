@@ -15,7 +15,14 @@ const COORD_RE = new RegExp(CONFIG.coordPattern, "g");
 const canvas = document.getElementById("board");
 const csrfToken = document.querySelector('meta[name="csrf-token"]').content;
 const $ = (id) => document.getElementById(id);
-const seatName = (seat) => CONFIG.seatNames[seat] ?? `座位 ${seat}`;
+// 撲克開放牌桌（2026-11-16）的真人「座位」是成員代號（1000＋帳號編號，見 holdem.rules.MEMBER），畫面上寫他現在坐的座位
+const seatName = (seat) => {
+  if (seat >= 1000) {
+    const s = state.frames.at(-1)?.seats?.find((x) => x.token === seat);
+    return s ? `${s.seat} 號位` : "觀戰席";
+  }
+  return CONFIG.seatNames[seat] ?? `座位 ${seat}`;
+};
 const actionText = (action) => GameBoard.actionText?.(action) ?? action;
 const STEP = CONFIG.stepWord; // 「第幾手」的單位：棋類是「手」，撲克是「步」（「第 3 手」在撲克是第 3 手牌）
 // 頂端列的下拉面板，同時只開一個；參考表（撲克的勝率表）只有部分遊戲有
@@ -47,7 +54,7 @@ const state = {
   hostSeat: null, // 房主坐的座位（玩家列表標「房主」）
   closed: false, // 房主在開始前關閉了這個房間（2026-11-13）
   watching: false, // 觀戰中（2026-11-08）：沒有座位，不能下、不能用 AI 教練
-  owner: false, // 這個房間是自己開的：朋友加入前改設定會套用到同一個房間
+  owner: false, // 自己是房主（伺服器的 is_owner，可以轉讓）：開始前改設定會套用到同一個房間
   startsAt: null, // 真人對戰的開始時間（這台電腦的時鐘，2026-11-13）；null＝房主還沒按「開始」
   starting: false, // 房主按了「開始」、請求還沒回來
   chat: [], // 房間聊天室看得到的訊息
@@ -56,6 +63,9 @@ const state = {
 };
 // 說明一次只送一個請求給 Ollama，依序產生
 let narrationQueue = Promise.resolve();
+// 真人對戰打完、幾秒後回到房間（下一盤）的計時器（2026-11-15）；null＝沒有要回去
+let returnTimer = null;
+const RETURN_DELAY_MS = 4000;
 
 function storageGet(key) {
   try {
@@ -219,34 +229,85 @@ function setThinkingStatus() {
   }, 1000);
 }
 
-const humanTurn = () => !state.over && !state.reviewing && !waitingForPlayers() && roomStarted()
-  && currentFrame()?.to_move === state.human;
+// 牌局在進行，不管輪到誰（撲克真人對戰的離場不必輪到自己，2026-11-16）
+const inPlay = () => !state.over && !state.reviewing && !waitingForPlayers() && roomStarted();
+const humanTurn = () => inPlay() && currentFrame()?.to_move === state.human;
 const waitingForPlayers = () => state.pvp && Object.values(state.players).some((name) => name === null);
 // 真人對戰要房主按「開始」、倒數結束才能下（伺服器也會拒絕，2026-11-13）
 const roomStarted = () => !state.pvp || (state.startsAt !== null && Date.now() >= state.startsAt);
 // 真人對戰還沒結束時不能用 AI 教練（伺服器也會拒絕），否則就是幫其中一方作弊（使用者決定，2026-11-05）
 const coachLocked = () => state.pvp && !state.over;
 
+// 坐在真人對戰房間裡（對局中、大廳、打完等著回到房間）：頂端的「復盤」換成「對戰紀錄」（2026-11-16 使用者要求），
+// 打開這個房間打完的每一盤，雙方各自從那裡復盤；從對局紀錄打開某一盤復盤時仍是「復盤」
+// 撲克開放牌桌（使用者要求「補入式」，2026-11-16）：上桌／排隊、觀眾、補 AI，一手結束後自動補人發牌
+const isTable = () => Boolean(state.pvp && state.settings?.table);
+const TABLE_DELAY_MS = 5000; // 一手結束後等幾秒補人、發下一手（operations.TABLE_DELAY）
+let dealTimer = null;
+let dealFor = null; // 已經排好（或送出）發牌的那一手，同一手只送一次
+
+// 一手牌結束（桌上還有兩個人以上有籌碼）時，等幾秒請伺服器補人、發下一手。房間裡每個人的網頁都會送，
+// 伺服器只發一次（看 hand）；所有人都關掉網頁時牌桌停在這裡，有人回來就接著發（使用者同意，2026-11-16）
+function scheduleDeal() {
+  const frame = state.frames.at(-1);
+  if (!isTable() || state.over || state.reviewing || state.closed || !roomStarted() || !frame?.hand_over
+      || !frame.hand || frame.live < 2 || dealFor === frame.hand) return;
+  dealFor = frame.hand;
+  const round = state.round;
+  clearTimeout(dealTimer);
+  dealTimer = setTimeout(async () => {
+    if (round !== state.round || state.frames.at(-1)?.hand !== dealFor) return;
+    try {
+      await api(`games/${state.gameId}/deal/`, { hand: dealFor, ...agentOptions() });
+    } catch (err) {
+      setStatus(`沒有發下一手：${err.message}`);
+    }
+  }, TABLE_DELAY_MS);
+}
+
+const inRoom = () => state.pvp && !state.watching && !state.closed && !state.reviewing && state.gameId !== null
+  && (!state.over || returnTimer !== null);
+
 function updateButtons() {
   $("new-game").disabled = state.busy;
+  const review = $("start-review");
+  review.textContent = inRoom() ? "對戰紀錄" : "復盤";
   // 觀戰的人沒有座位，復盤是從某一方的角度分析的，所以不能用（結束後可以用 ◀ ▶ 回看）
   // 房主在開始前關掉的房間一步都沒下，沒有東西可以復盤
-  $("start-review").disabled = state.busy || state.reviewing || state.gameId === null || coachLocked() || state.watching
-    || state.closed;
-  $("coach-toggle").disabled = coachLocked();
+  review.disabled = !inRoom() && (state.busy || state.reviewing || state.gameId === null || coachLocked()
+    || state.watching || state.closed || returnTimer !== null);
+  // 房間裡（真人對戰的頁面，從「對戰紀錄」打開的復盤除外）完全不出現 AI 教練（2026-11-16 使用者要求「隱藏＋停用，到非房間才能打開」）
+  const roomPage = state.pvp && !state.reviewing;
+  $("coach-toggle").hidden = roomPage;
+  $("coach-toggle").disabled = roomPage || coachLocked();
   $("coach-toggle").title = coachLocked() ? "真人對戰中不能使用 AI 教練，對局結束後就可以復盤" : "";
+  if (roomPage && !$("coach").hidden) setCoachOpen(false);
   document.querySelectorAll("#game-actions button").forEach((b) => { b.disabled = state.busy || !humanTurn(); });
   // 「結束（不計勝負）」只在有存檔、還沒結束的對局顯示；玩家先下而還沒下第一步時沒有存檔，不必結束。
   // 真人對戰不能不計勝負（快輸的一方按了就能讓輸棋不算），要結束請認輸
   $("end-game").hidden = state.gameId === null || state.over || state.reviewing || state.pvp;
   $("end-game").disabled = state.busy;
-  $("room-start").hidden = !(state.pvp && state.owner && !state.watching && state.gameId !== null && !state.over
-    && !waitingForPlayers() && state.startsAt === null);
-  $("start-room").disabled = state.busy || state.starting;
+  $("room-start").hidden = !(state.pvp && state.owner && (!state.watching || isTable()) && state.gameId !== null
+    && !state.over && !waitingForPlayers() && state.startsAt === null);
+  const seated = tableSeated().length;
+  $("start-room").disabled = state.busy || state.starting || (isTable() && seated < 2);
+  $("room-start").querySelector("p").textContent = isTable()
+    ? (seated < 2 ? "牌桌上要有兩個人以上（可以補 AI）才能開始。" : `牌桌上有 ${seated} 人。準備好就按「開始」，倒數 3 秒後開始。`)
+    : "大家都到齊了。準備好就按「開始」，倒數 3 秒後開始。";
+  // 房主在房間大廳換遊戲（2026-11-15）
+  $("room-game-field").hidden = !canChangeRoom();
+  $("room-game").disabled = state.busy;
+  // 離開房間：觀戰的人隨時可以走；坐在座位上的人只在開始前（對局中要認輸）
+  // 撲克開放牌桌：沒坐在桌上就能走（坐著的人先按「觀眾」或「離場」）
+  $("leave-room").hidden = !(state.pvp && state.gameId !== null && !state.closed
+    && (state.watching || inLobby() || (isTable() && !state.over && myTableSeat() === null)));
+  $("leave-room").disabled = state.busy || state.starting;
   updateChatAvailability();
   renderRoomPlayers();
-  GameBoard.renderControls?.(currentFrame(), $("game-actions"), !state.busy && humanTurn(), playAction);
+  GameBoard.renderControls?.(currentFrame(), $("game-actions"), !state.busy && humanTurn(), playAction,
+    !state.busy && !state.watching && inPlay());
   updateAskAvailability();
+  scheduleDeal();
 }
 
 function agentOptions() {
@@ -289,10 +350,12 @@ function updateOpponentFields() {
 function resetView(human, settings, actions, frames, pvp = false, players = {}, watching = false) {
   state.round += 1;
   closeSocket();
+  clearTimeout(returnTimer);
+  returnTimer = null;
   Object.assign(state, {
     human, settings, actions, frames, over: false, reviewing: false, viewAt: 0, marks: null,
     hover: null, highlight: null, hoverHighlight: null, hiddenNotes: false, pvp, players, watching, owner: false,
-    startsAt: null, starting: false, spectators: [], hostSeat: null, closed: false,
+    startsAt: null, starting: false, spectators: [], hostSeat: null, closed: false, table: null, myToken: null,
   });
   stopCountdown(); // 聊天不清掉：房主改房間設定時仍是同一個房間；開新局時由 newGame 清掉
   $("invite").hidden = true;
@@ -329,12 +392,29 @@ async function applyAiMoves(moves) {
   }
 }
 
-function finishGame(winner, draw) {
+// nextRound：真人對戰打完時伺服器開好的下一盤（同一個房間），幾秒後大家一起回到房間（2026-11-15）
+function finishGame(winner, draw, nextRound = null) {
   state.over = true;
   const who = state.pvp && state.players[winner] ? state.players[winner] : "AI";
-  const result = draw ? "和局。" : winner === state.human ? "你贏了！" : `${seatName(winner)}（${who}）獲勝。`;
+  // 撲克開放牌桌不計勝負，由房主結束（2026-11-16）
+  const result = draw ? "和局。" : winner === null || winner === undefined ? "牌局結束（不計勝負）。"
+    : winner === state.human && !state.watching ? "你贏了！" : `${seatName(winner)}（${who}）獲勝。`;
   const detail = currentFrame()?.result ? `（${currentFrame().result}）` : "";
-  setStatus(`${result}${detail}${state.watching ? "可以用 ◀ ▶ 一步一步回看。" : "可以按上方的「復盤」檢討。"}`);
+  const tail = nextRound ? `${RETURN_DELAY_MS / 1000} 秒後回到房間準備下一盤；這一盤可以到「對局紀錄」復盤。`
+    : state.watching ? "可以用 ◀ ▶ 一步一步回看。" : "可以按上方的「復盤」檢討。";
+  setStatus(`${result}${detail}${tail}`);
+  if (nextRound) returnToRoom(nextRound, `上一盤：${result}${detail}`);
+}
+
+function returnToRoom(nextId, lastResult) {
+  if (returnTimer !== null) return;
+  const mode = state.watching ? "watch" : "resume";
+  returnTimer = setTimeout(async () => {
+    returnTimer = null;
+    await openGame(nextId, mode);
+    showNotice(`${lastResult}這一盤可以到「對局紀錄」復盤。`);
+  }, RETURN_DELAY_MS);
+  updateButtons();
 }
 
 function yourTurnStatus() {
@@ -347,15 +427,26 @@ function statusAfterMove(data) {
     roomClosed();
     return;
   }
-  if (data.winner || data.draw || data.ended) finishGame(data.winner, data.draw);
+  if (data.winner || data.draw || data.ended) finishGame(data.winner, data.draw, state.pvp ? data.next_round : null);
   else if (waitingForPlayers()) {
-    setStatus(state.owner ? "等朋友加入中…把房間密碼傳給朋友。朋友加入前可以在「設定」改設定，改了馬上套用到這個房間。"
+    setStatus(state.owner && !state.watching
+      ? "等朋友加入中…把房間密碼傳給朋友。按「開始」之前都可以在「設定」改設定或換遊戲，改了馬上套用到這個房間。"
       : "等朋友加入中…大家到齊後，由房主按「開始」。");
+  }
+  else if (isTable() && state.startsAt === null) {
+    const seat = myTableSeat() === null ? "按「上桌」坐下（座位隨機）。" : "你已經上桌了。";
+    setStatus(state.owner ? `${seat}房主可以補 AI；牌桌上有兩個人以上就能按「開始」。` : `${seat}等房主按「開始」…`);
   }
   else if (state.pvp && state.startsAt === null) {
     setStatus(state.owner && !state.watching ? "大家都到齊了，按「開始」開始對局。" : "大家都到齊了，等房主按「開始」…");
   }
   else if (!roomStarted()) setStatus("倒數中，馬上開始…");
+  else if (isTable() && currentFrame()?.hand_over) {
+    const f = currentFrame();
+    setStatus(f.live < 2
+      ? `${f.hand_result}等待中：牌桌上不到兩個人，按「＋ 排隊上桌」，或由房主補 AI。`
+      : `${f.hand_result}幾秒後補上排隊的人、發下一手。`);
+  }
   else if (currentFrame()?.to_move !== state.human) {
     const name = state.players[currentFrame()?.to_move];
     setStatus(name ? `等 ${name}（${seatName(currentFrame().to_move)}）下…` : "其他玩家行動中…");
@@ -365,7 +456,7 @@ function statusAfterMove(data) {
 // ---- 真人對戰（2026-11-05）：邀請朋友、WebSocket 即時同步 ----
 
 function showInvite(code) {
-  if (state.watching) code = "";
+  if (state.watching && !isTable()) code = ""; // 撲克開放牌桌的房主常在觀戰席，房間裡的人都能看密碼邀人
   $("invite").hidden = !code;
   if (!code) return;
   $("room-code").textContent = code;
@@ -398,6 +489,10 @@ function openSocket(gameId) {
       renderChat(data.chat); // 聊天不會加步數，不必等自己的請求回來
       return;
     }
+    if (data.type === "left") { // 房主請你離開了房間（2026-11-15）
+      leftRoom();
+      return;
+    }
     if (data.type !== "update") return;
     if (state.busy) pendingUpdate = data;
     else applyUpdate(data);
@@ -409,15 +504,25 @@ function openSocket(gameId) {
 
 // 伺服器推送的整盤棋（operations.game_detail）：只加上這裡還沒有的步數，所以重複收到也沒關係
 async function applyUpdate(data) {
-  // 房主在朋友加入前改了設定（2026-11-08）：棋盤、座位都可能不同，整盤換成伺服器的版本
-  if (JSON.stringify(data.game.settings) !== JSON.stringify(state.settings) || data.actions.length < state.actions.length) {
-    const { watching, owner } = state;
-    resetView(data.my_seat ?? null, data.game.settings, data.actions, data.frames, true, data.game.players || {}, watching);
-    state.owner = owner;
+  const seat = data.my_seat ?? null; // null＝觀戰
+  // 房主換了別的遊戲（2026-11-15）：到那個遊戲的頁面打開同一個房間
+  if (data.game.game_type !== CONFIG.key) {
+    window.location.href = `/${data.game.game_type}/?${seat === null ? "watch" : "resume"}=${data.game.id}`;
+    return;
+  }
+  // 房主改了設定（2026-11-08），或在房間裡換了座位、坐下、起身觀戰（2026-11-15）：
+  // 棋盤、座位都可能不同，整盤換成伺服器的版本
+  const rebuild = JSON.stringify(data.game.settings) !== JSON.stringify(state.settings)
+    || data.actions.length < state.actions.length || seat !== (state.watching ? null : state.human);
+  if (rebuild) {
+    resetView(seat, data.game.settings, data.actions, data.frames, true, data.game.players || {}, seat === null);
     state.gameId = data.game.id;
-    if (owner) syncSettingsForm(data.my_seat, data.game.settings);
+    rememberRoom();
     openSocket(data.game.id);
   }
+  state.owner = Boolean(data.is_owner); // 房主可以轉讓，所以每次都照伺服器說的
+  state.myToken = data.my_token ?? null;
+  if (rebuild && canChangeRoom()) syncSettingsForm(seat, data.game.settings);
   const wasWaiting = waitingForPlayers();
   setRoomPeople(data.game);
   // 大家到齊後就不能改設定了；開房時自動打開的設定面板會蓋住「開始」按鈕，所以收起來
@@ -436,7 +541,8 @@ async function applyUpdate(data) {
   }
   statusAfterMove(data.game);
   updateButtons();
-  if (state.watching && state.over && !state.reviewing && !state.closed) watchReplay();  // 觀戰中對局結束了
+  // 觀戰中對局結束了；有下一盤時是回到房間（finishGame），不用回看
+  if (state.watching && state.over && !state.reviewing && !state.closed && !data.game.next_round) watchReplay();
 }
 
 // 觀戰的人不能用 AI 復盤（沒有座位，分析是從某一方的角度寫的），對局結束後只能一步一步回看
@@ -460,25 +566,180 @@ async function flushPendingUpdate() {
 
 function setRoomPeople(game) {
   state.players = game.players || {};
+  state.table = game.table || null; // 撲克開放牌桌的隊列、要下桌的座位、房主（2026-11-16）
   state.spectators = game.spectators || [];
   state.hostSeat = game.human_seat ?? null; // 真人對戰的 human_seat 是開房的人坐的座位
   state.closed = Boolean(game.closed);
+}
+
+function roomButton(label, onClick, className = "") {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = `room-action ${className}`.trim();
+  b.textContent = label;
+  b.disabled = state.busy || state.starting;
+  b.addEventListener("click", onClick);
+  return b;
+}
+
+// 房主把某個人換到別的座位（坐到有人的座位時兩人交換）或改成觀戰；current 是他現在的座位，觀戰中是 null
+function seatPicker(name, current) {
+  const select = document.createElement("select");
+  select.className = "room-action";
+  select.disabled = state.busy || state.starting;
+  select.setAttribute("aria-label", `把 ${name} 換到`);
+  // 房主要一直坐著：觀戰的人不能換進房主的座位；撲克的房主固定 1 號位，誰都不能換進去
+  const blocked = (s) => s === state.hostSeat && (CONFIG.pickHumanSeats || current === null);
+  select.append(new Option("換到…", ""));
+  for (const s of Object.keys(state.players).map(Number)) {
+    if (s !== current && !blocked(s)) select.append(new Option(seatName(s), String(s)));
+  }
+  if (current !== null) select.append(new Option("觀戰", "0"));
+  select.addEventListener("change", () => {
+    if (select.value !== "") moveTo(name, Number(select.value));
+  });
+  return select;
+}
+
+// 撲克開放牌桌：最新局面裡坐在桌上的座位（空位不算）、自己坐的座位（沒上桌是 null）
+const tableSeated = () => (state.frames.at(-1)?.seats || []).filter((s) => !s.empty);
+const myTableSeat = () => (isTable() && !state.watching ? state.frames.at(-1)?.my_table_seat ?? null : null);
+const tableAction = (op, extra = {}) => roomAction("table", { op, ...extra, ...agentOptions() }, "牌桌沒有更新");
+
+function aiLabel(entry) {
+  return entry.ai === "agent" ? "Agent AI" : "機器人";
+}
+
+// 撲克開放牌桌的玩家列表（2026-11-16）：牌桌上的座位、隊列、觀戰席，以及上桌／排隊／觀眾／補 AI／結束牌局的按鈕
+function renderTablePlayers() {
+  const started = state.startsAt !== null && !state.over;
+  const lobby = inLobby();
+  const host = state.owner && (lobby || started);
+  const table = state.table || {};
+  const leaving = new Set(table.leaving || []);
+  const mine = myTableSeat();
+  const ownerName = table.owner;
+  const turn = started && roomStarted() ? state.frames.at(-1)?.acting : null;
+  const seated = tableSeated();
+  const people = new Set();
+  $("room-seats").replaceChildren(...seated.map((s) => {
+    const li = document.createElement("li");
+    const name = s.token ? state.players[s.token] : null;
+    if (name) people.add(name);
+    li.classList.toggle("turn", s.seat === turn);
+    const label = document.createElement("span");
+    label.className = "seat-name";
+    label.textContent = `${s.seat} 號位`;
+    li.append(label, ` ${name ?? s.role}`);
+    const tags = [name && name === ownerName && "房主", s.seat === mine && "你", s.seat === turn && "輪到",
+      leaving.has(s.seat) && "這手結束後下桌"].filter(Boolean);
+    if (tags.length) {
+      const tag = document.createElement("span");
+      tag.className = "seat-tags";
+      tag.textContent = tags.join("・");
+      li.append(" ", tag);
+    }
+    if (s.seat === mine && (lobby || started)) {
+      li.append(" ", lobby ? roomButton("下桌", () => tableAction("stand"))
+        : roomButton(leaving.has(s.seat) ? "取消（繼續打）" : "觀眾", () => tableAction("stand")));
+    }
+    if (host && !s.token) {
+      li.append(" ", roomButton(leaving.has(s.seat) ? "取消（留在桌上）" : "請 AI 下桌",
+        () => tableAction("remove_ai", { seat: s.seat }), leaving.has(s.seat) ? "" : "danger"));
+    }
+    if (lobby && host && name && name !== ownerName) {
+      li.append(" ", roomButton("交給他當房主", () => transferHost(name)), " ", roomButton("請離開", () => kickPlayer(name), "danger"));
+    }
+    return li;
+  }));
+  const total = Number(state.settings.players) || 0;
+  const lines = [`牌桌 ${seated.length}／${total} 人`];
+  const queue = table.queue || [];
+  const spectators = $("room-spectators");
+  spectators.replaceChildren(lines.join(""));
+  const myToken = state.myToken;
+  if (started && queue.length) {
+    spectators.append("。排隊：");
+    queue.forEach((entry, i) => {
+      const span = document.createElement("span");
+      span.className = "spectator";
+      span.append(i ? "、" : "", entry.token !== undefined ? entry.name ?? "玩家" : aiLabel(entry));
+      if (entry.token === undefined && host) span.append(" ", roomButton("取消", () => tableAction("unqueue", { seat: i + 1 })));
+      spectators.append(span);
+    });
+  }
+  // 觀戰席：觀戰的人，加上上過桌、現在沒坐在桌上、還在房間裡的人
+  const away = new Set(table.away || []);
+  const watchers = [...state.spectators, ...Object.entries(state.players)
+    .filter(([token, name]) => name && !away.has(Number(token)) && !people.has(name)).map(([, name]) => name)];
+  const unique = [...new Set(watchers)];
+  spectators.append(unique.length ? `。觀戰席（${unique.length}）：` : "。觀戰席沒有人");
+  unique.forEach((name, i) => {
+    const span = document.createElement("span");
+    span.className = "spectator";
+    span.append(i ? "、" : "", name, name === ownerName ? "（房主）" : "");
+    if (lobby && host && name !== ownerName) {
+      span.append(" ", roomButton("交給他當房主", () => transferHost(name)), " ", roomButton("請離開", () => kickPlayer(name), "danger"));
+    }
+    spectators.append(span);
+  });
+  // 自己沒上桌：開始前直接上桌，開始後排隊；房主補 AI；開始後房主可以結束牌局
+  const actions = document.createElement("p");
+  actions.className = "table-actions";
+  const full = seated.length >= total;
+  if (mine === null && (lobby || started)) {
+    if (lobby) {
+      const b = roomButton("上桌", () => tableAction("sit"), "primary");
+      b.disabled ||= full;
+      actions.append(b);
+    } else {
+      const inQueue = myToken !== null && queue.some((e) => e.token === myToken);
+      actions.append(inQueue ? roomButton("離開隊列", () => tableAction("unqueue"))
+        : roomButton("＋ 排隊上桌", () => tableAction("sit"), "primary"));
+    }
+  }
+  if (host) {
+    for (const [kind, text] of [["agent", "補 Agent AI"], ["bot", "補機器人"]]) {
+      const b = roomButton(lobby ? text : `${text}（排隊）`, () => tableAction("add_ai", { kind }));
+      b.disabled ||= lobby && full;
+      actions.append(" ", b);
+    }
+    if (started) {
+      actions.append(" ", roomButton("結束牌局", endTable, "danger"));
+    }
+  }
+  spectators.append(actions);
+}
+
+async function endTable() {
+  if (!window.confirm("結束這場牌局？不計勝負，所有人回到房間大廳，可以再開下一場。")) return;
+  await roomAction("end_table", {}, "沒有結束牌局");
 }
 
 function renderRoomPlayers() {
   const box = $("room-players");
   box.hidden = !(state.pvp && state.gameId !== null);
   if (box.hidden) return;
+  if (isTable()) {
+    renderTablePlayers();
+    $("close-room").hidden = !(state.owner && state.startsAt === null && !state.over);
+    $("close-room").disabled = state.busy || state.starting;
+    return;
+  }
   const turn = !state.over && roomStarted() && !waitingForPlayers() ? currentFrame()?.to_move : null;
-  $("room-seats").replaceChildren(...Object.entries(state.players).map(([seat, name]) => {
+  // 房間大廳（按開始之前，2026-11-15）：自己坐下或起身觀戰；房主還能幫人換座位、轉讓房主、請人離開
+  const lobby = inLobby();
+  const host = lobby && state.owner && !state.watching;
+  const mySeat = state.watching ? null : state.human;
+  $("room-seats").replaceChildren(...Object.entries(state.players).map(([key, name]) => {
+    const seat = Number(key);
     const li = document.createElement("li");
     li.classList.toggle("empty", name === null);
-    li.classList.toggle("turn", Number(seat) === turn);
-    const tags = [Number(seat) === state.hostSeat && "房主", Number(seat) === state.human && !state.watching && "你",
-      Number(seat) === turn && "輪到"].filter(Boolean);
+    li.classList.toggle("turn", seat === turn);
+    const tags = [seat === state.hostSeat && "房主", seat === mySeat && "你", seat === turn && "輪到"].filter(Boolean);
     const label = document.createElement("span");
     label.className = "seat-name";
-    label.textContent = seatName(Number(seat));
+    label.textContent = seatName(seat);
     li.append(label, ` ${name ?? "等待加入…"}`);
     if (tags.length) {
       const tag = document.createElement("span");
@@ -486,16 +747,114 @@ function renderRoomPlayers() {
       tag.textContent = tags.join("・");
       li.append(" ", tag);
     }
+    if (lobby) {
+      // 撲克的房主固定 1 號位，不能自己換到別的座位
+      if (name === null && !(host && CONFIG.pickHumanSeats)) li.append(" ", roomButton("坐這裡", () => moveTo("", seat)));
+      if (seat === mySeat && !state.owner) li.append(" ", roomButton("改成觀戰", () => moveTo("", 0)));
+      if (host && name !== null && seat !== mySeat) {
+        li.append(" ", seatPicker(name, seat), " ", roomButton("交給他當房主", () => transferHost(name)),
+          " ", roomButton("請離開", () => kickPlayer(name), "danger"));
+      }
+    }
     return li;
   }));
   // 撲克的其他座位由 AI 坐（開桌時自選哪些座位給朋友）
   const aiSeats = (Number(state.settings.players) || 0) - Object.keys(state.players).length;
   const lines = [];
   if (aiSeats > 0) lines.push(`另外 ${aiSeats} 個座位由 AI 坐`);
-  lines.push(state.spectators.length ? `觀戰（${state.spectators.length}）：${state.spectators.join("、")}` : "目前沒有人觀戰");
-  $("room-spectators").textContent = lines.join("。");
+  lines.push(state.spectators.length ? `觀戰（${state.spectators.length}）：` : "目前沒有人觀戰");
+  const spectators = $("room-spectators");
+  spectators.replaceChildren(lines.join("。"));
+  state.spectators.forEach((name, i) => {
+    const span = document.createElement("span");
+    span.className = "spectator";
+    span.append(i ? "、" : "", name);
+    if (host) span.append(" ", seatPicker(name, null), " ", roomButton("請離開", () => kickPlayer(name), "danger"));
+    spectators.append(span);
+  });
   $("close-room").hidden = !(state.owner && !state.watching && state.startsAt === null && !state.over);
   $("close-room").disabled = state.busy || state.starting;
+}
+
+// 被房主請出房間（即時連線收到 left，2026-11-15）：不能再下、不能再聊天；可以再用房間密碼回來
+function leftRoom() {
+  Object.assign(state, { closed: true, over: true });
+  closeSocket();
+  stopCountdown();
+  showInvite("");
+  rememberRoom();
+  setStatus("房主請你離開了這個房間。想回來的話，可以再用房間密碼加入。");
+  updateButtons();
+}
+
+// ---- 房間大廳（2026-11-15 使用者要求「房主可以自由選擇」）：按開始之前換座位、請人離開、轉讓房主、離開房間 ----
+// 結果由伺服器推送回來（每個人照自己現在的座位重畫），這裡只送出請求
+
+async function roomAction(path, body, failText) {
+  state.busy = true;
+  updateButtons();
+  try {
+    await api(`games/${state.gameId}/${path}/`, body);
+  } catch (err) {
+    setStatus(`${failText}：${err.message}`);
+  } finally {
+    state.busy = false;
+    updateButtons();
+  }
+  await flushPendingUpdate();
+}
+
+// player 空的＝自己；seat 0＝改成觀戰
+const moveTo = (player, seat) => roomAction("seat", { player, seat }, "沒有換成座位");
+
+function kickPlayer(name) {
+  if (window.confirm(`請 ${name} 離開房間？他之後還可以用房間密碼回來。`)) roomAction("kick", { player: name }, "沒有請他離開");
+}
+
+function transferHost(name) {
+  if (window.confirm(`把房主交給 ${name}？之後改設定、按「開始」都由他決定。`)) {
+    roomAction("host", { player: name }, "沒有轉讓房主");
+  }
+}
+
+async function leaveRoom() {
+  const text = state.owner && !state.watching
+    ? "離開房間？房主會交給還坐在座位上的人；沒有別人就關閉房間。"
+    : "離開房間？之後可以再用房間密碼回來。";
+  if (!window.confirm(text)) return;
+  state.busy = true;
+  updateButtons();
+  try {
+    await api(`games/${state.gameId}/leave/`, {});
+    closeSocket();
+    window.location.href = "/";
+  } catch (err) {
+    setStatus(`無法離開房間：${err.message}`);
+    state.busy = false;
+    updateButtons();
+  }
+}
+
+// 房主換遊戲：同一個房間（同一組密碼）改成別的遊戲，到那個遊戲的頁面繼續（其他人由推送跟著換頁）
+async function switchGame() {
+  const target = CONFIG.games.find((g) => g.key === $("room-game").value);
+  if (!target || target.key === CONFIG.key || !canChangeRoom()) return;
+  // 撲克要選哪些座位是真人：預設目前坐著的人數（至少 2 位），進去後還能在設定改
+  const seated = Object.values(state.players).filter(Boolean).length;
+  const settings = target.pickSeats ? { humans: Array.from({ length: Math.max(2, seated) }, (_, i) => i + 1) } : {};
+  state.busy = true;
+  updateButtons();
+  setStatus(`換成${target.name}中…`);
+  try {
+    const data = await api(`games/${state.gameId}/room/`, { game_type: target.key, seat: 1, settings });
+    closeSocket();
+    window.location.href = `/${target.key}/?resume=${data.game.id}`;
+  } catch (err) {
+    setStatus(`無法換遊戲：${err.message}`);
+    $("room-game").value = CONFIG.key;
+    state.busy = false;
+    updateButtons();
+  }
 }
 
 // ---- 房主關閉房間（2026-11-13 使用者要求）：只在按開始之前；之後要結束請認輸 ----
@@ -544,6 +903,10 @@ async function newPvpGame(settings) {
   setStatus("開房間中…");
   try {
     const data = await api("games/", { seat: state.human, settings, mode: "pvp", ...agentOptions() });
+    if (data.game.settings.table) { // 撲克開放牌桌：開房的人先在觀戰席（2026-11-16）
+      await openGame(data.game.id, "resume");
+      return;
+    }
     state.gameId = data.game.id;
     state.owner = true;
     rememberRoom();
@@ -561,9 +924,11 @@ async function newPvpGame(settings) {
   }
 }
 
-// 房主在朋友加入前改設定（2026-11-08）：套用到同一個房間（房間密碼不變），觀戰的人也會跟著換
-const canChangeRoom = () => state.pvp && state.owner && state.gameId !== null && waitingForPlayers()
-  && state.actions.length === 0 && !state.over;
+// 房主在開始前改設定（2026-11-08；2026-11-15 起朋友坐下後也能改）：套用到同一個房間（房間密碼不變），大家跟著換
+// 房間大廳：真人對戰按「開始」之前（2026-11-15 起朋友坐下後房主也能改設定、換遊戲）
+const inLobby = () => state.pvp && state.gameId !== null && state.startsAt === null && !state.over && !state.closed;
+// 撲克開放牌桌的房主可以不上桌（在觀戰席）也能改設定
+const canChangeRoom = () => inLobby() && state.owner && (!state.watching || isTable());
 
 async function changeRoom() {
   if (!pvpChosen()) {
@@ -578,6 +943,11 @@ async function changeRoom() {
   try {
     const data = await api(`games/${state.gameId}/room/`, { seat, settings });
     const gameId = state.gameId;
+    if (data.game.settings.table) { // 撲克開放牌桌：還坐得下的人照樣坐著，重新打開這個房間
+      await openGame(gameId, "resume");
+      setStatus("牌桌設定已更新。按「開始」之前都還能改；房間密碼不變。");
+      return;
+    }
     resetView(seat, data.game.settings, [], [data.frame], true, data.game.players);
     setRoomPeople(data.game);
     Object.assign(state, { gameId, owner: true });
@@ -585,7 +955,7 @@ async function changeRoom() {
     showInvite(data.game.room_code);
     openSocket(gameId);
     draw();
-    setStatus("房間設定已更新。朋友加入前都還能改；房間密碼不變。");
+    setStatus("房間設定已更新。按「開始」之前都還能改；房間密碼不變。");
   } catch (err) {
     setStatus(`無法更新房間設定：${err.message}`);
   } finally {
@@ -958,6 +1328,7 @@ function plainNote(note) {
   if (note.startsWith("Ollama 無法使用")) return "AI 說明暫時連不上";
   if (note.startsWith("模型提到事實中沒有的座標")) return "AI 的說明提到了分析裡沒有的位置，所以不採用";
   if (note.startsWith("只有引擎估計或條件式計算")) return "AI 的說明講得比分析更肯定，所以不採用";
+  if (note.startsWith("沒有求解確認的事實")) return "AI 的說明講得比分析更肯定，所以不採用";
   return note;
 }
 
@@ -1003,10 +1374,11 @@ function addNote(note, live) {
     showResult(li, { text: factsText(note.facts), note: "完整思路含底牌，這手牌結束後復盤時可以看", source: "hidden" }, "");
   } else if (note.narration) {
     showResult(li, note.narration, "AI 的白話說明");
-  } else if (live && !state.watching) {
+  } else if (live && !state.watching && !coachLocked()) {
     queueNarration(li, path, {}, note.facts, "AI 的白話說明");
-  } else if (state.watching) {
-    showResult(li, { text: factsText(note.facts), note: "" }, "");  // 觀戰的人不能請 AI 說明
+  } else if (state.watching || coachLocked()) {
+    // 觀戰的人不能請 AI 說明；真人對戰結束前伺服器也會拒絕（operations.coach_allowed），不送出請求
+    showResult(li, { text: factsText(note.facts), note: state.watching ? "" : "真人對戰結束後可以請 AI 說明" }, "");
   } else {
     showResult(li, { text: factsText(note.facts), note: "這一手還沒有 AI 說明" }, "");
     const button = document.createElement("button");
@@ -1275,15 +1647,24 @@ function markReferenceRow() {
 async function openGame(id, mode) {
   try {
     const g = await api(`games/${id}/`);
+    // 房間網址停在打完的那一盤（打完到回到房間之間重新整理、上一頁）：回到房間現在的那一盤，
+    // 不把打完的那盤當成復盤打開，否則 AI 教練出現在房間裡（2026-11-16 使用者回報）。復盤要從「對戰紀錄」打開
+    const now = mode !== "review" ? g.game.current_round : null;
+    if (now) {
+      window.location.replace(`/${now.game_type}/?${mode === "watch" ? "watch" : "resume"}=${now.id}`);
+      return;
+    }
     // 觀戰（2026-11-08）：伺服器說這盤沒有自己的座位（my_seat 是 null）
     const watching = g.game.mode === "pvp" && g.my_seat === null;
     resetView(watching ? null : g.my_seat ?? g.game.human_seat, g.game.settings, g.actions, g.frames,
       g.game.mode === "pvp", g.game.players || {}, watching);
     setRoomPeople(g.game);
     state.gameId = g.game.id;
-    // 自己開、還沒有人加入的房間：回到這頁也能接著改設定
-    state.owner = !watching && g.game.mode === "pvp" && g.my_seat === g.game.human_seat && g.actions.length === 0;
-    rememberRoom();
+    // 房主（可以轉讓，所以照伺服器說的）：回到這頁也能接著改設定
+    state.owner = Boolean(g.is_owner);
+    state.myToken = g.my_token ?? null; // 撲克開放牌桌：自己的成員代號（看自己在不在隊列裡）
+    // 從對戰紀錄復盤某一盤時網址保持 ?review=（換成 ?resume= 的話，重新整理會被帶回房間）
+    if (mode !== "review") rememberRoom();
     setStartsIn(g.game.starts_in);
     renderChat(g.chat || []);
     for (const note of g.notes) addNote(note, false);
@@ -1302,7 +1683,7 @@ async function openGame(id, mode) {
       return;
     }
     if (state.pvp && !finished) {
-      if (state.owner && waitingForPlayers()) syncSettingsForm(g.my_seat, g.game.settings);
+      if (canChangeRoom()) syncSettingsForm(g.my_seat, g.game.settings);
       showInvite(g.game.room_code);
       openSocket(g.game.id);
       updateButtons();
@@ -1437,12 +1818,19 @@ document.addEventListener("click", () => closePopovers());
 
 $("start-room").addEventListener("click", startRoom);
 $("close-room").addEventListener("click", closeRoom);
+$("leave-room").addEventListener("click", leaveRoom);
+$("room-game").replaceChildren(...CONFIG.games.map((g) => new Option(g.name, g.key, false, g.key === CONFIG.key)));
+$("room-game").addEventListener("change", switchGame);
 $("chat-toggle").addEventListener("click", () => setChatOpen(true));
 $("chat-close").addEventListener("click", () => setChatOpen(false));
 $("chat-form").addEventListener("submit", sendChat);
 $("new-game").addEventListener("click", newGame);
 $("end-game").addEventListener("click", endGame);
-$("start-review").addEventListener("click", startReview);
+$("start-review").addEventListener("click", () => {
+  // 房間裡是「對戰紀錄」：開新分頁，房間頁留著（朋友按開始時還在房間裡）
+  if (inRoom()) window.open(`${$("start-review").dataset.roomHistory}?room=${state.gameId}`, "_blank", "noopener");
+  else startReview();
+});
 $("nav-first").addEventListener("click", () => goTo(0));
 $("nav-prev").addEventListener("click", () => goTo(state.viewAt - 1));
 $("nav-next").addEventListener("click", () => goTo(state.viewAt + 1));

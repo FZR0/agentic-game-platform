@@ -2,19 +2,12 @@
 {% block content %}
   <h1 class="page-title">今天想玩什麼？</h1>
 
-  {# 真人對戰（2026-11-08 使用者要求：開房間要從首頁一鍵進去）：選遊戲後直接開好房間、打開設定 #}
+  {% comment %}真人對戰（2026-11-08 使用者要求：開房間要從首頁一鍵進去）。2026-11-16 使用者要求「按下後直接建立對戰」：
+     不先選遊戲，直接用第一個遊戲開好房間；房主在房間裡按「開始」前可以換遊戲（operations.change_room）{% endcomment %}
   <section class="section room-bar" id="create-room">
-    <details class="room-picker">
-      <summary class="button primary">建立對戰房間</summary>
-      <ul class="room-games">
-        {% for game in games %}
-        <li><a class="button" href="{% url 'arena:play' game.key %}?room=new">
-          <img src="{% static game.icon %}?v={{ asset_version }}" alt="" width="48" height="30">{{ game.name }}</a></li>
-        {% endfor %}
-      </ul>
-    </details>
+    {% for game in games %}{% if forloop.first %}<a class="button primary" href="{% url 'arena:play' game.key %}?room=new">建立對戰房間</a>{% endif %}{% endfor %}
     <a class="button" href="{% url 'arena:join' %}">加入或觀戰</a>
-    <span class="hint">開好房間後把房間密碼傳給朋友；朋友加入前都還能改設定。</span>
+    <span class="hint">開好房間後把房間密碼傳給朋友；按「開始」之前都還能換遊戲、改設定。打完一盤會回到房間，可以接著再打。</span>
   </section>
 
   {% if resume %}

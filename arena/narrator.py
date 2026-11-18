@@ -17,11 +17,17 @@ from pathlib import Path
 from django.conf import settings
 
 from . import health
-from .base import CONDITIONAL, ESTIMATE
+from .base import CONDITIONAL, ESTIMATE, SOLVED
 
 log = logging.getLogger(__name__)
 
 CERTAIN_WORDS = ("必勝", "一定", "必然", "絕對")
+# 「不一定」「不絕對」是保留的說法，不是確定用語：對手觀察的應對建議本來就寫「他不一定找得到殺法」，
+# 模型照著寫卻被當成「一定」擋下，改顯示原文（2026-11-16 情境測試）
+CERTAIN_RE = re.compile("|".join(f"(?<!不){w}" for w in CERTAIN_WORDS))
+# 「在搜尋範圍內已確認」是求解確認的用語。2026-11-16 情境測試裡約 9% 的說明把它用在條件式計算、引擎估計或計數上
+# （「在搜尋範圍內已確認第 10 步沒有止損」），講得比證據肯定
+SOLVED_RE = re.compile(r"在搜尋範圍內(?:已經|已)?確認")
 LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
 UNAVAILABLE = "Ollama 無法使用"  # 呼叫不到模型時的說明備註；模型使用紀錄靠它分辨「呼叫不到」和「沒通過檢查」
 # 思考模式的推理過程也算在生成長度內，需要比較大的上限
@@ -35,15 +41,21 @@ SYSTEM_PROMPT = """你是{game}教練，負責把分析引擎提供的事實改�
 1. 使用繁體中文（台灣用語），不要條列、不要 Markdown 符號。
 2. 不要逐條複述事實，也不要從「目前輪到誰下」開始講；只挑和要說明的事最相關的一兩點。
 3. 只能使用提供的事實，不可自行推測新的棋步或座標；提到的座標必須出現在事實中。
-4. 依證據種類用語：「規則確認」可以直接陳述；「求解確認」要保留「在搜尋範圍內已確認」；「條件式計算」要說出所依據的假設；「引擎估計」要說「依引擎估計」，不可說「必勝」或「一定」。"""
+4. 依證據種類用語：「規則確認」可以直接陳述；「求解確認」要保留「在搜尋範圍內已確認」；「條件式計算」要說出所依據的假設；「引擎估計」要說「依引擎估計」，不可說「必勝」或「一定」。
+5. 「在搜尋範圍內已確認」只能用在「求解確認」的事實，其他事實不要寫這句；「在搜尋範圍內未發現」不等於確認沒有。"""
 
 INTROS = {
     "ai_move": "以下是 AI 這一手的分析事實，請用 AI 第一人稱說明這一手的思路：",
     "review": "以下是玩家這一手的復盤事實，請用教練的口吻對玩家說明問題在哪裡，以及更好的下法：",
     # 整體評論（使用者要求，2026-10-11）：只根據列出的統計與問題下結論
-    "overall": ("以下是玩家這一整盤的檢查結果與統計。請用教練的口吻寫整體評論：「重點」一句話總結這盤整體表現；"
-                "「說明」寫最值得改進的一兩點、以後可以怎麼做，再提一個做得好的地方（沒有就不用提）。"
-                "只能根據下面列出的事實；數字好不好以事實裡寫的評語為準，事實沒有評語的數字只能照實說，不要自己判斷好壞："),
+    # 2026-11-17：原本一律要求「說明寫最值得改進的一兩點」，沒有失誤時模型就把「建議」說成要檢討的失誤，
+    # 還自己下「表現不理想」「過早放棄」這類評語；同樣的事實在兩盤寫出不同的結論
+    "overall": ("以下是玩家這一整盤的檢查結果與統計。請用教練的口吻寫整體評論：「重點」一句話總結這盤的結果；"
+                "「說明」只講事實裡有的：有失誤（關鍵時刻、小失誤）才說最值得改進的一兩點、以後可以怎麼做；"
+                "事實寫沒有失誤就照實說沒有失誤，不要說有失誤、問題或需要檢討；「建議」不是失誤；"
+                "有做得好的地方再提一個。只能根據下面列出的事實；不要用任何形容整體表現好壞的詞"
+                "（例如穩定、精準、良好、乾淨、表現不理想、太早放棄），除非事實裡寫了；"
+                "數字好不好以事實裡寫的評語為準，事實沒有評語的數字只能照實說："),
     # 對手觀察（2026-11-05，真人對戰結束後）：對手的傾向、出現在哪幾步、應對建議都已寫在事實裡
     "opponent": ("以下是電腦檢查對手每一步後整理的觀察。請用教練的口吻對玩家說明：「重點」一句話說出對手最明顯的傾向；"
                  "「說明」寫這個傾向在第幾步出現過跡象，以及事實裡列的應對建議。只能根據下面列出的事實，"
@@ -65,6 +77,22 @@ def model_config(name=None):
         if config["name"] == name:
             return config
     raise ValueError(f"不支援的模型：{name}")
+
+
+# 復盤（問題檢查、整體評論、對手觀察、問 AI）一律用最聰明的模型，不跟著玩家選的（使用者決定，2026-11-16）。
+# AI 下棋那一手的思路說明（ai_move）仍用玩家選的模型：它說明的是那個模型自己下的棋。
+REVIEW_KINDS = ("review", "overall", "opponent", "ask")
+
+
+def review_model():
+    """復盤用的模型：OLLAMA_MODELS 裡這台 Ollama 伺服器有安裝的第一個（清單依聰明程度由高到低排）。
+    只看清單第一個的話，本機 AI 模式（本機 Ollama 通常只有小模型）每次復盤都會找不到模型。
+    查不到安裝清單（連不上）時用第一個：反正也呼叫不到，說明會照常改顯示事實原文。"""
+    installed = installed_models()
+    for config in settings.OLLAMA_MODELS:
+        if installed is None or config["name"] in installed:
+            return config["name"]
+    return settings.OLLAMA_MODEL
 
 
 def narrate(facts, model, module):
@@ -97,14 +125,18 @@ def check_text(text, facts, coord_re):
     if extra:
         return f"模型提到事實中沒有的座標：{'、'.join(sorted(extra))}"
     only_estimates = all(p["evidence"] in (ESTIMATE, CONDITIONAL) for p in facts["points"])
-    if only_estimates and any(w in text for w in CERTAIN_WORDS):
+    if only_estimates and CERTAIN_RE.search(text):
         return "只有引擎估計或條件式計算，模型卻使用了確定的用語"
+    if SOLVED_RE.search(text) and not any(p["evidence"] == SOLVED for p in facts["points"]):
+        return "沒有求解確認的事實，模型卻寫了「在搜尋範圍內已確認」"
     return None
 
 
 def request_body(facts, config, game_name):
     if facts["kind"] == "ask":
         lines = [f"玩家的問題：「{facts['question']}」", ASK_INTRO, "引擎事實："]
+        if facts.get("player"):  # 問題裡的「我」是哪一方（operations.answer 放進來）
+            lines.insert(1, f"提問的玩家（問題裡的「我」）是{facts['player']}。")
     else:
         lines = [INTROS[facts["kind"]]]
     lines += [f"- [{p['evidence']}] {p['text']}" for p in facts["points"]]

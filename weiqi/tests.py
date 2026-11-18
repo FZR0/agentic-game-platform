@@ -155,6 +155,14 @@ class ModuleTests(SimpleTestCase):
         self.assertIn("白棋目前勝率約 20%", text)
         self.assertIn("C3（勝率 20%，落後約 6.0 目）", text)
 
+    def test_asking_about_a_resign_gets_the_position_it_was_played_in(self):
+        # 2026-11-16 情境測試（同五子棋 ResignTests）：認輸那一手只寫「第 n 手是白棋 resign」時，
+        # 問「我認輸時真的輸定了嗎？」模型沒有依據。要附上認輸前的局面（KataGo 的勝率與目差）
+        m = module_with(FakeKataGo(winrates={1: 0.8}, leads={1: 6.0}, best={1: "C3"}))
+        texts = [p["text"] for p in m.explain_action(SMALL, ["E5", "resign"], 2)]
+        self.assertEqual(texts[0], "第 2 手是白棋認輸；以下是認輸前的局面。")
+        self.assertTrue(any("白棋目前勝率約 20%" in t and "落後約 6.0 目" in t for t in texts), texts)
+
     def test_engine_falls_back_to_simple_rules_without_katago(self):
         s = replay(["D5", "E5", "F5", "A9", "E4"])  # 白 E5 只剩 1 氣
         result = module_with(BrokenKataGo()).engine_move(s)

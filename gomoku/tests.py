@@ -228,6 +228,17 @@ class ReviewTests(SimpleTestCase):
         self.assertEqual((m["type"], m["level"], tuple(m["best"])), ("suggest", "suggest", tuple(best)))
         self.assertEqual(evidence_of(m["points"]), {ESTIMATE})
 
+    def test_a_five_on_the_next_move_is_not_called_an_open_four(self):
+        # 2026-11-16 情境測試：白棋已有 A1–A4，事實卻寫「白棋下 A5 就形成活四或雙四，對方擋不完」，
+        # 模型照著跟玩家說。下一手就連五（一定要擋）和活四（已經擋不完）是兩回事，玩家會被說錯的威脅誤導。
+        b = board_with(black=["H8", "I8", "J8", "K8"], white=["A1", "A2", "A3", "A4"])
+        texts = [p["text"] for p in engine.explain_position(b)]
+        self.assertIn("在搜尋範圍內已確認，如果輪到白棋下，白棋下 A5 就能直接連成五子。", texts)
+        self.assertFalse(any("活四或雙四" in t for t in texts), texts)
+        # 真的是活四時仍然寫活四：黑棋 H8–J8 活三，下 G8 或 K8 就成活四
+        d = engine.choose_move(board_with(black=["H8", "I8", "J8"], white=["A1", "A2"]), WHITE)
+        self.assertTrue(any("就形成活四或雙四，對方擋不完" in p["text"] for p in d["points"]), d["points"])
+
     def test_playing_the_vcf_is_not_flagged(self):
         self.assertIsNone(engine.judge_move(board_with(**VCF_POSITION), *at("K8"), BLACK))
 
@@ -386,6 +397,54 @@ class GameApiTests(TestCase):
         self.assertEqual(narrated.status_code, 200)
         self.assertEqual(narrated.json()["source"], "template")
 
+    def test_the_result_says_which_side_the_player_was_and_that_they_lost(self):
+        # 2026-11-16 情境測試：總評只寫「白棋（AI）贏了」、終局提問的事實只寫「白棋獲勝」，
+        # 模型被問「我是贏還是輸？」時只答得出「白棋獲勝」。輸贏要從玩家的角度寫明
+        game = self.saved(self.MISSED_BLOCK + ["A5"], winner=WHITE)
+        overall = self.client.get(f"/api/gomoku/games/{game.id}/review/").json()["overall"]
+        self.assertIn("結果：你（黑棋）輸了，白棋（AI）贏了。", [p["text"] for p in overall["points"]])
+
+    def test_a_question_at_the_end_gets_the_result_and_what_went_wrong(self):
+        # 終局問「我為什麼輸？」：以前事實只有「這時對局已經結束（白棋獲勝）」，模型答不出原因，只能說白棋贏了。
+        # 要附上和問題檢查同一份的結果，才指得出第幾手出了什麼問題
+        game = self.saved(self.MISSED_BLOCK + ["A5"], winner=WHITE)
+        r = self.post(f"/api/gomoku/games/{game.id}/ask/", {"question": "我為什麼輸？", "at": 10})
+        texts = [p["text"] for p in r.json()["facts"]["points"]]
+        self.assertIn("結果：你（黑棋）輸了，白棋（AI）贏了。", texts)
+        self.assertIn("最常出現的問題：「沒有擋住對手的衝四」1 次（第 9 手）。", texts)
+
+    def test_a_resigned_game_without_mistakes_is_not_described_as_full_of_mistakes(self):
+        # 2026-11-17 使用者回報「不同對局 同樣結果 不同回答」：兩盤一樣的棋（黑棋 7 手後認輸、只有 1 個建議），
+        # 整體評論一盤寫「建議檢討失誤」、一盤寫「表現不理想」。事實只寫「建議 1 個」，模型把建議讀成失誤；
+        # 要寫明沒有失誤、建議不是失誤、這盤是認輸結束的
+        from arena import operations
+        game = self.saved(["H8", "I9", "resign"], winner=WHITE)
+        suggestion = {"level": "suggest", "title": "建議：引擎推薦 H9", "index": 0}
+        texts = [p["text"] for p in operations._overall(MODULE, game, [suggestion], BLACK)["points"]]
+        self.assertIn("問題檢查的結果：沒有失誤；另有建議 1 個（建議不是失誤，只是引擎比較推薦的下法）。", texts)
+        self.assertIn("問題檢查沒有找到你的失誤；這盤是你認輸結束的。", texts)
+        # 真的有失誤時照樣寫出來，也不說這盤只是認輸結束的
+        mistake = {"level": "key", "title": "沒有擋住對手的衝四", "index": 0, "points": [{"evidence": RULE, "text": "x"}]}
+        texts = [p["text"] for p in operations._overall(MODULE, game, [mistake, suggestion], BLACK)["points"]]
+        self.assertIn("問題檢查的結果：關鍵時刻 1 個；另有建議 1 個（建議不是失誤，只是引擎比較推薦的下法）。", texts)
+        self.assertFalse(any("認輸結束" in t for t in texts))
+
+    def test_a_question_at_the_end_of_an_unscored_game_says_it_has_no_result(self):
+        # 2026-11-16 情境測試：「結束（不計勝負）」的最後局面問「這盤誰贏了？」，事實只有局面分析，沒說這盤不計勝負
+        game = self.saved(self.MISSED_BLOCK, ended=True)
+        r = self.post(f"/api/gomoku/games/{game.id}/ask/", {"question": "這盤誰贏了？", "at": len(self.MISSED_BLOCK)})
+        texts = [p["text"] for p in r.json()["facts"]["points"]]
+        self.assertIn("這盤沒有下完，是你選擇結束、不計勝負。", texts)
+        self.assertIn("目前輪到白棋下。", texts)  # 棋停在一半：停下來時的局面照樣附上
+
+    def test_a_question_at_the_end_of_a_resigned_game_gets_the_position_before_it(self):
+        # 退回的查法（AI 助理沒完成時）也要拿得到認輸前的局面，否則問「我認輸時局面真的很差嗎？」沒有依據
+        game = self.saved(["H8", "A1", "I8", "A2", "J8", "resign"], winner=BLACK)
+        r = self.post(f"/api/gomoku/games/{game.id}/ask/", {"question": "認輸時局面很差嗎？", "at": 6})
+        texts = [p["text"] for p in r.json()["facts"]["points"]]
+        self.assertIn("結果：你（黑棋）贏了（白棋認輸，黑棋獲勝）。", texts)
+        self.assertIn("第 6 手是白棋認輸；以下是認輸前的局面。", texts)
+
     def test_history_lists_only_this_games_records(self):
         game = self.saved(["H8"], seat=WHITE)
         Game.objects.create(game_type="other", human_seat=1, actions=[])
@@ -435,3 +494,13 @@ class ResignTests(SimpleTestCase):
         MODULE.review({}, actions, BLACK)
         self.assertIn("黑棋認輸", MODULE.explain_action({}, actions, 3)[0]["text"])
         MODULE.explain_position(MODULE.replay({}, actions[:2]), [], "resign")
+
+    def test_asking_about_the_resign_gets_the_position_it_was_played_in(self):
+        # 2026-11-16 情境測試：問「我認輸時局面真的很差嗎？」，事實只有「第 13 手是黑棋認輸」，
+        # 模型就自己說「是的，非常不利」，其實引擎沒找到任何問題。要附上認輸前的局面，回答才有依據
+        actions = ["H8", "A1", "I8", "A2", "J8", "resign"]  # 白棋面對黑棋的活三就認輸了，其實擋得住
+        texts = [p["text"] for p in MODULE.explain_action({}, actions, 6)]
+        self.assertEqual(texts[0], "第 6 手是白棋認輸；以下是認輸前的局面。")
+        self.assertIn("目前輪到白棋下。", texts)
+        self.assertTrue(any("黑棋下" in t and "就形成活四或雙四" in t for t in texts), texts)
+        self.assertTrue(any(t.startswith("引擎會建議白棋下") for t in texts), texts)

@@ -444,6 +444,15 @@ class GameApiTests(TestCase):
     def post(self, url, body):
         return self.client.post(url, json.dumps(body), content_type="application/json")
 
+    def test_a_draw_is_not_written_twice_in_the_overall_comment(self):
+        # 2026-11-16 情境測試：逼和的整體評論寫成「結果：和局（和局：逼和（…））」
+        from arena import operations
+        stalemate = ("e2e3 a7a5 d1h5 a8a6 h5a5 h7h5 h2h4 a6h6 a5c7 f7f6 c7d7 e8f7 d7b7 d8d3 b7b8 d3h7 b8c8 f7g6 "
+                     "c8e6").split()  # 有名的 10 步逼和
+        game = Game.objects.create(game_type="chess", human_seat=WHITE, actions=stalemate, draw=True)
+        first = operations._overall(MODULE, game, [], WHITE)["points"][0]["text"]
+        self.assertTrue(first.startswith("結果：和局：逼和"), first)
+
     def test_moves_are_validated_and_saved_in_uci(self):
         game_id = self.post("/api/chess/games/", {"seat": WHITE}).json()["game"]["id"]
         r = self.post(f"/api/chess/games/{game_id}/move/", {"action": "E2-E4"})

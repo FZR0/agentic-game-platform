@@ -86,6 +86,11 @@ class GameModule:
         """輪到哪一個座位。"""
         raise NotImplementedError
 
+    def may_act(self, state, action, seat):
+        """真人 seat 現在能不能送出 action（合不合法另由 apply 檢查）；預設只有輪到的座位。
+        撲克的真人對戰離場不必輪到（2026-11-16）。"""
+        return self.to_move(state) == seat
+
     def outcome(self, state):
         """尚未結束時回傳 None；結束時回傳 (獲勝座位或 None, 是否和局)。"""
         raise NotImplementedError
