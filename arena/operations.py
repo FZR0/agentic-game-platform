@@ -1031,8 +1031,17 @@ def _overall(module, game, moments, seat):
         points = [(RULE, "這盤還沒有下完。")]
     points.append((RULE, f"這盤一共 {len(game.actions)} {module.step_word}。"))
     counts = Counter(m["level"] for m in moments)
-    found = "、".join(f"{name} {counts[level]} 個" for level, name in LEVEL_NAMES.items() if counts[level])
-    points.append((RULE, f"問題檢查的結果：{found or '沒有找到任何問題'}。"))
+    # 失誤和建議分開寫（2026-11-17 使用者回報兩盤一樣的棋、整體評論卻不一樣）：只寫「建議 1 個」時，
+    # 模型把它讀成「有 1 個問題要檢討」，沒有失誤也寫「建議檢討失誤」「表現不理想」
+    mistakes = "、".join(f"{LEVEL_NAMES[level]} {counts[level]} 個" for level in ("key", "minor") if counts[level])
+    found = mistakes or "沒有失誤"
+    if counts["suggest"]:
+        found += f"；另有建議 {counts['suggest']} 個（建議不是失誤，只是引擎比較推薦的下法）"
+    if counts["good"]:
+        found += f"；做得好的地方 {counts['good']} 個"
+    points.append((RULE, f"問題檢查的結果：{found}。"))
+    if result and not result[1] and result[0] != seat and not mistakes and game.actions[-1] == "resign":
+        points.append((RULE, "問題檢查沒有找到你的失誤；這盤是你認輸結束的。"))  # 輸是認輸決定的，模型不能自己說成下得不好
     for levels, label, top in ((("key", "minor"), "最常出現的問題", 3), (("good",), "做得好的地方", 2)):
         group = [m for m in moments if m["level"] in levels]
         for pattern, n in Counter(m.get("pattern", m["title"]) for m in group).most_common(top):

@@ -413,6 +413,22 @@ class GameApiTests(TestCase):
         self.assertIn("結果：你（黑棋）輸了，白棋（AI）贏了。", texts)
         self.assertIn("最常出現的問題：「沒有擋住對手的衝四」1 次（第 9 手）。", texts)
 
+    def test_a_resigned_game_without_mistakes_is_not_described_as_full_of_mistakes(self):
+        # 2026-11-17 使用者回報「不同對局 同樣結果 不同回答」：兩盤一樣的棋（黑棋 7 手後認輸、只有 1 個建議），
+        # 整體評論一盤寫「建議檢討失誤」、一盤寫「表現不理想」。事實只寫「建議 1 個」，模型把建議讀成失誤；
+        # 要寫明沒有失誤、建議不是失誤、這盤是認輸結束的
+        from arena import operations
+        game = self.saved(["H8", "I9", "resign"], winner=WHITE)
+        suggestion = {"level": "suggest", "title": "建議：引擎推薦 H9", "index": 0}
+        texts = [p["text"] for p in operations._overall(MODULE, game, [suggestion], BLACK)["points"]]
+        self.assertIn("問題檢查的結果：沒有失誤；另有建議 1 個（建議不是失誤，只是引擎比較推薦的下法）。", texts)
+        self.assertIn("問題檢查沒有找到你的失誤；這盤是你認輸結束的。", texts)
+        # 真的有失誤時照樣寫出來，也不說這盤只是認輸結束的
+        mistake = {"level": "key", "title": "沒有擋住對手的衝四", "index": 0, "points": [{"evidence": RULE, "text": "x"}]}
+        texts = [p["text"] for p in operations._overall(MODULE, game, [mistake, suggestion], BLACK)["points"]]
+        self.assertIn("問題檢查的結果：關鍵時刻 1 個；另有建議 1 個（建議不是失誤，只是引擎比較推薦的下法）。", texts)
+        self.assertFalse(any("認輸結束" in t for t in texts))
+
     def test_a_question_at_the_end_of_an_unscored_game_says_it_has_no_result(self):
         # 2026-11-16 情境測試：「結束（不計勝負）」的最後局面問「這盤誰贏了？」，事實只有局面分析，沒說這盤不計勝負
         game = self.saved(self.MISSED_BLOCK, ended=True)

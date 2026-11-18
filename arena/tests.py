@@ -94,6 +94,16 @@ class NarrationCheckTests(SimpleTestCase):
         estimate = {"kind": "review", "points": [{"evidence": ESTIMATE, "text": "在搜尋範圍內未發現白棋有連續衝四。"}]}
         self.assertIsNone(narrator.check_text("在搜尋範圍內未發現白棋有連續衝四。", estimate, GOMOKU.coord_re))
 
+    def test_the_overall_prompt_does_not_ask_for_mistakes_that_are_not_there(self):
+        # 2026-11-17 使用者回報：提示一律要模型寫「最值得改進的一兩點」，沒有失誤時它就把「建議」說成要檢討的失誤，
+        # 還自己下「表現不理想」的評語。沒有失誤就照實說，評語只能用事實裡寫好的
+        intro = narrator.INTROS["overall"]
+        self.assertIn("有失誤（關鍵時刻、小失誤）才說最值得改進的一兩點", intro)
+        self.assertIn("事實寫沒有失誤就照實說沒有失誤", intro)
+        self.assertIn("「建議」不是失誤", intro)
+        # 只點名「穩定」時，模型改說「精準」「良好」（2026-11-17 真模型重現），所以要求不用任何形容表現好壞的詞
+        self.assertIn("不要用任何形容整體表現好壞的詞", intro)
+
     def test_a_hedge_is_not_a_certainty(self):
         # 2026-11-16 情境測試：對手觀察的建議寫「他不一定找得到殺法」，模型照著說卻被當成「一定」擋下。
         # 「不一定」正是估計該有的保留說法；「一定」照樣要擋
