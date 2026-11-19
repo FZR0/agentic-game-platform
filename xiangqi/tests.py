@@ -56,6 +56,20 @@ class FakePikafish:
         return [self.entry(best, self.scores.get(t, 0))] + [self.entry(m, 0) for m in legal if m != best][:multipv - 1]
 
 
+class MultiPvPikafish(FakePikafish):
+    """真的 Pikafish 在同一深度下，MultiPV 1 和 MultiPV 5 的第一名可能不同（2026-11-16 原開發機 43 個局面有 12 個不同）。
+    這個假的分析器重現這件事：只要一條線時首選是 one，要五條時第一名是 five。"""
+
+    def __init__(self, one, five, played):
+        super().__init__(best={0: five}, scores={0: 40}, played={0: played})
+        self.one = one
+
+    def analyze(self, actions, depth, multipv=1, searchmoves=None):
+        if multipv == 1 and not searchmoves:
+            return [self.entry(self.one, 60)]
+        return super().analyze(actions, depth, multipv, searchmoves)
+
+
 class BrokenPikafish:
     def analyze(self, *args, **kwargs):
         raise PikafishUnavailable("找不到 pikafish.exe")
@@ -192,6 +206,20 @@ class ModuleTests(SimpleTestCase):
         (evidence, text), = m.run_tool(rules.XiangqiState(), "list_candidates", {})[1]
         self.assertEqual(evidence, ESTIMATE)
         self.assertIn("1. 炮二平五（h2e2）（約領先 0.3 個兵）", text)
+
+    def test_candidates_first_choice_engine_move_and_review_name_the_same_move(self):
+        # 復盤與下棋用同一個標準，給模型和玩家的事實也不能互相矛盾。同一深度下 MultiPV 1 和 5 的第一名可能不同；
+        # 以前候選清單用 MultiPV 5、其他用 MultiPV 1，2026-11-16 情境測試裡問題檢查建議兵三進一，
+        # 「問 AI」的候選清單第一名卻是別的步，模型照清單回答。所以四者都要是同一次分析的第一名
+        m = module_with(MultiPvPikafish(one="c3c4", five="g3g4", played=-100))
+        s = rules.XiangqiState()
+        (_, candidates), = m.run_tool(s, "list_candidates", {})[1]
+        self.assertIn("1. 兵三進一（g3g4）", candidates)
+        checked = [t for _, t in m.run_tool(s, "check_move", {"move": "h2e2"})[1]]
+        self.assertIn("Pikafish 的首選是 兵三進一（g3g4）。", checked)
+        self.assertEqual(m.engine_move(s)["action"], "g3g4")
+        self.assertIsNone(m._review_move(s, 0, "g3g4"))  # 照候選清單第一名走，復盤不會說是失誤
+        self.assertEqual(m._review_move(s, 0, "c3c4")["best"], "g3g4")  # 復盤建議的也是那一步
 
     def test_only_legal_move_needs_no_model(self):
         s = position({"d0": "K", "a8": "R", "e9": "k"})
@@ -369,6 +397,21 @@ class PikafishIntegrationTests(SimpleTestCase):
         # Agent 看到的候選第一名，就是引擎代下與復盤認定的首選（2026-11-19：兩邊用不同的搜尋，同一步的事實前後矛盾）
         self.assertIn(f"1. {m.move_text(s, move)}", text)
         self.assertNotIn("Pikafish 的首選是", " ".join(t for _, t in m.run_tool(s, "check_move", {"move": move})[1]))
+
+    def test_real_engine_candidates_first_is_what_it_plays_and_review_suggests(self):
+        # 中炮對屏風馬（benchmark_samples[1]）：深度 12 時 MultiPV 1 的首選是兵七進一（c3c4）、MultiPV 5 是兵三進一（g3g4），
+        # 以前候選清單和引擎代下各用一種，7 個模型照清單走都被算成和引擎不同（docs/交接.md 4.5）
+        m = XiangqiModule()
+        actions = MODULE.benchmark_samples[1]
+        s = replay(actions)
+        top = m.engine_move(s)["action"]
+        (_, candidates), *_ = m.run_tool(s, "list_candidates", {})[1]  # 後面是首選的後續變化
+        self.assertIn(f"1. {m.move_text(s, top)}", candidates)
+        self.assertIsNone(m._review_move(s, len(actions), top))
+        second = m._lines(s)[1]["move"]
+        self.assertIn(f"Pikafish 的首選是 {m.move_text(s, top)}。", [t for _, t in m._check(s, second)])
+        found = m._review_move(s, len(actions), second)
+        self.assertTrue(found is None or found["best"] == top, found)
 
     def test_engine_playing_both_sides_is_never_flagged(self):
         # 復盤和 AI 下棋用同一個標準：引擎自己選的步，復盤時不能被說成失誤
