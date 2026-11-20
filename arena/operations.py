@@ -744,7 +744,9 @@ def _check_password(game, user, password):
         return
     if not password:
         raise ValueError("這個房間上了鎖，請輸入房間密碼")
-    if not secrets.compare_digest(password.strip(), game.room_password):
+    # 轉成 bytes 再比：compare_digest 遇到含中文的字串會丟出 TypeError，頁面變成 500（2026-11-20 審核 #20 發現；
+    # 房主可以設中文密碼，用中文輸入法打錯也會遇到）
+    if not secrets.compare_digest(password.strip().encode(), game.room_password.encode()):
         raise ValueError("房間密碼不對，請向房主確認")
 
 

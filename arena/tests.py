@@ -3313,3 +3313,13 @@ class RoomListAndLockTests(TestCase):
         self.assertEqual(self.post("alice", f"{self.url}/lock/", {"lock": True, "password": "a b"}).status_code, 400)
         self.game.refresh_from_db()
         self.assertEqual(self.game.room_password, password)
+
+    def test_chinese_passwords_are_checked_instead_of_crashing_the_page(self):
+        # 2026-11-20 審核 #20：secrets.compare_digest 遇到含中文的字串會丟出 TypeError，加入頁變成 500。
+        # 玩家用中文輸入法打錯字、或房主設了中文密碼，都要照常回答「密碼不對」或讓人進來
+        self.post("alice", f"{self.url}/lock/", {"lock": True, "password": "tea42"})
+        self.assertContains(self.enter("carol", "join", "茶42"), "房間密碼不對")
+        self.assertEqual(self.post("alice", f"{self.url}/lock/", {"lock": True, "password": "喝茶"}).status_code, 200)
+        self.assertContains(self.enter("carol", "watch", "喝水"), "房間密碼不對")
+        self.assertRedirects(self.enter("carol", "watch", "喝茶"), f"/gomoku/?watch={self.game.id}",
+                             fetch_redirect_response=False)
