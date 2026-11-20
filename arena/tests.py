@@ -531,7 +531,7 @@ class ModelRunTests(TestCase):
         for reply in ("重點：擋住。\n說明：先擋。", "重點：下 N2。\n說明：N2 比較好。", OSError("timed out")):
             with patch("arena.narrator._ask_ollama", side_effect=[reply]):
                 self.post("/api/gomoku/narrate/", {"facts": self.FACTS, "model": "qwen3:8b"})
-        smart = narrator.review_model()  # 復盤的說明一律用最聰明的模型（ReviewModelTests）
+        smart = narrator.review_model("qwen3:8b")  # 復盤的說明實際用的模型（ReviewModelTests、LocalReviewModelTests）
         self.assertEqual([(r.kind, r.model, r.outcome) for r in self.uses()],
                          [("review", smart, "ok"), ("review", smart, "fallback"), ("review", smart, "error")])
 
@@ -903,11 +903,16 @@ SMALL = {"name": "small:2b", "label": "最小", "think": False, "agent": True}
 DEFAULT = {"name": "default:26b", "label": "預設", "think": False, "agent": True}
 
 
-@override_settings(OLLAMA_MODELS=[SMART, DEFAULT, SMALL], OLLAMA_MODEL=DEFAULT["name"])
+# 研究用伺服器這類非本機的 Ollama（測試環境的 OLLAMA_URL 是 127.0.0.1，會被當成本機 AI 模式）；這裡不會真的連線
+REMOTE_OLLAMA = "http://192.0.2.1:9"
+
+
+@override_settings(OLLAMA_MODELS=[SMART, DEFAULT, SMALL], OLLAMA_MODEL=DEFAULT["name"], OLLAMA_URL=REMOTE_OLLAMA)
 class ReviewModelTests(TestCase):
     # 使用者決定（2026-11-16）：復盤 AI 一律用最聰明的模型（OLLAMA_MODELS 依聰明程度排，第一個），
     # 不跟著玩家在進階設定選的模型：玩家為了下棋快選小模型時，復盤的說明與回答不該跟著變差。
     # AI 下棋那一手的思路說明不在內：它說明的是玩家選的那個模型自己下的棋。
+    # 本機 AI 模式例外（LocalReviewModelTests）。
     client_class = AdminClient
     FACTS = {"kind": "review", "points": [{"evidence": ESTIMATE, "text": "白棋下 H9。"}]}
 
@@ -958,6 +963,14 @@ class ReviewModelTests(TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(self.narrated, [("ask", SMART["name"])])
 
+    PANEL = "復盤和「問 AI」一律用 AI 伺服器上最聰明的模型"
+
+    def test_the_settings_panel_says_which_model_reviews(self):
+        # 設定面板要照實說：本機 AI 模式寫「最聰明的模型」，玩家會以為復盤比較聰明
+        html = self.client.get("/gomoku/").content.decode()
+        self.assertIn(self.PANEL, html)
+        self.assertNotIn({LocalReviewModelTests.PANEL, ReviewModelTests.PANEL}.difference({self.PANEL}).pop(), html)
+
     def test_the_ai_moves_own_explanation_keeps_the_players_model(self):
         game = Game.objects.create(game_type="gomoku", human_seat=1, actions=["H8", "H9"])
         AiNote.objects.create(game=game, index=1, seat=2, facts={**self.FACTS, "kind": "ai_move"})
@@ -978,6 +991,40 @@ class ReviewModelTests(TestCase):
                          {"req_review": SMART["name"], "req_ask": SMART["name"], "req_narrate": SMART["name"],
                           "req_move": DEFAULT["name"]})
 
+
+
+@override_settings(OLLAMA_URL="http://127.0.0.1:11434")
+class LocalReviewModelTests(ReviewModelTests):
+    # 使用者決定（2026-11-20）：本機 AI 模式的復盤也用下棋的小模型。原開發機（RTX 4060 8 GB）本機實測：
+    # 復盤要另外載入 qwen3:8b，連兩次載入逾時（120 秒），載入時顯示卡滿載，瀏覽器播影片會卡。
+    # 同一個模型下棋又復盤，本機 Ollama 全程只載入一個模型。研究用伺服器照舊用最聰明的（上面的 ReviewModelTests）。
+    PANEL = "復盤和「問 AI」也用這個模型"
+
+    def test_review_explanations_use_the_smartest_model_whatever_the_player_picked(self):
+        for kind in ("review", "overall", "opponent"):
+            self.post("/api/gomoku/narrate/", {"facts": {**self.FACTS, "kind": kind}, "model": SMALL["name"]})
+        self.assertEqual(self.narrated, [(k, SMALL["name"]) for k in ("review", "overall", "opponent")])
+        self.assertEqual({r.model for r in ModelRun.objects.exclude(kind__startswith="req_")}, {SMALL["name"]})
+
+    def test_the_smartest_model_is_the_smartest_one_this_server_has(self):
+        # 本機上裝了比較聰明的模型也不換過去：換過去就要多載入一個模型
+        self.post("/api/gomoku/narrate/", {"facts": self.FACTS, "model": SMALL["name"]})
+        self.assertEqual(self.narrated, [("review", SMALL["name"])])
+
+    def test_questions_are_answered_by_the_smartest_model(self):
+        game = Game.objects.create(game_type="gomoku", human_seat=1, actions=["H8", "H9", "I8"])
+        r = self.post(f"/api/gomoku/games/{game.id}/ask/", {"question": "第 1 手好嗎？", "at": 3, "model": SMALL["name"]})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.narrated, [("ask", SMALL["name"])])
+
+    def test_the_assistant_handling_review_requests_is_the_smartest_model_too(self):
+        # AI 助理本來就用預設模型（本機 AI 模式是 gemma4:e2b）；復盤的請求也一樣，不另外載入最聰明的
+        game = Game.objects.create(game_type="gomoku", human_seat=1, actions=["H8", "H9", "I8"])
+        self.client.get(f"/api/gomoku/games/{game.id}/review/")
+        self.post(f"/api/gomoku/games/{game.id}/ask/", {"question": "第 1 手好嗎？", "at": 3, "model": SMALL["name"]})
+        self.post("/api/gomoku/narrate/", {"facts": self.FACTS, "model": SMALL["name"]})
+        self.assertEqual(set(self.assistant), {DEFAULT["name"]})
+        self.assertEqual({r.model for r in ModelRun.objects.filter(kind__startswith="req_")}, {DEFAULT["name"]})
 
 class RulesPanelTests(TestCase):
     client_class = AdminClient

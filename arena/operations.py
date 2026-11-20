@@ -78,9 +78,9 @@ def _save_and_hide(module, game, state, moves):
 
 
 def narrate(module, facts, model, game=None, index=None):
-    """請語言模型說明，同時記下這次用模型的秒數與結果（ModelRun）。復盤的說明不管 model 是什麼，一律用最聰明的模型。"""
+    """請語言模型說明，同時記下這次用模型的秒數與結果（ModelRun）。復盤的說明不管 model 是什麼，一律用最聰明的模型（本機 AI 模式除外）。"""
     if facts["kind"] in narrator.REVIEW_KINDS:
-        model = narrator.review_model()
+        model = narrator.review_model(model)
     start = time.perf_counter()
     result = narrator.narrate(facts, model, module)
     seconds = round(time.perf_counter() - start, 2)
@@ -261,7 +261,7 @@ def room_list(user):
 
 
 def play_context(module):
-    return {"module": module,
+    return {"module": module, "local_ai": narrator.local_server(),  # 設定面板說明復盤用哪個模型
             "asset_version": _asset_version("arena/style.css", "arena/app.js", module.board_script),
             "config": {"key": module.key, "name": module.name, "seatNames": module.seat_names,
                        "coordPattern": module.coord_pattern, "defaultSteps": module.default_steps,

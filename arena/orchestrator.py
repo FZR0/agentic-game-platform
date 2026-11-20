@@ -61,7 +61,7 @@ class Request:
     kind = ""            # ModelRun 記成 req_<kind>
     game_scoped = True   # 對局的請求：只有 module.agentic_requests 的遊戲才交給 Agent；頁面不分遊戲，一律交給 Agent
     auto_finish = True   # 完成條件一達成就結束，不必再問模型一次
-    review = False       # 復盤的請求：AI 助理也用最聰明的模型（narrator.review_model，2026-11-16），其他用預設模型
+    review = False       # 復盤的請求：AI 助理也用最聰明的模型（narrator.review_model，2026-11-16；本機 AI 模式除外），其他用預設模型
     tools = []
 
     def task(self, ctx):

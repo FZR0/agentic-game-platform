@@ -89,13 +89,22 @@ def model_config(name=None):
 
 # 復盤（問題檢查、整體評論、對手觀察、問 AI）一律用最聰明的模型，不跟著玩家選的（使用者決定，2026-11-16）。
 # AI 下棋那一手的思路說明（ai_move）仍用玩家選的模型：它說明的是那個模型自己下的棋。
+# 本機 AI 模式例外，復盤也用下棋的模型（使用者決定，2026-11-20）：原開發機（RTX 4060 8 GB）另外載入 qwen3:8b
+# 連兩次載入逾時，載入時顯示卡滿載，瀏覽器播影片會卡；同一個模型下棋又復盤，本機全程只載入一個模型。
 REVIEW_KINDS = ("review", "overall", "opponent", "ask")
 
 
-def review_model():
+def local_server():
+    """目前的 Ollama 是不是這台電腦上的（本機 AI 模式）。"""
+    return urllib.parse.urlsplit(settings.OLLAMA_URL).hostname in LOCAL_HOSTS
+
+
+def review_model(model=None):
     """復盤用的模型：OLLAMA_MODELS 裡這台 Ollama 伺服器有安裝的第一個（清單依聰明程度由高到低排）。
-    只看清單第一個的話，本機 AI 模式（本機 Ollama 通常只有小模型）每次復盤都會找不到模型。
+    本機 Ollama 時用 model（下棋用的那個；沒給就是預設模型），不另外載入別的模型。
     查不到安裝清單（連不上）時用第一個：反正也呼叫不到，說明會照常改顯示事實原文。"""
+    if local_server():
+        return model or settings.OLLAMA_MODEL
     installed = installed_models()
     for config in settings.OLLAMA_MODELS:
         if installed is None or config["name"] in installed:
