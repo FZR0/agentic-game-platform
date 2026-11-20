@@ -40,6 +40,21 @@ window.GameBoard = (() => {
     ctx.restore();
   }
 
+  // 黑棋禁手點（伺服器在 frame.forbidden 列出）：畫禁止符號，這一點不能下
+  function banMark(ctx, canvas, name) {
+    const [px, py] = toPixel(...parse(name), canvas);
+    const r = CELL * 0.3;
+    ctx.save();
+    ctx.strokeStyle = "#d93025";
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.arc(px, py, r, 0, Math.PI * 2);
+    ctx.moveTo(px - r * Math.SQRT1_2, py - r * Math.SQRT1_2);
+    ctx.lineTo(px + r * Math.SQRT1_2, py + r * Math.SQRT1_2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
   // 說明中的座標：用十字線拉出所在的行列，再畫一圈，找點比較容易
   function spot(ctx, canvas, name) {
     const [px, py] = toPixel(...parse(name), canvas);
@@ -123,6 +138,7 @@ window.GameBoard = (() => {
       const name = nameOf(i % SIZE, Math.floor(i / SIZE));
       if (c !== ".") stone(ctx, canvas, name, c, 1, name === popped ? grow : 1);
     }
+    for (const name of frame.forbidden || []) banMark(ctx, canvas, name);
     if (view.showNumbers) {
       ctx.font = "bold 15px system-ui, sans-serif";
       view.actions.forEach((name, i) => {
@@ -161,7 +177,7 @@ window.GameBoard = (() => {
 
   function canPlay(frame, name) {
     const [x, y] = parse(name);
-    return frame.board[y * SIZE + x] === ".";
+    return frame.board[y * SIZE + x] === "." && !(frame.forbidden || []).includes(name);
   }
 
   // 開局（還沒建立存檔時用來畫空棋盤）：黑棋先下
