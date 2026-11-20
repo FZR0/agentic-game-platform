@@ -57,6 +57,8 @@
           <label id="room-game-field" hidden>房間的遊戲
             <select id="room-game"></select>
           </label>
+          {# 在房間裡但不能改設定（不是房主、或已經開始）：下面的設定是房間的、鎖住，說明由 app.js 填 #}
+          <p id="room-settings-note" class="muted" hidden></p>
           <label>對手
             <select id="opponent">
               <option value="ai">AI</option>

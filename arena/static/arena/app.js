@@ -304,8 +304,14 @@ function updateButtons() {
     ? (seated < 2 ? "牌桌上要有兩個人以上（可以補 AI）才能開始。" : `牌桌上有 ${seated} 人。準備好就按「開始」，倒數 3 秒後開始。`)
     : "大家都到齊了。準備好就按「開始」，倒數 3 秒後開始。";
   // 房主在房間大廳換遊戲（2026-11-15）
-  $("room-game-field").hidden = !canChangeRoom();
+  $("room-game-field").hidden = !(canChangeRoom() || canSwitchTable());
   $("room-game").disabled = state.busy;
+  const locked = roomSettingsLocked();
+  document.querySelectorAll("#opponent, #human-seat, .game-setting").forEach((el) => { el.disabled = locked; });
+  $("room-settings-note").hidden = !locked;
+  $("room-settings-note").textContent = canSwitchTable()
+    ? "牌局進行中：換遊戲會先結束這場牌局（不計勝負）；其他設定要按「結束牌局」回到房間大廳才能改。"
+    : state.owner ? "這一盤已經開始了，設定要等打完回到房間才能改。" : "房間的設定由房主決定。";
   // 離開房間：觀戰的人隨時可以走；坐在座位上的人只在開始前（對局中要認輸）
   // 撲克開放牌桌：沒坐在桌上就能走（坐著的人先按「觀眾」或「離場」）
   $("leave-room").hidden = !(state.pvp && state.gameId !== null && !state.closed
@@ -535,7 +541,7 @@ async function applyUpdate(data) {
   state.owner = Boolean(data.is_owner); // 房主可以轉讓，所以每次都照伺服器說的
   state.roomPassword = data.room_password ?? ""; // 房間鎖的密碼，只有房主拿得到（2026-11-18）
   state.myToken = data.my_token ?? null;
-  if (rebuild && canChangeRoom()) syncSettingsForm(seat, data.game.settings);
+  if (rebuild) syncSettingsForm(seat, data.game.settings); // 不能改的時候也顯示房間的設定（roomSettingsLocked 鎖住）
   const wasWaiting = waitingForPlayers();
   setRoomPeople(data.game);
   // 大家到齊後就不能改設定了；開房時自動打開的設定面板會蓋住「開始」按鈕，所以收起來
@@ -934,18 +940,35 @@ async function leaveRoom() {
 // 房主換遊戲：同一個房間（同一組密碼）改成別的遊戲，到那個遊戲的頁面繼續（其他人由推送跟著換頁）
 async function switchGame() {
   const target = CONFIG.games.find((g) => g.key === $("room-game").value);
-  if (!target || target.key === CONFIG.key || !canChangeRoom()) return;
+  const table = !canChangeRoom() && canSwitchTable(); // 撲克牌局進行中：先結束牌局
+  if (!target || target.key === CONFIG.key || !(canChangeRoom() || table)) return;
+  if (table && !window.confirm(`結束這場牌局並換成${target.name}？不計勝負，桌上的人回到房間大廳。`)) {
+    $("room-game").value = CONFIG.key;
+    return;
+  }
   // 撲克要選哪些座位是真人：預設目前坐著的人數（至少 2 位），進去後還能在設定改
   const seated = Object.values(state.players).filter(Boolean).length;
   const settings = target.pickSeats ? { humans: Array.from({ length: Math.max(2, seated) }, (_, i) => i + 1) } : {};
   state.busy = true;
   updateButtons();
   setStatus(`換成${target.name}中…`);
+  let gameId = state.gameId;
   try {
-    const data = await api(`games/${state.gameId}/room/`, { game_type: target.key, seat: 1, settings });
+    if (table) {
+      closeSocket(); // 結束牌局的推送會帶著頁面回到大廳；這裡自己接著換遊戲
+      gameId = (await api(`games/${gameId}/end_table/`, {})).game.next_round ?? gameId;
+    }
+    const data = await api(`games/${gameId}/room/`, { game_type: target.key, seat: 1, settings });
     closeSocket();
     window.location.href = `/${target.key}/?resume=${data.game.id}`;
   } catch (err) {
+    if (gameId !== state.gameId) { // 牌局已經結束、遊戲沒換成：回到房間大廳（新的那一盤），在那裡再換一次
+      state.busy = false;
+      await openGame(gameId, "resume");
+      setStatus(`牌局已經結束，但沒有換成${target.name}：${err.message}`);
+      return;
+    }
+    if (table) openSocket(state.gameId); // 沒有結束牌局：接回即時同步
     setStatus(`無法換遊戲：${err.message}`);
     $("room-game").value = CONFIG.key;
     state.busy = false;
@@ -1025,6 +1048,13 @@ async function newPvpGame(settings) {
 const inLobby = () => state.pvp && state.gameId !== null && state.startsAt === null && !state.over && !state.closed;
 // 房主在觀戰中也能改設定（撲克開放牌桌的觀戰席；2026-11-18 起每種遊戲都可以觀戰）
 const canChangeRoom = () => inLobby() && state.owner;
+// 撲克開放牌桌開始後（2026-11-20 使用者回報「為什麼房間在德州撲克時不能切遊戲」，使用者選擇放寬）：牌桌沒有終局，
+// 房主換遊戲＝先「結束牌局」（不計勝負）再在回到的大廳換。只有撲克：棋類開始後不能換，快輸的一方才不能換遊戲逃掉
+const canSwitchTable = () => isTable() && state.owner && state.gameId !== null && state.startsAt !== null
+  && !state.over && !state.closed && !state.reviewing;
+// 在房間裡但不能改設定（不是房主、或已經開始）：設定面板顯示房間的設定並鎖住，不是和 AI 對戰的表單
+const roomSettingsLocked = () => state.pvp && state.gameId !== null && !state.closed && !state.reviewing
+  && !canChangeRoom();
 
 async function changeRoom() {
   if (!pvpChosen()) {
@@ -1207,7 +1237,8 @@ async function sendChat(event) {
 // 設定面板跟著伺服器的房間設定（另一個分頁改過、或重新打開房間時）
 function syncSettingsForm(seat, settings) {
   $("opponent").value = "pvp";
-  if (seat) $("human-seat").value = String(seat);
+  // 撲克開放牌桌的 seat 是成員代號，不是選單裡的座位：只套用選單裡有的
+  if (seat && $("human-seat").querySelector(`option[value="${seat}"]`)) $("human-seat").value = String(seat);
   document.querySelectorAll(".game-setting").forEach((el) => {
     if (settings[el.dataset.name] !== undefined) el.value = String(settings[el.dataset.name]);
     // 只記非預設值的設定（撲克的勝率表只記禁用）：沒有就回到預設
@@ -1798,7 +1829,7 @@ async function openGame(id, mode) {
       return;
     }
     if (state.pvp && !finished) {
-      if (canChangeRoom()) syncSettingsForm(g.my_seat, g.game.settings);
+      syncSettingsForm(g.my_seat, g.game.settings); // 開始後重新整理也顯示房間的設定，不是「對手：AI」（2026-11-20）
       showInvite(g.game.room_code);
       openSocket(g.game.id);
       updateButtons();
