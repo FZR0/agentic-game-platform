@@ -6,8 +6,8 @@
      不先選遊戲，直接用第一個遊戲開好房間；房主在房間裡按「開始」前可以換遊戲（operations.change_room）{% endcomment %}
   <section class="section room-bar" id="create-room">
     {% for game in games %}{% if forloop.first %}<a class="button primary" href="{% url 'arena:play' game.key %}?room=new">建立對戰房間</a>{% endif %}{% endfor %}
-    <a class="button" href="{% url 'arena:join' %}">加入或觀戰</a>
-    <span class="hint">開好房間後把房間密碼傳給朋友；按「開始」之前都還能換遊戲、改設定。打完一盤會回到房間，可以接著再打。</span>
+    <a class="button" href="{% url 'arena:join' %}">房間列表</a>
+    <span class="hint">房間預設公開，大家在「房間列表」就看得到；想只讓朋友進來，在房間裡上鎖，再把房間編號和密碼傳給朋友。按「開始」之前都還能換遊戲、改設定。打完一盤會回到房間，可以接著再打。</span>
   </section>
 
   {% if resume %}

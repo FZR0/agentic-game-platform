@@ -14,11 +14,11 @@
       <a href="{% url 'arena:home' %}"{% if nav == "home" %} aria-current="page"{% endif %}>首頁</a>
       <a href="{% url 'arena:history' %}"{% if nav == "history" %} aria-current="page"{% endif %}>對局紀錄</a>
       <a href="{% url 'arena:guide' %}"{% if nav == "guide" %} aria-current="page"{% endif %}>怎麼玩</a>
-      <a href="{% url 'arena:join' %}"{% if nav == "join" %} aria-current="page"{% endif %}>加入對戰</a>
+      <a href="{% url 'arena:join' %}"{% if nav == "join" %} aria-current="page"{% endif %}>房間列表</a>
     </nav>
     <div class="account-bar">
       {% if user.is_authenticated %}
-        <span class="account-name">{{ user.username }}</span>
+        <span class="account-name">{{ user.profile.name|default:user.username }}</span>
         {% if not user.has_usable_password %}{# 遊客：沒有密碼，登出後就回不來 #}
           <a href="{% url 'upgrade' %}">設定帳號密碼</a>
           <form method="post" action="{% url 'logout' %}" onsubmit="return confirm('確定要登出嗎？遊客沒有密碼，登出後就回不到這個身分，下過的對局也看不到了。想保留的話按「取消」，先設定帳號密碼。')">{% csrf_token %}<button type="submit">登出</button></form>

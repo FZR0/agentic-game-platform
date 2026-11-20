@@ -10,7 +10,7 @@ from arena.models import AiNote, Game
 
 from . import engine
 from .engine import BLACK, WHITE, RULE, SOLVED, ESTIMATE
-from .module import MODULE
+from .module import MODULE, list_candidates
 
 
 def at(name):
@@ -238,6 +238,22 @@ class ReviewTests(SimpleTestCase):
         # 真的是活四時仍然寫活四：黑棋 H8–J8 活三，下 G8 或 K8 就成活四
         d = engine.choose_move(board_with(black=["H8", "I8", "J8"], white=["A1", "A2"]), WHITE)
         self.assertTrue(any("就形成活四或雙四，對方擋不完" in p["text"] for p in d["points"]), d["points"])
+
+    def test_asking_why_a_four_explains_what_happens_after_it(self):
+        # 2026-11-18 使用者：問「為什麼衝四反而不好」，AI 教練只回「依引擎估計 I7 比較好、H5 效果較弱」。
+        # 事實裡只有那一手當下形成什麼，模型講不出原因。現在要附上對方被迫擋在哪、擋完這個四就用掉了，
+        # 以及擋完之後和引擎建議的下法各自怎麼發展，模型才有因果可以講
+        b = board_with(black=["H8", "H7", "H6", "G7"], white=["H9", "G9", "J10", "F8"])
+        texts = [p["text"] for p in engine.explain_position(b, [at("H5")])]
+        self.assertIn("黑棋下 H5 是衝四，白棋下一手只能擋在 H4，否則黑棋就連五。", texts)
+        self.assertTrue(any(t.startswith("白棋擋住 H4 之後，黑棋在 H5 的這個四就用掉了") for t in texts), texts)
+        best = engine.coord(*engine.choose_move(b, BLACK)["move"])
+        self.assertTrue(any(t.startswith("依引擎估計，白棋擋住 H4 之後的後續：黑棋下 ") for t in texts), texts)
+        self.assertTrue(any(t.startswith(f"依引擎估計，黑棋下 {best} 之後的後續：白棋下 ") for t in texts), texts)
+        # 後續的每一手都是引擎的選擇，只能是估計；只有「被迫擋」和「四用掉了」是規則
+        for p in engine.explain_position(b, [at("H5")]):
+            if "後續" in p["text"]:
+                self.assertEqual(p["evidence"], ESTIMATE, p["text"])
 
     def test_playing_the_vcf_is_not_flagged(self):
         self.assertIsNone(engine.judge_move(board_with(**VCF_POSITION), *at("K8"), BLACK))
@@ -504,3 +520,168 @@ class ResignTests(SimpleTestCase):
         self.assertIn("目前輪到白棋下。", texts)
         self.assertTrue(any("黑棋下" in t and "就形成活四或雙四" in t for t in texts), texts)
         self.assertTrue(any(t.startswith("引擎會建議白棋下") for t in texts), texts)
+
+
+# ---- 黑棋禁手（2026-11-20 使用者要求「黑子禁止雙活三雙活四」，三三、四四、長連各自可以設定） ----
+
+ALL_BANS = engine.Rules(three_three=True, four_four=True, overline=True)
+BAN_SETTINGS = MODULE.clean_settings({"three_three": "ban", "four_four": "ban", "overline": "ban"})
+# 黑 F8 G8（橫）、H6 H7（直），白下在角落；輪到黑，H8 會同時做出兩個活三
+THREE_THREE = ["F8", "A1", "G8", "A15", "H6", "O1", "H7", "O15"]
+# 黑 H8 的橫向 F8 G8、斜向 F6 G7 都是活三，所以 H8 是黑棋的三三禁手；白 H9–H12 衝四（H13 被黑擋住），唯一的連五點就是 H8
+FOUR_ON_BAN = ["F8", "H9", "G8", "H10", "F6", "H11", "G7", "A1", "H7", "A15", "H13", "H12"]
+
+
+class ForbiddenShapeTests(SimpleTestCase):
+    """禁手的定義。判錯的話，玩家會被拒絕下一手合法的棋，或黑棋下出規則不允許的棋。"""
+
+    def ban(self, black, white=(), point="H8", rules=ALL_BANS, color=BLACK):
+        return engine.forbidden(board_with(black, white), *at(point), color, rules)
+
+    def test_double_three_is_forbidden_for_black_only_and_only_when_banned(self):
+        self.assertEqual(self.ban(["F8", "G8", "H6", "H7"]), "三三")
+        self.assertEqual(self.ban(["F8", "G8", "H6", "H7"], color=WHITE), None, "白棋沒有禁手")
+        self.assertIsNone(self.ban(["F8", "G8", "H6", "H7"], rules=engine.FREESTYLE), "預設的自由規則沒有禁手")
+        self.assertIsNone(self.ban(["F8", "G8", "H6", "H7"], rules=engine.Rules(four_four=True, overline=True)),
+                          "三項各自開關：只禁四四和長連時，三三可以下")
+
+    def test_a_split_three_is_still_a_live_three(self):
+        # G8 _ J8 加上 H8 是「跳三」，再下 I8 就是兩頭都空的四，所以也算活三
+        self.assertEqual(self.ban(["G8", "J8", "H6", "H7"]), "三三")
+
+    def test_a_three_that_cannot_become_an_open_four_is_not_counted(self):
+        # 假三三：橫向 F8 G8 H8 兩邊被白 E8、K8 擋住，怎麼補都變不成兩頭空的四，只剩直向一個活三
+        self.assertIsNone(self.ban(["F8", "G8", "H6", "H7"], ["E8", "K8"]))
+
+    def test_a_three_whose_four_point_is_itself_forbidden_is_not_counted(self):
+        # 假三三的另一種：橫向 F8 G8 H8 左邊 D8 被擋，只能補 I8 成活四；但加了 J9 之後 I8 本身是三三禁手，
+        # 黑棋不能下 I8，所以橫向不是真活三，H8 只有直向一個活三，可以下。沒有 J9 時 I8 能下，H8 就是三三
+        base, white = ["F8", "G8", "H6", "H7", "I6", "I7"], ["D8"]
+        self.assertEqual(self.ban(base, white), "三三")
+        self.assertIsNone(self.ban(base + ["J9"], white))
+
+    def test_double_open_four_is_forbidden_but_closed_fours_and_four_three_are_not(self):
+        # 使用者決定四四只算兩個活四（兩頭都空），不是連珠規則把沖四也算進去的四四
+        self.assertEqual(self.ban(["E8", "F8", "G8", "H5", "H6", "H7"]), "四四")
+        self.assertIsNone(self.ban(["E8", "F8", "G8", "H5", "H6", "H7"], ["D8", "H4"]), "兩個沖四不算")
+        self.assertIsNone(self.ban(["E8", "F8", "G8", "H6", "H7"]), "四三不是禁手")
+
+    def test_overline_neither_wins_nor_may_be_played_when_banned(self):
+        b = board_with(["C8", "D8", "E8", "F8", "H8"])
+        self.assertEqual(engine.forbidden(b, *at("G8"), BLACK, ALL_BANS), "長連")
+        self.assertFalse(engine.makes_five(b, *at("G8"), BLACK, ALL_BANS))
+        self.assertTrue(engine.makes_five(b, *at("G8"), BLACK), "沒禁長連時照自由規則，六子也算贏")
+        self.assertNotIn(at("G8"), engine.five_points(b, BLACK, ALL_BANS))
+
+    def test_white_overline_still_wins(self):
+        b = board_with(white=["C8", "D8", "E8", "F8", "H8"])
+        self.assertTrue(engine.makes_five(b, *at("G8"), WHITE, ALL_BANS))
+
+    def test_an_exact_five_wins_even_if_it_also_makes_a_forbidden_shape(self):
+        # 連五優先（使用者決定）：G8 連成剛好五子，同時也做出兩個活三，算黑棋贏，不是禁手
+        b = board_with(["C8", "D8", "E8", "F8", "G6", "G7", "H9", "I10"])
+        self.assertIsNone(engine.forbidden(b, *at("G8"), BLACK, ALL_BANS))
+        self.assertTrue(engine.makes_five(b, *at("G8"), BLACK, ALL_BANS))
+
+
+class ForbiddenPlayTests(SimpleTestCase):
+    """禁手要由伺服器擋下：真人、AI Agent、引擎代下都不能下出禁手；沒有禁手設定的舊棋局照原規則重播。"""
+
+    def test_the_server_refuses_a_forbidden_move_but_old_games_still_replay(self):
+        state = MODULE.replay(BAN_SETTINGS, THREE_THREE)
+        with self.assertRaisesRegex(ValueError, "禁手（三三）"):
+            MODULE.apply(state, "H8")
+        MODULE.replay({}, THREE_THREE + ["H8"])  # 舊棋局沒有設定＝自由規則，這一手合法
+
+    def test_settings_default_to_freestyle_and_reject_unknown_values(self):
+        self.assertEqual(engine.Rules.of(MODULE.clean_settings({})), engine.FREESTYLE)
+        with self.assertRaises(ValueError):
+            MODULE.clean_settings({"three_three": "maybe"})
+
+    def test_the_board_marks_forbidden_points_only_on_blacks_turn(self):
+        # 網頁不算規則：禁止符號的位置一定要由伺服器給
+        self.assertIn("H8", MODULE.frame(MODULE.replay(BAN_SETTINGS, THREE_THREE), BLACK)["forbidden"])
+        self.assertNotIn("forbidden", MODULE.frame(MODULE.replay(BAN_SETTINGS, THREE_THREE[:-1]), WHITE))
+        self.assertNotIn("forbidden", MODULE.frame(MODULE.replay({}, THREE_THREE), BLACK))
+
+    def test_the_agent_may_not_play_a_forbidden_point(self):
+        state = MODULE.replay(BAN_SETTINGS, THREE_THREE)
+        self.assertIn("禁手", MODULE.rejection(state, "H8"))
+        banned = list_candidates(state.board, BLACK, state.rules)[-1]  # 候選清單也告訴 Agent 哪些點不能下
+        self.assertEqual(banned[0], RULE)
+        self.assertIn("H8", banned[1])
+        self.assertNotIn(at("H8"), engine.ranked_candidates(state.board, BLACK, state.rules))
+
+    def test_black_is_not_forced_to_block_on_its_own_forbidden_point(self):
+        # 白棋衝四、唯一的擋點是黑棋的禁手：黑棋擋不住。硬規則若還要求「必須擋住」，Agent 的每一手都會被退回
+        state = MODULE.replay(BAN_SETTINGS, FOUR_ON_BAN)
+        self.assertIsNone(MODULE.rejection(state, "A2"))
+        self.assertIn("禁手", MODULE.rejection(state, "H8"))
+        self.assertNotEqual(MODULE.engine_move(state)["action"], "H8")
+        decision = engine.choose_move(state.board, BLACK, state.rules)
+        self.assertEqual(decision["reason"], "no_defense")
+        self.assertTrue(any(p["evidence"] == RULE and "禁手" in p["text"] for p in decision["points"]))
+
+    def test_white_can_win_by_forcing_black_to_block_on_a_forbidden_point(self):
+        # 白棋利用禁手取勝：衝四逼黑棋擋在禁手點。自由規則下黑棋擋得住，這不是連續衝四
+        before = board_with(["F8", "G8", "F6", "G7", "H7", "H13"], ["H9", "H10", "H11", "A1", "A15"])
+        self.assertIsNone(engine.find_vcf(before, WHITE))
+        line = engine.find_vcf(before, WHITE, rules=ALL_BANS)
+        self.assertEqual(line, [at("H12")])
+        self.assertIn("禁手（三三）", engine.vcf_text("白棋", line, before, WHITE, ALL_BANS))
+        decision = engine.choose_move(before, WHITE, ALL_BANS)
+        self.assertEqual((tuple(decision["move"]), decision["reason"]), (at("H12"), "vcf"))
+
+    def test_review_does_not_blame_black_for_not_blocking_on_a_forbidden_point(self):
+        actions = FOUR_ON_BAN + ["A2"]
+        moments = MODULE.review(BAN_SETTINGS, actions, BLACK)
+        self.assertNotIn(len(actions) - 1, [m["index"] for m in moments])
+        # 同一盤照自由規則看，黑棋沒擋 H8 就是關鍵時刻：復盤真的有照這盤的規則判斷
+        self.assertIn("missed_block", [m["type"] for m in MODULE.review({}, actions, BLACK)])
+
+    def test_questions_are_answered_under_this_games_rules(self):
+        state = MODULE.replay(BAN_SETTINGS, THREE_THREE)
+        texts = [p["text"] for p in MODULE.explain_position(state, ["H8"], None)]
+        self.assertTrue(any("這盤黑棋有禁手" in t for t in texts), texts)
+        self.assertIn("黑棋不能下 H8：這一點是黑棋的禁手（三三）。", texts)
+        self.assertNotIn("禁手", "".join(p["text"] for p in MODULE.explain_position(MODULE.replay({}, THREE_THREE), ["H8"], None)))
+
+    def test_engine_playing_both_sides_under_forbidden_rules_is_never_flagged_or_forbidden(self):
+        # 和自由規則的同名測試一樣：復盤與下棋用同一套標準，引擎自己對下的每一手都不能被挑錯；
+        # 黑棋的每一手也都不能是禁手（build_board 會檢查）。這個開局下滿 120 手，黑棋有 11 手面對禁手點
+        # （2026-11-20 量的；空棋盤開局只有 2 手、要 37 秒，[[7, 7], [6, 7]] 一次都沒遇到，所以只留這一個）
+        for opening in ([[7, 7], [8, 8]],):
+            board, winner = engine.build_board(opening, ALL_BANS)
+            moves = list(opening)
+            while not winner and len(moves) < 120:
+                color = engine.color_to_move(moves)
+                x, y = engine.choose_move(board, color, ALL_BANS)["move"]
+                self.assertIsNone(engine.forbidden(board, x, y, color, ALL_BANS), f"開局 {opening} 第 {len(moves) + 1} 手")
+                board[y][x] = color
+                moves.append([x, y])
+                winner = color if engine.makes_five(board, x, y, color, ALL_BANS) else None
+            engine.build_board(moves, ALL_BANS)
+            for color in (BLACK, WHITE):
+                flagged = [(m["index"] + 1, m["type"]) for m in engine.review(moves, color, ALL_BANS)
+                           if m["index"] >= len(opening)]
+                self.assertEqual(flagged, [], f"開局 {opening}，{engine.COLOR_NAMES[color]}被誤判的手數")
+
+
+@override_settings(OLLAMA_URL="http://127.0.0.1:9", OLLAMA_TIMEOUT=2)
+class ForbiddenApiTests(TestCase):
+    client_class = AdminClient
+
+    def post(self, url, body):
+        return self.client.post(url, json.dumps(body), content_type="application/json")
+
+    def test_the_setting_is_saved_with_the_game_and_validated(self):
+        r = self.post("/api/gomoku/games/", {"seat": WHITE, "settings": {"three_three": "ban"}})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(Game.objects.get(pk=r.json()["game"]["id"]).settings["three_three"], "ban")
+        self.assertEqual(self.post("/api/gomoku/games/", {"seat": BLACK, "settings": {"overline": "x"}}).status_code, 400)
+
+    def test_a_forbidden_move_is_refused_and_not_saved(self):
+        game = Game.objects.create(game_type="gomoku", human_seat=BLACK, actions=THREE_THREE, settings=BAN_SETTINGS)
+        r = self.post(f"/api/gomoku/games/{game.id}/move/", {"action": "H8"})
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(Game.objects.get(pk=game.id).actions, THREE_THREE)

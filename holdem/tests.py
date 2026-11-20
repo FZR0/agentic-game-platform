@@ -710,10 +710,34 @@ class PvpTableTests(TestCase):
         state = self.state(game)
         self.assertEqual(state.stacks[mine], 0)
         self.assertTrue(state.hand_over)  # 單挑時離場的人棄牌，這手由對方拿下
-        self.post(other, f"/api/holdem/games/{game.id}/deal/", {"hand": state.hand_no})
-        self.assertIsNone(self.state(game).seat_of_token(self.token(who)))
+        # 2026-11-18 使用者回報：桌上只剩一人時不會發下一手，離場的人原本一直「坐在」桌上，
+        # 沒有「排隊上桌」、也離不開房間。這手一結束就要下桌，不必等發牌
+        self.assertIsNone(state.seat_of_token(self.token(who)))
         self.assertTrue(game.in_room(self.users[who]))
         self.assertFalse(game.finished)  # 不計勝負：牌局不會因為只剩一人就結束
+        r = self.table(who, game, "sit")  # 回到觀戰席後可以再排隊；牌桌在等人，馬上補進去發牌
+        self.assertEqual(r.status_code, 200, r.content)
+        state = self.state(game)
+        self.assertIsNotNone(state.seat_of_token(self.token(who)))
+        self.assertEqual(state.hand_no, 2)
+
+    def test_a_folded_player_who_leaves_stands_up_when_someone_else_ends_the_hand(self):
+        # 三人桌：先棄牌再離場，這手還在打；由別人的行動結束這手時，離場的人要馬上下桌
+        game = self.open_room()
+        self.clients["carol"].post("/join/", {"code": game.room_code})
+        self.table("carol", game, "sit")
+        game = self.start(game)
+        names = {self.token(n): n for n in ("alice", "bob", "carol")}
+        state = self.state(game)
+        who = names[MODULE.to_move(state)]
+        mine = state.seat_of_token(self.token(who))
+        self.assertEqual(self.post(who, f"/api/holdem/games/{game.id}/move/", {"action": "fold"}).status_code, 200)
+        self.assertEqual(self.post(who, f"/api/holdem/games/{game.id}/move/", {"action": f"leave {mine}"}).status_code,
+                         200)  # 已經棄牌：不必等輪到自己
+        self.assertEqual(self.state(game).occupant.get(mine), self.token(who))  # 這手還在打：先留在桌上
+        state = self.finish_hand(game)
+        self.assertIsNone(state.seat_of_token(self.token(who)))
+        self.assertEqual(len(state.live()), 2)  # 另外兩人照常等下一手
 
     def test_the_host_ends_the_table_without_a_result_and_everyone_returns_to_the_room(self):
         game = self.start(self.open_room())
@@ -729,6 +753,47 @@ class PvpTableTests(TestCase):
         self.assertEqual(seated, {self.token("alice"), self.token("bob")})  # 桌上的人照樣坐著
         self.assertTrue(nxt.in_room(self.users["carol"]))
         self.assertIsNone(nxt.started_at)
+
+    def test_the_host_switches_games_after_the_start_by_ending_the_table_first(self):
+        # 2026-11-20 使用者回報「為什麼房間在德州撲克時不能切遊戲」：棋類下完會回到房間大廳，撲克開放牌桌沒有終局，
+        # 開始後就一直換不了。使用者決定：只有撲克牌桌放寬，房主換遊戲＝先「結束牌局」（不計勝負）、再在回到的那一盤換
+        # （網頁 app.js::switchGame 送這兩個請求）。換遊戲本身照舊只在開始前，否則手上的籌碼、正在打的這手牌會無聲消失；
+        # 棋類開始後也照舊不能換，快輸的一方才不能換遊戲逃掉。房間（編號、上鎖的密碼、桌上的人、觀戰的人）要整個保留
+        from gomoku.module import MODULE as GOMOKU
+        game = self.open_room()
+        self.clients["carol"].post("/join/", {"code": game.room_code})  # carol 在觀戰席
+        self.assertEqual(self.post("alice", f"/api/holdem/games/{game.id}/lock/", {"lock": True, "password": "pw2026"})
+                         .status_code, 200)
+        game = self.start(game)
+        switch = {"game_type": "gomoku", "seat": 1, "settings": {}}
+        refused = self.post("alice", f"/api/holdem/games/{game.id}/room/", switch)
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("已經開始", refused.json()["error"])
+        self.assertEqual(self.post("alice", f"/api/holdem/games/{game.id}/end_table/", {}).status_code, 200)
+        nxt = Game.objects.get(pk=Game.objects.get(pk=game.id).next_round_id())
+        self.assertEqual(self.post("bob", f"/api/holdem/games/{nxt.id}/room/", switch).status_code, 400)  # 只有房主
+        r = self.post("alice", f"/api/holdem/games/{nxt.id}/room/", switch)
+        self.assertEqual(r.status_code, 200, r.content)
+        nxt.refresh_from_db()
+        self.assertEqual((nxt.game_type, nxt.room_code, nxt.room_password), ("gomoku", game.room_code, "pw2026"))
+        self.assertEqual({p.seat: p.user.username for p in nxt.players.all()}, {1: "alice", 2: "bob"})
+        self.assertEqual(nxt.summary()["spectators"], ["carol"])
+        # 再換回撲克（還是開始前）：同一個房間，牌桌是空的，大家到觀戰席自己上桌
+        r = self.post("alice", f"/api/gomoku/games/{nxt.id}/room/", {"game_type": "holdem", "seat": 1, "settings": {}})
+        self.assertEqual(r.status_code, 200, r.content)
+        nxt.refresh_from_db()
+        self.assertEqual((nxt.game_type, nxt.room_code, nxt.room_password), ("holdem", game.room_code, "pw2026"))
+        self.assertEqual(self.state(nxt).occupant, {})
+        self.assertEqual(sorted(nxt.summary()["spectators"]), ["alice", "bob", "carol"])
+        # 棋類開始後照樣不能換
+        from arena.tests import start_now
+        self.assertEqual(self.post("alice", f"/api/holdem/games/{nxt.id}/room/", switch).status_code, 200)
+        self.assertEqual(self.post("bob", f"/api/gomoku/games/{nxt.id}/seat/", {"seat": 2}).status_code, 200)
+        board = Game.objects.get(pk=nxt.id)
+        start_now(board)
+        self.assertEqual(board.game_type, GOMOKU.key)
+        self.assertEqual(self.post("alice", f"/api/gomoku/games/{board.id}/room/",
+                                   {"game_type": "holdem", "seat": 1, "settings": {}}).status_code, 400)
 
     def test_the_review_says_who_ended_the_table(self):
         # 2026-11-16 情境測試：房主結束牌局，bob 的整體評論卻寫「是你選擇結束」

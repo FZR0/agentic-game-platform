@@ -582,8 +582,56 @@ canvas {
 .tab-panel { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 2px 4px; }
 .ask-panel { display: flex; flex-direction: column; overflow: hidden; }
 .ask-panel .answers { flex: 1; min-height: 0; overflow-y: auto; }
-.ask-box { margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--border); }
-.ask-box p { margin: 0 0 6px; }
+.ask-box { margin-top: 8px; }
+
+/* 問 AI（2026-11-18 參考 Gemini 側欄）：還沒問時中間是問候語；問答是一問一答的對話 */
+.ask-welcome {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 16px 8px;
+  text-align: center;
+}
+.ask-welcome[hidden] { display: none; }
+.ask-welcome p { margin: 0; }
+.ask-welcome .muted { max-width: 30em; font-size: 0.8125rem; }
+.ask-spark { color: var(--accent); font-size: 1.75rem; line-height: 1; }
+.ask-hello { font-size: 1.1875rem; font-weight: 700; }
+.ask-welcome:not([hidden]) + .answers { flex: 0 0 auto; }
+
+.answers { display: flex; flex-direction: column; gap: 18px; list-style: none; margin: 0; padding: 4px 2px; }
+.qa { display: flex; flex-direction: column; gap: 6px; }
+.qa-where { align-self: flex-end; color: var(--muted); font-size: 0.75rem; }
+.qa-question {
+  align-self: flex-end;
+  max-width: 85%;
+  margin: 0;
+  padding: 8px 14px;
+  border-radius: 18px 18px 4px 18px;
+  background: var(--accent-soft);
+  overflow-wrap: anywhere;
+}
+.qa-answer {
+  padding: 4px 6px 6px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+.qa-answer:hover { background: var(--panel-2); }
+.qa-answer .head:empty, .qa-answer .head:not(:has(.tag)) { display: none; }
+.qa-answer .text { margin: 6px 0 4px; line-height: 1.7; }
+.qa-answer .source { color: var(--muted); font-size: 0.75rem; }
+.qa-pending { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 0.875rem; }
+.qa-pending.failed { color: var(--warn); }
+.dots { display: inline-flex; gap: 3px; }
+.dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: ask-dot 1.2s infinite ease-in-out; }
+.dots i:nth-child(2) { animation-delay: 0.15s; }
+.dots i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes ask-dot { 0%, 80%, 100% { opacity: 0.25; } 40% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .dots i { animation: none; opacity: 0.6; } }
 
 .footnote { margin: 10px 0 0; padding-top: 10px; border-top: 1px solid var(--border); font-size: 0.75rem; line-height: 1.55; }
 
@@ -600,12 +648,12 @@ canvas {
 .entries .head { font-weight: 600; line-height: 1.5; }
 .entries .text { margin: 6px 0 4px; }
 
-.thoughts.clickable > li, .moments > li, .answers > li { cursor: pointer; }
-.thoughts.clickable > li:hover, .moments > li:hover, .answers > li:hover { background: var(--panel-2); }
+.thoughts.clickable > li, .moments > li { cursor: pointer; }
+.thoughts.clickable > li:hover, .moments > li:hover { background: var(--panel-2); }
 .entries > li.active { border-color: var(--accent); background: var(--active); }
 
 /* 回答的重點：比內文醒目，一眼先看到結論 */
-.entries .key {
+.entries .key, .qa-answer .key {
   margin: 8px 0 4px;
   padding: 7px 10px;
   border-left: 3px solid var(--accent);
@@ -647,11 +695,41 @@ canvas {
 
 .narrate-button { margin-top: 6px; padding: 3px 12px; border-radius: 999px; font-size: 0.8125rem; }
 
-.quick-questions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
-.quick-questions button { padding: 4px 12px; border-radius: 999px; background: var(--panel-2); font-size: 0.8125rem; }
+/* 建議問題：一顆顆圓角膠囊，靠左排在輸入框上方 */
+.quick-questions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.quick-questions button {
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  font-size: 0.8125rem;
+  text-align: left;
+}
+.quick-questions button:hover:not(:disabled) { border-color: var(--accent); }
 
-.ask-form { display: flex; gap: 8px; }
-.ask-form input { flex: 1; min-width: 0; }
+/* 輸入框：一整塊圓角輸入區，上面一行標出正在問哪個局面，右邊是圓形的送出鈕 */
+.ask-form {
+  padding: 8px 8px 8px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 22px;
+  background: var(--raised);
+  box-shadow: var(--shadow-sm);
+  transition: border-color 0.15s;
+}
+.ask-form:focus-within { border-color: var(--accent); }
+.ask-context { margin: 0 0 2px; color: var(--muted); font-size: 0.75rem; }
+.ask-row { display: flex; align-items: center; gap: 8px; }
+.ask-row input { flex: 1; min-width: 0; padding: 6px 0; border: 0; background: transparent; box-shadow: none; outline: none; }
+.ask-send {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  min-height: 36px;
+  padding: 0;
+  border-radius: 50%;
+  font-size: 1.125rem;
+  font-weight: 700;
+  line-height: 1;
+}
 
 details { color: var(--muted); font-size: 0.8125rem; margin-top: 6px; }
 details summary { width: fit-content; cursor: pointer; }
@@ -792,6 +870,16 @@ details ul { margin: 4px 0 0; padding-left: 18px; }
 .room-bar { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px 12px; }
 .room-bar .hint { color: var(--muted); font-size: 0.9rem; align-self: center; }
 .join-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+/* 房間鎖（2026-11-18）：房間成員下面，公開或上鎖；房主的密碼欄與按鈕 */
+.room-lock { padding-top: 8px; border-top: 1px solid var(--border); }
+.room-lock p { margin: 0 0 6px; font-size: 0.875rem; }
+.room-lock-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.room-lock-form input { font: inherit; flex: 1 1 10em; min-width: 0; padding: 5px 10px; border-radius: 8px;
+  border: 1px solid var(--border-strong); background: var(--raised); color: var(--text); }
+/* 房間列表（2026-11-18）：上鎖的房間在按鈕前多一格密碼 */
+.room-join { flex-wrap: wrap; gap: 8px; align-items: center; }
+.room-join input { font: inherit; width: 9em; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border-strong);
+  background: var(--raised); color: var(--text); }
 /* 房主按開始、倒數、房間聊天室（2026-11-13） */
 .room-start { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin: 0 0 12px; padding: 12px 14px;
   border: 1px solid var(--accent); border-radius: var(--radius); background: var(--accent-soft); }
@@ -827,19 +915,40 @@ details ul { margin: 4px 0 0; padding-left: 18px; }
 .room-banner[hidden] { display: none; }
 .page .room-banner { width: auto; margin: 0 0 16px; }
 @media (max-width: 640px) { .room-banner { width: calc(100% - 24px); margin-top: 8px; } .page .room-banner { width: auto; margin: 0 0 12px; } }
-/* 房間的玩家列表（2026-11-13） */
-.room-players { margin: 0 0 12px; padding: 10px 14px; border: 1px solid var(--border); border-radius: var(--radius);
+/* 房間的對局玩家與房間成員（2026-11-13 的玩家列表，2026-11-18 依使用者要求拆成兩塊） */
+.room-card { margin: 0 0 12px; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius);
   background: var(--panel); }
-.room-players[hidden] { display: none; }
-.room-seats { display: flex; flex-wrap: wrap; gap: 6px 10px; margin: 0; padding: 0; list-style: none; }
-.room-seats li { padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--raised); }
-.room-seats li.empty { border-style: dashed; color: var(--muted); }
+.room-card[hidden] { display: none; }
+.room-card-title { margin: 0 0 10px; font-size: 0.95rem; font-weight: 700; }
+.room-card-title .muted { margin-left: 4px; font-size: 0.85rem; font-weight: 400; }
+/* 對局玩家：一個座位一格 */
+.room-seats { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 8px; margin: 0; padding: 0;
+  list-style: none; }
+.room-seats li { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 8px 12px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--raised); }
+.room-seats li.empty { border-style: dashed; background: transparent; color: var(--muted); }
 .room-seats li.turn { border-color: var(--accent); background: var(--accent-soft); }
-.room-seats .seat-name { font-weight: 700; }
-.room-seats .seat-tags { color: var(--accent); font-size: 0.85rem; font-weight: 600; }
-.room-players > p { margin: 6px 0 0; font-size: 0.88rem; overflow-wrap: anywhere; }
-.room-players > .end-button { margin-top: 8px; }
-/* 房間大廳的操作（2026-11-15）：座位標籤裡的小按鈕與「換到…」選單 */
-.room-players .room-action { padding: 2px 8px; font-size: 0.82rem; border-radius: 999px; }
-.room-players .room-action.danger:hover:not(:disabled) { border-color: var(--warn); color: var(--warn); }
-.room-players .spectator { white-space: nowrap; }
+.room-seats li.turn .badge { background: var(--raised); }
+.room-seats .seat-name { color: var(--muted); font-size: 0.8rem; font-weight: 600; }
+.room-seats .seat-who { font-weight: 700; overflow-wrap: anywhere; }
+.room-table { margin-top: 10px; font-size: 0.88rem; overflow-wrap: anywhere; }
+.room-table[hidden] { display: none; }
+.room-table .table-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 0; }
+/* 房間成員：一個人一列，左邊是名字和他在哪裡，右邊是房主的管理 */
+.room-members { margin: 0; padding: 0; list-style: none; }
+.room-members li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 8px 0;
+  border-top: 1px solid var(--border); }
+.room-members li:first-child { padding-top: 0; border-top: none; }
+.room-members .member-name { font-weight: 600; overflow-wrap: anywhere; }
+.room-members .member-role { color: var(--muted); font-size: 0.85rem; }
+.room-members .member-actions { margin-left: auto; }
+.room-card .badges { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.room-card .badge { padding: 0 7px; border-radius: 999px; background: var(--accent-soft); color: var(--accent);
+  font-size: 0.75rem; font-weight: 600; line-height: 1.6; }
+.room-card .seat-actions, .room-card .member-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.room-footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 10px; padding-top: 10px;
+  border-top: 1px solid var(--border); }
+.room-footer[hidden] { display: none; }
+/* 房間大廳的操作（2026-11-15）：小按鈕與「換到…」選單 */
+.room-card .room-action { padding: 2px 8px; font-size: 0.82rem; border-radius: 999px; }
+.room-card .room-action.danger:hover:not(:disabled) { border-color: var(--warn); color: var(--warn); }

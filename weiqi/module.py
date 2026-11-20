@@ -24,6 +24,8 @@ MINOR_THRESHOLD = 2.0  # 2–4 目是小失誤（使用者要求問題全部列�
 SUGGEST_THRESHOLD = 1.0  # 1–2 目不算失誤，列為「建議」（KataGo 更推薦的下法）；再小就在 KataGo 低搜尋次數的誤差內
 DECIDED_BELOW, DECIDED_BEHIND = 0.05, 10.0  # 勝率低於 5% 且落後 10 目以上才說勝負大致已定（只看勝率會飽和）
 CANDIDATES = 5
+PV_PLIES = 4  # 事實裡寫出後續變化的手數（2026-11-19：沒有後續時，模型答不出「為什麼不好」）
+CACHE_SIZE = 2048  # 分析快取的局面數：要放得下一整盤的復盤結果，提問時才用得到同一份（19 路一盤可能三百多手）
 
 
 def pct(winrate):
@@ -148,10 +150,34 @@ class WeiqiModule(GameModule):
         with self._lock:
             if key not in self._cache:
                 turn = len(actions)
-                self._cache[key] = self.analyzer.analyze(state.size, state.komi, actions, [turn], visits)[turn]
-                while len(self._cache) > 64:
-                    self._cache.popitem(last=False)
+                self._remember(key, self.analyzer.analyze(state.size, state.komi, actions, [turn], visits)[turn])
             return self._cache[key]
+
+    def _remember(self, key, result):
+        self._cache[key] = result
+        while len(self._cache) > CACHE_SIZE:
+            self._cache.popitem(last=False)
+
+    def _review_analysis(self, size, komi, played, turns):
+        """復盤用的分析（REVIEW_VISITS），存進同一個快取：之後提問查同一手時用的是同一份結果
+        （2026-11-19 情境測試：KataGo 每次搜尋的結果不同，復盤說第 5 手該下 G6、提問卻說 D6，問題數量也對不起來）。
+        快取裡沒有的局面整批送一次。"""
+        keys = {t: (size, komi, tuple(played[:t]), REVIEW_VISITS) for t in turns}
+        with self._lock:
+            missing = sorted(t for t, k in keys.items() if k not in self._cache)
+            if missing:
+                for t, result in self.analyzer.analyze(size, komi, played, missing, REVIEW_VISITS).items():
+                    self._remember(keys[t], result)
+            return {t: self._cache.get(k) for t, k in keys.items()}
+
+    @staticmethod
+    def _continuation(color, pv):
+        """KataGo 的主要變化寫成「黑棋 D6、白棋 C3、…」；color 是 pv 第一手的那一方。"""
+        steps = []
+        for move in pv[:PV_PLIES]:
+            steps.append(f"{COLOR_NAMES[color]} {'虛手' if move.lower() == PASS else move}")
+            color = rules.other(color)
+        return "、".join(steps)
 
     @staticmethod
     def _for(color, winrate=None, lead=None):
@@ -183,16 +209,20 @@ class WeiqiModule(GameModule):
             points.append((RULE, f"{COLOR_NAMES[opp]}上一手虛手；{COLOR_NAMES[color]}也虛手的話對局結束並數子。"))
         return points
 
-    def _candidates(self, state):
-        a = self._analysis(state)
+    def _candidates(self, state, visits=TOOL_VISITS):
+        a = self._analysis(state, visits=visits)
         color = state.to_move
         items = "；".join(
             f"{i}. {m['move']}（勝率 {pct(self._for(color, winrate=m['winrate']))}，"
             f"{lead_text(self._for(color, lead=m['scoreLead']))}）"
             for i, m in enumerate(a["moves"][:CANDIDATES], 1))
         now = self._for(color, winrate=a["root"]["winrate"])
-        return [(ESTIMATE, f"依引擎估計（KataGo {TOOL_VISITS} 次搜尋），{COLOR_NAMES[color]}目前勝率約 {pct(now)}；"
-                           f"候選依好壞排序：{items}。")]
+        points = [(ESTIMATE, f"依引擎估計（KataGo {visits} 次搜尋），{COLOR_NAMES[color]}目前勝率約 {pct(now)}；"
+                             f"候選依好壞排序：{items}。")]
+        top = a["moves"][0] if a["moves"] else {}
+        if len(top.get("pv") or []) > 1:
+            points.append((ESTIMATE, f"依引擎估計，首選 {top['move']} 的後續：{self._continuation(color, top['pv'])}。"))
+        return points
 
     def _rule_facts(self, state, action):
         """下 action 的規則事實：合不合法、提子、下完後自己棋塊的氣、叫吃到的對方棋塊。"""
@@ -215,20 +245,46 @@ class WeiqiModule(GameModule):
                 points.append((RULE, f"{me}下 {action} 叫吃對方 {stones_text(ostones)}。"))
         return after, points
 
-    def _check(self, state, action):
+    def _check(self, state, action, visits=TOOL_VISITS):
         after, points = self._rule_facts(state, action)
         if after is None or after.over:
             return points
         color = state.to_move
         try:
-            best = self._for(color, winrate=self._analysis(state)["root"]["winrate"])
-            res = self._analysis(state, extra=action)["root"]
+            best = self._for(color, winrate=self._analysis(state, visits=visits)["root"]["winrate"])
+            a = self._analysis(state, extra=action, visits=visits)
+            res = a["root"]
             points.append((ESTIMATE, f"依引擎估計，{COLOR_NAMES[color]}下 {action} 後勝率約 "
                                      f"{pct(self._for(color, winrate=res['winrate']))}（下之前最佳約 {pct(best)}），"
                                      f"{lead_text(self._for(color, lead=res['scoreLead']))}。"))
+            points += self._after_points(color, action, a)
         except KataGoUnavailable as exc:
             points.append((ESTIMATE, f"KataGo 無法使用，沒有勝率估計（{exc}）。"))
         return points
+
+    def _after_points(self, color, action, after):
+        """下完 action 之後（after 是那個局面的分析），對方最好的應對與後續。"""
+        reply = after["moves"][0] if after and after.get("moves") else {}
+        if not reply.get("pv"):
+            return []
+        line = self._continuation(rules.other(color), reply["pv"])
+        return [(ESTIMATE, f"依引擎估計，{COLOR_NAMES[color]}下 {action} 之後的後續：{line}。")]
+
+    def _loss_points(self, color, action, before, after):
+        """(損失目數, 事實)：下 action 前後的目差、KataGo 的建議與兩邊的後續。復盤與提問共用，說法才一致。"""
+        name = COLOR_NAMES[color]
+        lead_before = self._for(color, lead=before["root"]["scoreLead"])
+        lead_after = self._for(color, lead=after["root"]["scoreLead"])
+        loss = lead_before - lead_after
+        best = before["moves"][0]
+        points = [(ESTIMATE, f"依引擎估計（KataGo），{name}下 {action} 前{lead_text(lead_before)}，"
+                             f"下完後{lead_text(lead_after)}，" + (f"約損失 {loss:.1f} 目。" if loss > 0 else "目數沒有損失。"))]
+        if best["move"] != action:
+            points.append((ESTIMATE, f"KataGo 建議下 {best['move']}（{lead_text(self._for(color, lead=best['scoreLead']))}）。"))
+            points += self._after_points(color, action, after)
+            if len(best.get("pv") or []) > 1:
+                points.append((ESTIMATE, f"依引擎估計，如果{name}改下 {best['move']}，後續：{self._continuation(color, best['pv'])}。"))
+        return loss, points
 
     # ---- Agent ----
 
@@ -340,8 +396,7 @@ play_move 的 reason 用繁體中文一句話說明，只能提到工具結果�
         if not turns:
             return []
         try:
-            results = self.analyzer.analyze(state.size, state.komi, played,
-                                            sorted(set(turns) | {t + 1 for t in turns}), REVIEW_VISITS)
+            results = self._review_analysis(state.size, state.komi, played, set(turns) | {t + 1 for t in turns})
         except KataGoUnavailable:
             return []
         moments = []
@@ -351,18 +406,12 @@ play_move 的 reason 用繁體中文一句話說明，只能提到工具結果�
                 continue
             color, name = states[t].to_move, COLOR_NAMES[states[t].to_move]
             lead_before = self._for(color, lead=before["root"]["scoreLead"])
-            lead_after = self._for(color, lead=after["root"]["scoreLead"])
             best = before["moves"][0]
-            loss = lead_before - lead_after
+            loss, points = self._loss_points(color, played[t], before, after)
             if played[t] == best["move"] or loss < SUGGEST_THRESHOLD:
                 continue
             level = "key" if loss >= LOSS_THRESHOLD else "minor" if loss >= MINOR_THRESHOLD else "suggest"
             _, rule_points = self._rule_facts(states[t], played[t])
-            points = [
-                (ESTIMATE, f"依引擎估計（KataGo），{name}下 {played[t]} 前{lead_text(lead_before)}，"
-                           f"下完後{lead_text(lead_after)}，約損失 {loss:.1f} 目。"),
-                (ESTIMATE, f"KataGo 建議下 {best['move']}（{lead_text(self._for(color, lead=best['scoreLead']))}）。"),
-            ]
             wr_before = self._for(color, winrate=before["root"]["winrate"])
             if wr_before < DECIDED_BELOW and lead_before <= -DECIDED_BEHIND:
                 points.append((ESTIMATE, f"這時{name}已{lead_text(lead_before)}、勝率依引擎估計低於 5%，勝負大致已定；"
@@ -377,17 +426,18 @@ play_move 的 reason 用繁體中文一句話說明，只能提到工具結果�
         return moments
 
     def explain_position(self, state, focus, next_action):
+        # 提問用復盤的搜尋次數（REVIEW_VISITS），和復盤的問題檢查是同一份分析（_review_analysis 的快取）
         points = [(RULE, f"目前輪到{COLOR_NAMES[state.to_move]}下。")] + self._threats(state)
         try:
-            points += self._candidates(state)
+            points += self._candidates(state, REVIEW_VISITS)
         except KataGoUnavailable as exc:
             points.append((ESTIMATE, f"KataGo 無法使用，沒有候選分析（{exc}）。"))
         for action in focus[:3]:
-            points += self._check(state, action)
+            points += self._check(state, action, REVIEW_VISITS)
         if next_action:
             points.append((RULE, f"紀錄中實際的下一手是{COLOR_NAMES[state.to_move]} {next_action}。"))
             if next_action != RESIGN and next_action not in focus[:3]:  # 問題已經問到這一手時不重複
-                points += self._check(state, next_action)
+                points += self._check(state, next_action, REVIEW_VISITS)
         return [{"evidence": ev, "text": text} for ev, text in points]
 
     def explain_action(self, settings, actions, n):
@@ -397,7 +447,19 @@ play_move 的 reason 用繁體中文一句話說明，只能提到工具結果�
             # 「我認輸時局面真的很差嗎？」：只寫「第 n 手是認輸」時模型沒有依據、自己說局面很差（2026-11-16 情境測試），附上認輸前的局面
             return ([{"evidence": RULE, "text": f"第 {n} 手是{COLOR_NAMES[state.to_move]}認輸；以下是認輸前的局面。"}]
                     + self.explain_position(state, [], None))
-        points = [(RULE, f"第 {n} 手是{COLOR_NAMES[state.to_move]} {action}。")] + self._check(state, action)
+        points = [(RULE, f"第 {n} 手是{COLOR_NAMES[state.to_move]} {action}。")]
+        after, rule_points = self._rule_facts(state, action)
+        points += rule_points
+        if after is not None and not after.over:
+            # 和復盤同一份分析、同一種寫法：前後目差、損失幾目、KataGo 的建議與兩邊的後續
+            # （2026-11-19 情境測試：原本只有勝率與落後幾目，模型分不出哪一手損失最多）
+            try:
+                before = self._analysis(state, visits=REVIEW_VISITS)
+                result = self._analysis(state, extra=action, visits=REVIEW_VISITS)
+                if before["moves"]:
+                    points += self._loss_points(state.to_move, action, before, result)[1]
+            except KataGoUnavailable as exc:
+                points.append((ESTIMATE, f"KataGo 無法使用，沒有局面評估（{exc}）。"))
         return [{"evidence": ev, "text": text} for ev, text in points]
 
 

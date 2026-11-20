@@ -14,7 +14,7 @@ from django.views.decorators.http import require_GET, require_http_methods, requ
 
 from . import agent, games, health, narrator, operations, orchestrator, realtime
 from .base import EVIDENCE_TYPES
-from .models import AiNote, Game
+from .models import AiNote, Game, display_name
 from .operations import RESULTS
 
 QUESTION_MAX_LENGTH = 200
@@ -127,8 +127,9 @@ def join(request, code=""):
         code = request.POST.get("code", "")
         watch = request.POST.get("action") == "watch"  # 「觀戰」按鈕（2026-11-08）；其他都是「加入」
         try:
-            data, handled = orchestrator.handle("watch" if watch else "join",
-                                                _with_user(request, {"params": {"code": code.strip().upper()}}))
+            # 房間鎖的密碼（2026-11-18）放在 params 外面：params 會寫進給模型的任務說明
+            data, handled = orchestrator.handle("watch" if watch else "join", _with_user(request, {
+                "params": {"code": code.strip().upper()}, "room_password": request.POST.get("password", "")}))
         except ValueError as exc:
             error = str(exc)
         else:
@@ -145,8 +146,53 @@ def join(request, code=""):
                                                "code": code.strip().upper(), "error": error})
 
 
+OPEN_QUERIES = ("resume", "watch", "review")  # 對局頁打開某一盤的網址參數（app.js 的 opening）
+
+
+def _opening(request, module):
+    """直接打開 /<遊戲>/?resume=<編號>（或 watch、review）時先確認這盤打得開（2026-11-20 使用者回報：對方把房間網址貼進瀏覽器，
+    頁面「無法打開對局：伺服器發生錯誤（404）」、棋盤空白）。看得到但網址上的遊戲不對（房主換了遊戲）就轉到對的遊戲頁；
+    不在房間裡的人轉到這個房間的加入確認頁（加入、觀戰照舊要按按鈕送 POST，上鎖照舊要密碼，網址本身不讓人進房間）；
+    看不到的對局轉走並說明原因。不用轉時回傳 None。這是存取檢查（和 _game 一樣），不經過 AI 助理。"""
+    query = next((q for q in OPEN_QUERIES if q in request.GET), None)
+    if query is None:
+        return None
+    raw = request.GET[query]
+    game_id = int(raw) if raw.isdigit() else None
+    user = request.user
+
+    def inside(game):
+        """打得開：看得到，而且進行中的真人對戰要人還在房間裡（房主一律算）。撲克牌桌打過牌後離開房間的人
+        （GamePlayer.left）看得到那一盤，但已經不在房間裡，要重新加入，否則頁面打開了、即時同步卻連不上。"""
+        return (game is not None and Game.watchable_by(user).filter(pk=game.pk).exists()
+                and (not game.pvp or game.finished or game.owner_id == user.id or game.in_room(user)))
+
+    game = Game.objects.filter(pk=game_id).first() if game_id else None
+    if inside(game):
+        if game.game_type == module.key or game.game_type not in games.GAMES:
+            return None
+        return redirect(f"{reverse('arena:play', args=[game.game_type])}?{request.GET.urlencode()}")
+    room = game if game is not None and game.pvp and game.room_code else None
+    now = operations._latest_round(room.room_code) if room else None
+    if now is not None and not now.finished:
+        if now.pk != game.pk and inside(now):  # 後來才進房間的人貼了舊的一盤
+            mode = "resume" if now.seat_of(user) is not None else "watch"
+            return redirect(f"{reverse('arena:play', args=[now.game_type])}?{mode}={now.id}")
+        messages.info(request, "你還不在這個房間裡：請按「加入」或「觀戰」。")
+        return redirect("arena:join_code", code=now.room_code)
+    if room is not None:  # 房主關掉的房間（目前那一盤 ended）
+        messages.warning(request, "這個房間已經關閉了，可以從房間列表找其他房間。")
+        return redirect("arena:join")
+    # 別人和 AI 的對局與不存在的編號說法一樣，不透露那盤存不存在
+    messages.warning(request, "找不到這盤對局：可能不是你的對局，或網址打錯了。")
+    return redirect("arena:home")
+
+
 def play(request, game_key):
     module = _module(game_key)
+    moved = _opening(request, module)
+    if moved is not None:
+        return moved
     return _page(request, "arena/play.html", "play_page", {"module": module, "params": {"game": module.key}})
 
 
@@ -193,7 +239,7 @@ def api_room_settings(request, game_key, game_id):
     """房主在開始前改房間設定（2026-11-08）：同一個房間、同一組房間密碼，換成新的設定重新開局。
     game_type 換成別的遊戲時（2026-11-15），設定與座位照新遊戲檢查。"""
     module = _module(game_key)
-    game = _game(request, module, game_id)
+    game = _game(request, module, game_id, watch=True)  # 房主可能在觀戰（2026-11-18）
     try:
         data = _read_json(request)
         target = _module(data.get("game_type") or module.key)
@@ -212,11 +258,29 @@ def api_room_settings(request, game_key, game_id):
 
 
 @require_POST
+def api_room_lock(request, game_key, game_id):
+    """房主幫房間上鎖或解鎖（2026-11-18）：{"lock": true/false, "password": "..."}，上鎖時密碼空白就隨機產生。
+    成功後通知房間裡的人（房間列表與房間頁的鎖頭）。"""
+    module = _module(game_key)
+    game = _game(request, module, game_id, watch=True)  # 房主可能在觀戰
+    try:
+        data = _read_json(request)
+        password = str(data.get("password") or "")
+    except (ValueError, TypeError) as exc:
+        return _error(exc)
+    response = _json(request, "room_lock", {"module": module, "game": game, "room_password": password,
+                                            "params": {"game_id": game.id, "lock": "lock" if data.get("lock") else "unlock"}})
+    if response.status_code == 200:
+        realtime.notify(game)
+    return response
+
+
+@require_POST
 def api_room_start(request, game_key, game_id):
     """房主按「開始」（2026-11-13）：倒數後開始。AI 助理先通知大家顯示倒數，倒數完 AI 的座位才行動，
     所以這個請求至少要等倒數的秒數才回來；其他人的畫面靠 WebSocket 更新。"""
     module = _module(game_key)
-    game = _game(request, module, game_id)
+    game = _game(request, module, game_id, watch=True)  # 房主可能在觀戰
     try:
         model, steps = _agent_options(_read_json(request), module)
     except (ValueError, KeyError, TypeError) as exc:
@@ -240,7 +304,7 @@ def _closed(request, module, game, kind):
 def api_room_close(request, game_key, game_id):
     """房間頁的「關閉房間」：只有房主、只在按開始之前。"""
     module = _module(game_key)
-    game = _game(request, module, game_id)
+    game = _game(request, module, game_id, watch=True)  # 房主可能在觀戰
     try:
         data, handled = _closed(request, module, game, "close_room")
     except ValueError as exc:
@@ -251,7 +315,7 @@ def api_room_close(request, game_key, game_id):
 @require_POST
 def close_room(request, game_id):
     """首頁、對局紀錄清單上的「關閉房間」（表單送出）；關閉後回到原本的頁面。"""
-    game = get_object_or_404(Game.visible_to(request.user), pk=game_id)
+    game = get_object_or_404(Game.watchable_by(request.user), pk=game_id)
     try:
         _, handled = _closed(request, _module(game.game_type), game, "close_room")
     except ValueError as exc:
@@ -271,7 +335,7 @@ def _room_action(request, game_key, game_id, kind, seat=False):
     game = _game(request, module, game_id, watch=True)
     try:
         data = _read_json(request)
-        params = {"game_id": game.id, "player": str(data.get("player") or request.user.username)}
+        params = {"game_id": game.id, "player": str(data.get("player") or display_name(request.user))}
         if seat:
             params["seat"] = int(data.get("seat") or 0)  # 0＝改成觀戰
     except (ValueError, KeyError, TypeError) as exc:
@@ -321,6 +385,22 @@ def api_table_end(request, game_key, game_id):
 @require_POST
 def api_room_seat(request, game_key, game_id):
     return _room_action(request, game_key, game_id, "room_seat", seat=True)
+
+
+@require_POST
+def api_room_ai(request, game_key, game_id):
+    """房主請 AI 坐空的座位或離座（2026-11-18）：{"seat": N, "on": true/false}。成功後通知房間裡的人。"""
+    module = _module(game_key)
+    game = _game(request, module, game_id, watch=True)  # 房主可能在觀戰
+    try:
+        data = _read_json(request)
+        params = {"game_id": game.id, "seat": int(data["seat"]), "ai": "add" if data.get("on") else "remove"}
+    except (ValueError, KeyError, TypeError) as exc:
+        return _error(exc)
+    response = _json(request, "room_ai", {"module": module, "game": game, "params": params})
+    if response.status_code == 200:
+        realtime.notify(game)
+    return response
 
 
 @require_POST

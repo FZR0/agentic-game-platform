@@ -1,18 +1,71 @@
-{% extends "arena/base.html" %}
-{% block title %}加入真人對戰｜益智遊戲 AI 教練{% endblock %}
+{% extends "arena/base.html" %}{% load static %}
+{% block title %}房間列表｜益智遊戲 AI 教練{% endblock %}
 {% block content %}
-  <h1 class="page-title">加入真人對戰</h1>
-  <p class="muted">輸入朋友給你的房間密碼（6 個字），或直接打開朋友傳來的邀請連結。只想看的話按「觀戰」，座位坐滿了也能看。</p>
-  <form method="post" action="{% url 'arena:join' %}" class="account-form">
-    {% csrf_token %}
-    {% if error %}<p class="status warn" role="alert">{{ error }}</p>{% endif %}
-    <label>房間密碼 <input type="text" name="code" value="{{ code }}" maxlength="8" autocomplete="off" required
-      autocapitalize="characters" spellcheck="false"{% if not code %} autofocus{% endif %}></label>
-    <div class="join-buttons">
-      <button type="submit" name="action" value="join" class="button primary"{% if code %} autofocus{% endif %}>加入</button>
-      {# 觀戰（2026-11-08）：不坐座位，只看所有人都看得到的部分 #}
-      <button type="submit" name="action" value="watch" class="button">觀戰</button>
+  {% comment %}房間列表（2026-11-18 使用者要求「新增房間列表 房間預設公開 房主可自行設定房間是否上鎖 密碼可以自己設定或是隨機」）。
+     原本的「加入真人對戰」頁：列出有人在的房間（operations.room_list），下面照舊可以輸入房間編號。
+     上鎖的房間照樣列出、標鎖頭，加入和觀戰都要輸入房間密碼（使用者決定）。{% endcomment %}
+  <h1 class="page-title">房間列表</h1>
+  {% if error %}<p class="status warn" role="alert">{{ error }}</p>{% endif %}
+
+  <section class="section">
+    <div class="section-head">
+      <h2 class="section-title">現在開著的房間</h2>
+      <a class="more-link" href="{% url 'arena:join' %}">重新整理</a>
     </div>
-  </form>
+    {% if rooms %}
+    <ul class="row-list room-list">
+      {% for room in rooms %}
+      <li class="game-row">
+        <img class="row-icon" src="{% static room.module.icon %}?v={{ asset_version }}" alt="" width="80" height="50">
+        <div class="row-main">
+          <div class="row-title">
+            <strong>{{ room.module.name }}</strong>
+            {% if room.locked %}<span class="result ended" title="要輸入房間密碼才能加入或觀戰">🔒 上鎖</span>{% else %}<span class="result win">公開</span>{% endif %}
+            {% if room.mine %}<span class="result unfinished">你在這個房間</span>{% endif %}
+          </div>
+          <div class="row-meta">
+            <span>房間編號 {{ room.code }}</span>
+            {% if room.owner %}<span>房主 {{ room.owner }}</span>{% endif %}
+            <span>{{ room.seats }}</span>
+            {% if room.watching %}<span>觀戰 {{ room.watching }} 人</span>{% endif %}
+            <span class="room-status">{{ room.status }}</span>
+          </div>
+        </div>
+        <div class="row-actions">
+          {% if room.mine %}
+          <a class="button primary" href="{{ room.url }}">回到房間</a>
+          {% else %}
+          <form method="post" action="{% url 'arena:join' %}" class="room-join">
+            {% csrf_token %}<input type="hidden" name="code" value="{{ room.code }}">
+            {% if room.locked %}<input type="password" name="password" placeholder="房間密碼" aria-label="{{ room.code }} 的房間密碼"
+              maxlength="12" autocomplete="off" required>{% endif %}
+            <button type="submit" name="action" value="join" class="button primary">加入</button>
+            <button type="submit" name="action" value="watch" class="button">觀戰</button>
+          </form>
+          {% endif %}
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted">現在沒有開著的房間。到<a href="{% url 'arena:home' %}#create-room">首頁</a>按「建立對戰房間」自己開一間。</p>
+    {% endif %}
+  </section>
+
+  <section class="section">
+    <h2 class="section-title">用房間編號加入</h2>
+    <p class="muted">輸入朋友給你的房間編號（6 個字），或直接打開朋友傳來的邀請連結。房間上了鎖的話，也要輸入房主給你的房間密碼。只想看的話按「觀戰」，座位坐滿了也能看。</p>
+    <form method="post" action="{% url 'arena:join' %}" class="account-form">
+      {% csrf_token %}
+      <label>房間編號 <input type="text" name="code" value="{{ code }}" maxlength="8" autocomplete="off" required
+        autocapitalize="characters" spellcheck="false"{% if not code and not rooms %} autofocus{% endif %}></label>
+      <label>房間密碼（房間沒上鎖就不用填） <input type="password" name="password" maxlength="12" autocomplete="off"></label>
+      <div class="join-buttons">
+        <button type="submit" name="action" value="join" class="button primary"{% if code %} autofocus{% endif %}>加入</button>
+        {# 觀戰（2026-11-08）：不坐座位，只看所有人都看得到的部分 #}
+        <button type="submit" name="action" value="watch" class="button">觀戰</button>
+      </div>
+    </form>
+  </section>
   <p class="account-switch">想自己開一盤？到<a href="{% url 'arena:home' %}#create-room">首頁</a>按「建立對戰房間」。</p>
 {% endblock %}

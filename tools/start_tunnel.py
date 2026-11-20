@@ -119,7 +119,7 @@ def run(group, port, open_browser=True, over_tcp=False):
                 found.set()
                 print("\n" + "=" * 60)
                 print(f"  對外網址：{m.group(0)}")
-                print("  把這個網址傳給朋友：註冊、登入或以遊客身分進入後，用房間密碼或邀請連結加入對局。")
+                print("  把這個網址傳給朋友：註冊、登入或以遊客身分進入後，到「房間列表」加入，或用房間編號、邀請連結加入對局。")
                 # 後台只能在這台電腦打開（arena.accounts.PublicSiteMiddleware；2026-11-09）
                 print(f"  管理員後台（登入紀錄、線上訪客，只能在這台電腦打開）：http://localhost:{port}/admin/")
                 print("=" * 60)

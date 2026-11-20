@@ -57,6 +57,8 @@
           <label id="room-game-field" hidden>房間的遊戲
             <select id="room-game"></select>
           </label>
+          {# 在房間裡但不能改設定（不是房主、或已經開始）：下面的設定是房間的、鎖住，說明由 app.js 填 #}
+          <p id="room-settings-note" class="muted" hidden></p>
           <label>對手
             <select id="opponent">
               <option value="ai">AI</option>
@@ -69,7 +71,7 @@
             </select>
           </label>
           {% for field in module.settings_fields %}
-          <label>{{ field.label }}
+          <label{% if field.pvp_only %} data-pvp-only hidden{% endif %}>{{ field.label }}
             <select class="game-setting" data-name="{{ field.name }}">
               {% for value, text in field.options %}<option value="{{ value }}"{% if value == field.default %} selected{% endif %}>{{ text }}</option>{% endfor %}
             </select>
@@ -85,7 +87,7 @@
             <summary>進階設定</summary>
             <label>AI 模型
               <select id="model"></select>
-              <span class="muted">依聰明程度排列；秒數是 AI 每下一步大約要等多久。復盤和「問 AI」一律用 AI 伺服器上最聰明的模型。</span>
+              <span class="muted">依聰明程度排列；秒數是 AI 每下一步大約要等多久。{% if local_ai %}復盤和「問 AI」也用這個模型，這台電腦才不必再多開一個，拖慢其他程式。{% else %}復盤和「問 AI」一律用 AI 伺服器上最聰明的模型。{% endif %}</span>
             </label>
             <label>AI 每一步最多查證幾次
               <input id="steps" type="number" min="{{ config.minSteps }}" max="{{ config.maxSteps }}" value="{{ config.defaultSteps }}">
@@ -124,18 +126,28 @@
         <div id="moments"></div>
       </section>
 
+      {% comment %}問 AI 改成對話的樣子（2026-11-18 使用者要求參考 Gemini 側欄）：還沒問時中間是問候語，
+         問答一問一答排下來，建議問題和輸入框固定在下方，輸入框裡標出正在問哪個局面{% endcomment %}
       <section id="tab-ask" class="tab-panel ask-panel" role="tabpanel" hidden>
-        <ol id="answers" class="entries answers"></ol>
+        <div id="ask-welcome" class="ask-welcome">
+          <span class="ask-spark" aria-hidden="true">✦</span>
+          <p class="ask-hello">想問這盤棋的什麼？</p>
+          <p class="muted">在棋盤下方用 ◀ ▶ 選好局面再問。問題裡提到的座標、牌或「第幾手」，會先交給電腦分析。</p>
+        </div>
+        <ol id="answers" class="answers" aria-live="polite"></ol>
         <div class="ask-box">
-          <p id="ask-context" class="muted">復盤時可以針對棋盤上的任何局面提問。</p>
           <div class="quick-questions">
             <button type="button">這一手為什麼不好？</button>
             <button type="button">現在對手最大的威脅是什麼？</button>
             <button type="button">電腦建議下哪裡？為什麼？</button>
           </div>
           <form id="ask-form" class="ask-form">
-            <input id="ask-input" type="text" maxlength="200" autocomplete="off" placeholder="例如：第 9 手為什麼不好？">
-            <button type="submit" class="primary">送出</button>
+            <p id="ask-context" class="ask-context">復盤時可以針對棋盤上的任何局面提問。</p>
+            <div class="ask-row">
+              <input id="ask-input" type="text" maxlength="200" autocomplete="off" placeholder="例如：第 9 手為什麼不好？"
+                aria-label="問 AI">
+              <button type="submit" class="primary ask-send" aria-label="送出" title="送出">↑</button>
+            </div>
           </form>
         </div>
       </section>
@@ -150,17 +162,38 @@
       <p id="game-status" class="game-status"></p>
       {# 真人對戰等對手加入時：房間密碼與邀請連結 #}
       <div id="invite" class="invite" hidden>
-        <p>把房間密碼 <strong id="room-code" class="room-code"></strong> 或下面的連結傳給朋友，朋友登入後就能加入。</p>
+        <p>把房間編號 <strong id="room-code" class="room-code"></strong> 或下面的連結傳給朋友，朋友登入後就能加入；房間上鎖時也要給房間密碼。</p>
         <div class="invite-link"><input id="invite-link" type="text" readonly aria-label="邀請連結"><button id="copy-invite" type="button">複製連結</button></div>
       </div>
-      {# 房間的玩家列表（2026-11-13）：每個真人座位是誰、還空著的座位、觀戰的人；app.js::renderRoomPlayers #}
-      <section id="room-players" class="room-players" aria-label="玩家列表" hidden>
+      {% comment %}
+        房間的玩家列表（2026-11-13）在 2026-11-18 依使用者要求（「控制面板太亂」）拆成兩塊；app.js::renderRoomPlayers。
+        對局玩家：每個座位坐的是誰、空位、輪到誰（撲克開放牌桌另有隊列與上桌、補 AI 的按鈕）。
+        房間成員：房間裡的每個人，以及房主在開始前可以做的換座位、轉讓房主、請離開。
+      {% endcomment %}
+      <section id="room-players" class="room-card" aria-labelledby="room-seats-title" hidden>
+        <h3 id="room-seats-title" class="room-card-title">對局玩家 <span id="room-seat-count" class="muted"></span></h3>
         <ul id="room-seats" class="room-seats"></ul>
-        <p id="room-spectators" class="muted"></p>
-        {# 房主在按開始前可以關閉房間（2026-11-13） #}
-        <button id="close-room" type="button" class="end-button" hidden>關閉房間</button>
-        {# 離開房間（2026-11-15）：觀戰的人隨時可以走，坐著的人只在開始前 #}
-        <button id="leave-room" type="button" class="end-button" hidden>離開房間</button>
+        <div id="room-table" class="room-table" hidden></div>
+      </section>
+      <section id="room-members" class="room-card" aria-labelledby="room-members-title" hidden>
+        <h3 id="room-members-title" class="room-card-title">房間成員 <span id="room-member-count" class="muted"></span></h3>
+        <ul id="room-member-list" class="room-members"></ul>
+        {% comment %}房間鎖（2026-11-18）：大家都看得到公開或上鎖；房主可以上鎖（密碼自訂，空白就隨機）、改密碼、解鎖。app.js::renderRoomLock{% endcomment %}
+        <div id="room-lock" class="room-lock" hidden>
+          <p id="room-lock-state" class="muted"></p>
+          <form id="room-lock-form" class="room-lock-form" hidden>
+            <input id="room-lock-password" type="text" maxlength="12" autocomplete="off" spellcheck="false"
+              placeholder="自訂密碼（空白就隨機）" aria-label="房間密碼">
+            <button id="room-lock-apply" type="submit" class="room-action">上鎖</button>
+            <button id="room-unlock" type="button" class="room-action" hidden>解鎖</button>
+          </form>
+        </div>
+        <div id="room-footer" class="room-footer">
+          {# 房主在按開始前可以關閉房間（2026-11-13） #}
+          <button id="close-room" type="button" class="end-button" hidden>關閉房間</button>
+          {# 離開房間（2026-11-15）：觀戰的人隨時可以走，坐著的人只在開始前 #}
+          <button id="leave-room" type="button" class="end-button" hidden>離開房間</button>
+        </div>
       </section>
       {# 座位都坐滿後由房主按「開始」，倒數三秒才能下（2026-11-13） #}
       <div id="room-start" class="room-start" hidden>
@@ -209,6 +242,8 @@
   </section>
 
   {{ config|json_script:"game-config" }}
+  {# 登入的人的使用者名稱：房間成員裡標出「你」（觀戰的人沒有座位，只能靠名字認；2026-11-18） #}
+  {{ user.profile.name|default:user.username|json_script:"viewer-name" }}
   <script src="{% static module.board_script %}?v={{ asset_version }}"></script>
   <script src="{% static 'arena/app.js' %}?v={{ asset_version }}"></script>
 </body>
