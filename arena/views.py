@@ -146,8 +146,53 @@ def join(request, code=""):
                                                "code": code.strip().upper(), "error": error})
 
 
+OPEN_QUERIES = ("resume", "watch", "review")  # 對局頁打開某一盤的網址參數（app.js 的 opening）
+
+
+def _opening(request, module):
+    """直接打開 /<遊戲>/?resume=<編號>（或 watch、review）時先確認這盤打得開（2026-11-20 使用者回報：對方把房間網址貼進瀏覽器，
+    頁面「無法打開對局：伺服器發生錯誤（404）」、棋盤空白）。看得到但網址上的遊戲不對（房主換了遊戲）就轉到對的遊戲頁；
+    不在房間裡的人轉到這個房間的加入確認頁（加入、觀戰照舊要按按鈕送 POST，上鎖照舊要密碼，網址本身不讓人進房間）；
+    看不到的對局轉走並說明原因。不用轉時回傳 None。這是存取檢查（和 _game 一樣），不經過 AI 助理。"""
+    query = next((q for q in OPEN_QUERIES if q in request.GET), None)
+    if query is None:
+        return None
+    raw = request.GET[query]
+    game_id = int(raw) if raw.isdigit() else None
+    user = request.user
+
+    def inside(game):
+        """打得開：看得到，而且進行中的真人對戰要人還在房間裡（房主一律算）。撲克牌桌打過牌後離開房間的人
+        （GamePlayer.left）看得到那一盤，但已經不在房間裡，要重新加入，否則頁面打開了、即時同步卻連不上。"""
+        return (game is not None and Game.watchable_by(user).filter(pk=game.pk).exists()
+                and (not game.pvp or game.finished or game.owner_id == user.id or game.in_room(user)))
+
+    game = Game.objects.filter(pk=game_id).first() if game_id else None
+    if inside(game):
+        if game.game_type == module.key or game.game_type not in games.GAMES:
+            return None
+        return redirect(f"{reverse('arena:play', args=[game.game_type])}?{request.GET.urlencode()}")
+    room = game if game is not None and game.pvp and game.room_code else None
+    now = operations._latest_round(room.room_code) if room else None
+    if now is not None and not now.finished:
+        if now.pk != game.pk and inside(now):  # 後來才進房間的人貼了舊的一盤
+            mode = "resume" if now.seat_of(user) is not None else "watch"
+            return redirect(f"{reverse('arena:play', args=[now.game_type])}?{mode}={now.id}")
+        messages.info(request, "你還不在這個房間裡：請按「加入」或「觀戰」。")
+        return redirect("arena:join_code", code=now.room_code)
+    if room is not None:  # 房主關掉的房間（目前那一盤 ended）
+        messages.warning(request, "這個房間已經關閉了，可以從房間列表找其他房間。")
+        return redirect("arena:join")
+    # 別人和 AI 的對局與不存在的編號說法一樣，不透露那盤存不存在
+    messages.warning(request, "找不到這盤對局：可能不是你的對局，或網址打錯了。")
+    return redirect("arena:home")
+
+
 def play(request, game_key):
     module = _module(game_key)
+    moved = _opening(request, module)
+    if moved is not None:
+        return moved
     return _page(request, "arena/play.html", "play_page", {"module": module, "params": {"game": module.key}})
 
 

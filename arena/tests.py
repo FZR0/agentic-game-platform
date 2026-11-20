@@ -3323,3 +3323,91 @@ class RoomListAndLockTests(TestCase):
         self.assertContains(self.enter("carol", "watch", "喝水"), "房間密碼不對")
         self.assertRedirects(self.enter("carol", "watch", "喝茶"), f"/gomoku/?watch={self.game.id}",
                              fetch_redirect_response=False)
+
+
+class RoomAddressTests(TestCase):
+    """直接把房間網址貼進瀏覽器（2026-11-20 使用者回報「對方輸入房間網址導致進入房間導致無法正確讀取」）。
+    房間頁的網址是 /<遊戲>/?resume=<編號>（或 ?watch=），朋友常常直接把它傳給對方，而不是邀請連結。
+    原本打開後網頁去讀 /api/<遊戲>/games/<編號>/，不在房間裡的人、網址上的遊戲和房間現在的遊戲不同時都是 404 的錯誤網頁，
+    畫面只寫「伺服器發生錯誤（404），這一步沒有存檔」，棋盤空白。
+    要的是：已經在房間裡的人照常進去；不在房間裡的人到加入／觀戰的確認頁（加入照舊要按按鈕送 POST，上鎖照舊要密碼，
+    網址本身不能讓人坐進座位或繞過房間鎖）；看不到的對局說清楚原因。"""
+
+    def setUp(self):
+        self.users = {name: User.objects.create_user(name, password="x") for name in ("alice", "bob")}
+        # 對方常常是遊客（沒有密碼的帳號，accounts.is_guest）
+        self.users["guest"] = User.objects.create_user("遊客-ABC234")
+        self.clients = {}
+        for name, user in self.users.items():
+            self.clients[name] = Client()
+            self.clients[name].force_login(user)
+        patcher = patch.object(orchestrator, "_chat", side_effect=OSError("測試不連模型"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.game, _ = operations.start_game(GOMOKU, 1, {}, self.users["alice"], "pvp")
+        operations.join_game(self.game.room_code, self.users["bob"])
+        self.join_url = f"/join/{self.game.room_code}/"
+
+    def open(self, who, path):
+        return self.clients[who].get(path)
+
+    def test_someone_outside_the_room_is_asked_to_join_or_watch_instead_of_getting_a_broken_page(self):
+        for query in ("resume", "watch"):
+            r = self.open("guest", f"/gomoku/?{query}={self.game.id}")
+            self.assertRedirects(r, self.join_url, fetch_redirect_response=False)
+        page = self.clients["guest"].get(self.join_url)
+        self.assertContains(page, "你還不在這個房間裡")
+        self.assertContains(page, 'value="watch"')
+        # 打開網址不會坐進座位、也不會變成觀戰：加入照舊要在確認頁按按鈕（POST）
+        self.game.refresh_from_db()
+        self.assertIsNone(self.game.seat_of(self.users["guest"]))
+        self.assertFalse(self.game.in_room(self.users["guest"]))
+        self.assertEqual(self.open("guest", f"/api/gomoku/games/{self.game.id}/").status_code, 404)
+
+    def test_a_locked_room_s_address_still_needs_the_password(self):
+        operations.set_room_lock(self.game, self.users["alice"], True, "tea42")
+        self.assertRedirects(self.open("guest", f"/gomoku/?resume={self.game.id}"), self.join_url,
+                             fetch_redirect_response=False)
+        self.assertContains(self.clients["guest"].post("/join/", {"code": self.game.room_code}), "請輸入房間密碼")
+        self.assertIsNone(Game.objects.get(pk=self.game.pk).seat_of(self.users["guest"]))
+        self.assertEqual(self.open("guest", f"/api/gomoku/games/{self.game.id}/").status_code, 404)
+
+    def test_people_in_the_room_get_in_even_after_the_host_switched_games(self):
+        # 坐著的人與觀戰的人照常打開
+        operations.watch_game(self.game.room_code, self.users["guest"])
+        for who in ("bob", "guest"):
+            self.assertEqual(self.open(who, f"/gomoku/?resume={self.game.id}").status_code, 200)
+        # 房主在大廳把五子棋換成撲克：同一盤（編號不變）換了遊戲，朋友手上還是五子棋的網址
+        from holdem.module import MODULE as HOLDEM
+        operations.change_room(HOLDEM, self.game, self.users["alice"], 1, {"players": 4})
+        for who, query in (("bob", "resume"), ("guest", "watch")):
+            self.assertRedirects(self.open(who, f"/gomoku/?{query}={self.game.id}"), f"/holdem/?{query}={self.game.id}",
+                                 fetch_redirect_response=False)
+        self.assertEqual(self.open("bob", f"/holdem/?resume={self.game.id}").status_code, 200)
+
+    def test_an_old_round_s_address_leads_to_the_room_s_current_game(self):
+        start_now(self.game)
+        operations.play_human_move(GOMOKU, self.game, "resign", 1)  # 打完一盤，房間開下一盤
+        nxt = Game.objects.filter(room_code=self.game.room_code).order_by("-id").first()
+        self.assertNotEqual(nxt.id, self.game.id)
+        # 房間裡的人：舊的一盤照樣打開（網頁看 current_round 回到現在那一盤）
+        self.assertEqual(self.open("bob", f"/gomoku/?resume={self.game.id}").status_code, 200)
+        # 不在房間裡的人：到這個房間的加入確認頁
+        self.assertRedirects(self.open("guest", f"/gomoku/?resume={self.game.id}"), self.join_url,
+                             fetch_redirect_response=False)
+
+    def test_addresses_of_games_you_cannot_see_say_why(self):
+        # 別人和 AI 的對局、不存在的編號：一樣說找不到（不透露那盤存不存在）
+        solo, _ = operations.start_game(GOMOKU, 1, {}, self.users["alice"], "ai")
+        for game_id in (solo.id, 999999):
+            r = self.open("guest", f"/gomoku/?resume={game_id}")
+            self.assertRedirects(r, "/", fetch_redirect_response=False)
+            self.assertContains(self.clients["guest"].get("/"), "找不到這盤對局")
+        # 房主關掉的房間
+        operations.close_room(self.game, self.users["alice"])
+        r = self.open("guest", f"/gomoku/?resume={self.game.id}")
+        self.assertRedirects(r, "/join/", fetch_redirect_response=False)
+        self.assertContains(self.clients["guest"].get("/join/"), "這個房間已經關閉了")
+        # 沒帶編號的網址照舊開新局，沒有被轉走
+        self.assertEqual(self.open("guest", "/gomoku/").status_code, 200)
+        self.assertEqual(self.open("guest", "/gomoku/?room=new").status_code, 200)
