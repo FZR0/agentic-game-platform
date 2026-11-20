@@ -3411,3 +3411,14 @@ class RoomAddressTests(TestCase):
         # 沒帶編號的網址照舊開新局，沒有被轉走
         self.assertEqual(self.open("guest", "/gomoku/").status_code, 200)
         self.assertEqual(self.open("guest", "/gomoku/?room=new").status_code, 200)
+
+    def test_a_poker_player_who_left_the_room_rejoins_instead_of_opening_a_dead_page(self):
+        # 撲克牌桌打過牌後離開房間的人（GamePlayer.left）還看得到那一盤（可以復盤），但已經不在房間裡：
+        # 直接打開的話頁面讀得到、即時同步卻連不上（realtime.seat_for 看 in_room），所以要先回到加入確認頁
+        table = poker_table(self.users["alice"], others=(self.users["bob"],), ai=("bot",))
+        start_now(table)
+        GamePlayer.objects.filter(game=table, user=self.users["bob"]).update(left=True)
+        self.assertRedirects(self.open("bob", f"/holdem/?resume={table.id}"), f"/join/{table.room_code}/",
+                             fetch_redirect_response=False)
+        # 房主沒上桌（在觀戰席）也照常打開自己的房間
+        self.assertEqual(self.open("alice", f"/holdem/?resume={table.id}").status_code, 200)

@@ -100,6 +100,8 @@ async function api(path, body) {
   try {
     data = await res.json();
   } catch (err) {
+    // 看不到的對局（不在房間裡、被請離開）是 404 網頁，不是伺服器出錯（2026-11-20）
+    if (res.status === 404) throw new Error("找不到這盤對局，或你已經不在這個房間裡");
     // 伺服器程式出錯時回傳的是錯誤網頁、不是 JSON；給玩家看得懂的訊息，細節在伺服器視窗
     throw new Error(`伺服器發生錯誤（${res.status}），這一步沒有存檔`);
   }
