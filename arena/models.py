@@ -137,12 +137,15 @@ class Game(models.Model):
                 "settings": self.settings, "winner": self.winner, "draw": self.draw, "ended": self.ended,
                 "action_count": len(self.actions), "created_at": self.created_at.isoformat()}
         if self.pvp:
-            data["players"] = {p.seat: p.user.username if p.user else None for p in self.players.all()}
+            # 畫面上的名字都是使用者名稱，不是登入用的帳號（2026-11-20）
+            data["players"] = {p.seat: display_name(p.user) if p.user else None
+                               for p in self.players.select_related("user__profile")}
             data["ai_seats"] = [p.seat for p in self.players.all() if p.ai]  # 房主請 AI 坐的座位（2026-11-18）
-            # 房主的帳號名稱：房主可能在觀戰（2026-11-18），網頁不能再用 human_seat 認房主
-            data["owner"] = self.owner.username if self.owner else None
+            # 房主的使用者名稱：房主可能在觀戰（2026-11-18），網頁不能再用 human_seat 認房主
+            data["owner"] = display_name(self.owner) if self.owner else None
             # 房間的玩家列表也列出觀戰的人（2026-11-13 使用者要求「房間內要有玩家列表」），依進來的先後
-            data["spectators"] = [s.user.username for s in self.spectators.select_related("user").order_by("joined_at", "id")]
+            data["spectators"] = [display_name(s.user) for s in
+                                  self.spectators.select_related("user__profile").order_by("joined_at", "id")]
             data["waiting"] = self.waiting
             # 開始前都顯示（2026-11-15）：座位坐滿了，別人還是可以用密碼進來觀戰、等下一盤
             data["room_code"] = self.room_code if self.started_at is None and not self.ended else ""
@@ -152,7 +155,7 @@ class Game(models.Model):
             data["closed"] = self.ended and self.started_at is None  # 房主在開始前關閉了房間（2026-11-13）
             data["locked"] = bool(self.room_password)  # 房間上鎖了（密碼本身只給房主，見 operations.game_detail）
             if self.settings.get("table"):  # 撲克開放牌桌：隊列、這手結束要下桌的座位、已經離開房間的成員
-                data["table"] = {"owner": self.owner.username if self.owner else None,
+                data["table"] = {"owner": display_name(self.owner) if self.owner else None,
                                  "queue": self.table.get("queue", []), "leaving": self.table.get("leaving", []),
                                  "away": [p.seat for p in self.players.all() if p.left]}
         return data
@@ -196,7 +199,7 @@ class ChatMessage(models.Model):
     MAX_LENGTH = 200
     game = models.ForeignKey(Game, on_delete=models.CASCADE, related_name="chat")
     user = models.ForeignKey(USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
-    name = models.CharField(max_length=150)  # 發言當時的帳號名稱（遊客升級改名後，舊訊息仍照原本的名稱）
+    name = models.CharField(max_length=150)  # 發言當時的使用者名稱（遊客升級改名後，舊訊息仍照原本的名稱）
     room = models.CharField(max_length=10)
     text = models.CharField(max_length=MAX_LENGTH)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -319,3 +322,29 @@ class Presence(models.Model):
     @classmethod
     def online(cls):
         return cls.objects.filter(last_seen__gte=timezone.now() - cls.ONLINE)
+
+
+class Profile(models.Model):
+    """帳號的使用者名稱（2026-11-20 使用者要求「帳號類別要有三個：使用者名稱、帳號、密碼」）。
+    - 帳號＝User.username，只用來登入；使用者名稱＝name，畫面上、房間玩家列表、聊天、房間列表都顯示這個。
+      分開之後，別人看得到你的名稱，卻不知道你登入用的帳號。
+    - 名稱不能和別人重複（使用者決定）：房間的換座位、請人離開、轉讓房主用名稱找人（operations._member），
+      也不會有人取一樣的名稱冒充別人。
+    - 每個帳號都有一筆：accounts.create_profile 在建立帳號時自動建立（預設＝帳號），舊帳號由 migration 0013 補上。"""
+
+    user = models.OneToOneField(USER_MODEL, on_delete=models.CASCADE, related_name="profile")
+    name = models.CharField("使用者名稱", max_length=150, unique=True)
+
+    class Meta:
+        verbose_name = verbose_name_plural = "使用者名稱"
+
+    def __str__(self):
+        return self.name
+
+
+def display_name(user):
+    """畫面上顯示的使用者名稱。沒有 Profile 的帳號（不經過 save 建立的，例如 bulk_create）退回帳號。"""
+    try:
+        return user.profile.name
+    except Profile.DoesNotExist:
+        return user.username

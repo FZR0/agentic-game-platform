@@ -129,7 +129,7 @@ class OneStep(Request):
 
 GAME_ID = ("integer", "棋局編號", "game_id")
 GAME_KEY = ("string", "遊戲代號", "game")
-PLAYER = ("string", "房間裡的帳號名稱", "player")
+PLAYER = ("string", "房間裡的使用者名稱", "player")
 
 
 class NewGame(Request):

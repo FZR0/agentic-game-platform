@@ -2,15 +2,25 @@
 from django.contrib import admin
 from django.utils import timezone
 
-from .models import Game, LoginRecord, Presence
+from .models import Game, LoginRecord, Presence, display_name
+
+
+def _name(obj):
+    """後台同時列帳號與使用者名稱（2026-11-20）：帳號用來對登入紀錄，名稱是玩家在畫面上看到、回報問題時講的。"""
+    return display_name(obj.user) if obj.user else ""
 
 
 @admin.register(LoginRecord)
 class LoginRecordAdmin(admin.ModelAdmin):
-    list_display = ["created_at", "user", "ip", "user_agent"]
+    list_display = ["created_at", "user", "name", "ip", "user_agent"]
     list_filter = ["user"]
-    search_fields = ["user__username", "ip"]
+    search_fields = ["user__username", "user__profile__name", "ip"]
     date_hierarchy = "created_at"
+    list_select_related = ["user__profile"]
+
+    @admin.display(description="使用者名稱", ordering="user__profile__name")
+    def name(self, obj):
+        return _name(obj)
 
     def has_add_permission(self, request):
         return False  # 紀錄只由登入時寫入
@@ -39,13 +49,18 @@ class OnlineFilter(admin.SimpleListFilter):
 
 @admin.register(Presence)
 class PresenceAdmin(admin.ModelAdmin):
-    list_display = ["last_seen", "who", "ip", "path", "first_seen", "user_agent"]
+    list_display = ["last_seen", "who", "name", "ip", "path", "first_seen", "user_agent"]
     list_filter = [OnlineFilter]
-    search_fields = ["user__username", "ip", "path"]
+    search_fields = ["user__username", "user__profile__name", "ip", "path"]
+    list_select_related = ["user__profile"]
 
     @admin.display(description="帳號", ordering="user__username")
     def who(self, obj):
         return obj.user.username if obj.user else "（未登入）"
+
+    @admin.display(description="使用者名稱", ordering="user__profile__name")
+    def name(self, obj):
+        return _name(obj)
 
     def has_add_permission(self, request):
         return False

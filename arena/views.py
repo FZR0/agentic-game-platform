@@ -14,7 +14,7 @@ from django.views.decorators.http import require_GET, require_http_methods, requ
 
 from . import agent, games, health, narrator, operations, orchestrator, realtime
 from .base import EVIDENCE_TYPES
-from .models import AiNote, Game
+from .models import AiNote, Game, display_name
 from .operations import RESULTS
 
 QUESTION_MAX_LENGTH = 200
@@ -290,7 +290,7 @@ def _room_action(request, game_key, game_id, kind, seat=False):
     game = _game(request, module, game_id, watch=True)
     try:
         data = _read_json(request)
-        params = {"game_id": game.id, "player": str(data.get("player") or request.user.username)}
+        params = {"game_id": game.id, "player": str(data.get("player") or display_name(request.user))}
         if seat:
             params["seat"] = int(data.get("seat") or 0)  # 0＝改成觀戰
     except (ValueError, KeyError, TypeError) as exc:

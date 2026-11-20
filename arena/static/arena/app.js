@@ -49,10 +49,10 @@ const state = {
   unread: 0, // AI 教練收起時累積的新思路數
   hiddenNotes: false, // 有被遮住的 AI 思路（撲克的底牌），復盤時要重新載入
   pvp: false, // 真人對戰（2026-11-05）：對手也是真人，對局中不能用 AI 教練
-  players: {}, // 真人對戰的 {座位: 帳號名稱}；null 是還在等人加入
-  spectators: [], // 觀戰的人的帳號名稱（玩家列表用，2026-11-13）
+  players: {}, // 真人對戰的 {座位: 使用者名稱}；null 是還在等人加入
+  spectators: [], // 觀戰的人的使用者名稱（玩家列表用，2026-11-13）
   hostSeat: null, // 房主坐的座位（玩家列表標「房主」；房主觀戰中是 null）
-  ownerName: null, // 房主的帳號名稱（2026-11-18 房主可以觀戰，認房主用名稱）
+  ownerName: null, // 房主的使用者名稱（2026-11-18 房主可以觀戰，認房主用名稱）
   closed: false, // 房主在開始前關閉了這個房間（2026-11-13）
   watching: false, // 觀戰中（2026-11-08）：沒有座位，不能下、不能用 AI 教練
   owner: false, // 自己是房主（伺服器的 is_owner，可以轉讓）：開始前改設定會套用到同一個房間
@@ -582,7 +582,7 @@ function setRoomPeople(game) {
   state.table = game.table || null; // 撲克開放牌桌的隊列、要下桌的座位、房主（2026-11-16）
   state.spectators = game.spectators || [];
   state.aiSeats = game.ai_seats || []; // 房主請 AI 坐的座位（2026-11-18）
-  // 房主的帳號名稱與座位：房主可能在觀戰（2026-11-18），所以照伺服器給的名稱找，觀戰中座位是 null
+  // 房主的使用者名稱與座位：房主可能在觀戰（2026-11-18），所以照伺服器給的名稱找，觀戰中座位是 null
   state.ownerName = game.owner ?? game.table?.owner ?? null;
   const hostSeat = Object.entries(state.players).find(([, name]) => name !== null && name === state.ownerName);
   state.hostSeat = hostSeat ? Number(hostSeat[0]) : null;
@@ -633,7 +633,7 @@ function aiLabel(entry) {
 // 對局玩家：每個座位一格，只放和座位本身有關的按鈕（坐這裡、改成觀戰、觀眾、請 AI 下桌）。
 // 房間成員：房間裡每個人一列，房主的管理（換到…、交給他當房主、請離開）放在那個人的右邊。
 
-// 登入的帳號名稱（play.html 的 viewer-name）：觀戰的人沒有座位，房間成員要靠名字標出「你」
+// 登入的人的使用者名稱（play.html 的 viewer-name；不是登入用的帳號）：觀戰的人沒有座位，房間成員要靠名字標出「你」
 const ME = JSON.parse(document.getElementById("viewer-name")?.textContent || '""');
 
 function badgeList(tags) {

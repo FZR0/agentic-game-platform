@@ -29,7 +29,7 @@ from weiqi.module import MODULE as WEIQI
 from . import agent, games, health, narrator, operations, orchestrator
 from .base import ESTIMATE
 from .management.commands.model_report import summarize
-from .models import AiNote, ChatMessage, Game, GamePlayer, LoginRecord, ModelRun, Presence
+from .models import AiNote, ChatMessage, Game, GamePlayer, LoginRecord, ModelRun, Presence, Profile
 
 
 class AdminClient(Client):
@@ -1735,7 +1735,7 @@ class AccountTests(TestCase):
 
     def test_anyone_can_sign_up_and_is_logged_in_with_their_ip_recorded(self):
         client = Client()
-        response = client.post("/accounts/signup/", {"username": "carol", "password1": "a-Long-pass-77",
+        response = client.post("/accounts/signup/", {"username": "carol", "name": "小卡", "password1": "a-Long-pass-77",
                                                      "password2": "a-Long-pass-77"}, REMOTE_ADDR="203.0.113.5")
         self.assertRedirects(response, "/", fetch_redirect_response=False)
         carol = User.objects.get(username="carol")
@@ -2101,7 +2101,7 @@ class GuestTests(TestCase):
                 patch.object(agent, "_chat", side_effect=OSError("測試不連模型")):
             game_id = client.post("/api/gomoku/games/", json.dumps({"seat": 2}),
                                   content_type="application/json").json()["game"]["id"]
-        response = client.post("/accounts/upgrade/", {"username": "dora", "password1": "a-Long-pass-88",
+        response = client.post("/accounts/upgrade/", {"username": "dora", "name": "朵拉", "password1": "a-Long-pass-88",
                                                       "password2": "a-Long-pass-88"})
         self.assertRedirects(response, "/", fetch_redirect_response=False)
         dora = User.objects.get(pk=guest.pk)
@@ -2116,14 +2116,14 @@ class GuestTests(TestCase):
         member = User.objects.create_user("erin", password="pw-for-tests-3")
         client = Client()
         client.force_login(member)
-        client.post("/accounts/upgrade/", {"username": "mallory", "password1": "a-Long-pass-99",
+        client.post("/accounts/upgrade/", {"username": "mallory", "name": "馬洛里", "password1": "a-Long-pass-99",
                                            "password2": "a-Long-pass-99"})
         member.refresh_from_db()
         self.assertEqual(member.username, "erin")
         self.assertTrue(member.check_password("pw-for-tests-3"))
 
-    def test_the_upgrade_form_starts_with_an_empty_name(self):
-        # 留著「遊客-XXXXXX」直接送出會因為名稱已經存在而失敗，所以讓遊客自己取名字
+    def test_the_upgrade_form_starts_with_an_empty_account(self):
+        # 帳號欄是空的，讓遊客自己取一個登入用的帳號（使用者名稱欄另外先填好，見 AccountNameTests）
         client, _, guest = self.enter_as_guest()
         page = client.get("/accounts/upgrade/").content.decode()
         self.assertNotIn(guest.username, page.split('name="username"')[1].split(">")[0])
@@ -2136,6 +2136,151 @@ class GuestTests(TestCase):
         self.assertRedirects(Client().get("/accounts/guest/"), "/accounts/login/", fetch_redirect_response=False)
         self.assertFalse(User.objects.exists())
 
+
+def sign_up(client, username, name, password="a-Long-pass-55"):
+    return client.post("/accounts/signup/", {"username": username, "name": name, "password1": password,
+                                             "password2": password})
+
+
+class AccountNameTests(TestCase):
+    """帳號的三個欄位（使用者要求，2026-11-20：「帳號類別要有三個 一個是使用者名稱 一個是帳號 一個是密碼」）。
+    帳號只用來登入，使用者名稱是別人在畫面上看到的；分開之後，房間裡的對手、觀戰的人、房間列表都只看到名稱，
+    猜不到你登入用的帳號。使用者決定：名稱不能和別人重複（房間的換座位、請人離開、轉讓房主用名稱找人，也不能冒充別人）、
+    只用帳號登入、舊帳號的名稱沿用帳號、遊客的帳號和名稱都是「遊客-XXXXXX」。"""
+
+    def setUp(self):
+        for patcher in (patch.object(orchestrator, "_chat", side_effect=OSError("測試不連模型")),
+                        patch.object(agent, "_chat", side_effect=OSError("測試不連模型"))):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_signing_up_keeps_the_account_and_the_name_apart(self):
+        client = Client()
+        self.assertRedirects(sign_up(client, "carol01", "小卡"), "/", fetch_redirect_response=False)
+        carol = User.objects.get(username="carol01")
+        self.assertEqual(carol.profile.name, "小卡")
+        self.assertContains(client.get("/"), '<span class="account-name">小卡</span>')
+        # 只用帳號登入：名稱是公開的，拿名稱也能登入的話，登入用的 ID 就等於公開了
+        self.assertTrue(Client().login(username="carol01", password="a-Long-pass-55"))
+        self.assertFalse(Client().login(username="小卡", password="a-Long-pass-55"))
+
+    def test_the_signup_form_asks_for_all_three_and_calls_the_login_id_an_account(self):
+        # Django 的 username 欄中文叫「使用者名稱」，不改的話畫面上會有兩個「使用者名稱」，玩家分不清哪個用來登入
+        page = Client().get("/accounts/signup/").content.decode()
+        for field in ('name="username"', 'name="name"', 'name="password1"', 'name="password2"'):
+            self.assertIn(field, page)
+        self.assertIn("帳號", page.split('name="username"')[0].rsplit("<label", 1)[1])
+        self.assertNotIn("使用者名稱", page.split('name="username"')[0].rsplit("<label", 1)[1])
+        self.assertIn("使用者名稱", page.split('name="name"')[0].rsplit("<label", 1)[1])
+
+    def test_a_name_someone_else_has_is_refused(self):
+        sign_up(Client(), "carol01", "小卡")
+        for name in ("小卡", " 小卡 "):  # 前後空白不算不同的名稱
+            self.assertContains(sign_up(Client(), "mallory", name), "這個使用者名稱已經有人用了")
+        self.assertRedirects(sign_up(Client(), "mallory", "Bob"), "/", fetch_redirect_response=False)
+        self.assertContains(sign_up(Client(), "eve", "bob"), "這個使用者名稱已經有人用了")  # 不分大小寫，否則看起來一樣
+        self.assertContains(sign_up(Client(), "CAROL01", "卡卡"), "這個帳號已經有人用了")
+        self.assertEqual(set(User.objects.values_list("username", flat=True)), {"carol01", "mallory"})
+
+    def test_a_name_taken_at_the_same_moment_saves_nothing(self):
+        # 兩個人同時用同一個名稱註冊：表單檢查都過了，資料庫的唯一索引擋下後到的那個；不能留下一個名稱不對的帳號
+        sign_up(Client(), "carol01", "小卡")
+        from . import accounts
+        with patch.object(accounts.AccountForm, "clean_name", lambda form: form.cleaned_data["name"]):
+            response = sign_up(Client(), "mallory", "小卡")
+        self.assertContains(response, "這個使用者名稱已經有人用了")
+        self.assertFalse(User.objects.filter(username="mallory").exists())
+
+    def test_other_players_see_names_never_login_accounts(self):
+        alice = User.objects.create_user("login-alice", password="x")
+        bob = User.objects.create_user("login-bob", password="x")
+        carol = User.objects.create_user("login-carol", password="x")
+        for user, name in ((alice, "愛麗絲"), (bob, "鮑伯"), (carol, "卡蘿")):
+            Profile.objects.filter(user=user).update(name=name)
+        game, _ = operations.start_game(GOMOKU, 1, {}, alice, "pvp")
+        operations.join_game(game.room_code, bob)
+        operations.watch_game(game.room_code, carol)
+        Presence.objects.create(session_key="alice-online", user=alice)
+        clients = {}
+        for user in (alice, bob, carol):
+            clients[user] = Client()
+            clients[user].force_login(user)
+        url = f"/api/gomoku/games/{game.id}"
+        clients[alice].post(f"{url}/chat/", json.dumps({"text": "你好"}), content_type="application/json")
+        seen = clients[bob].get(f"{url}/")
+        detail = seen.json()["game"]
+        self.assertEqual((detail["players"], detail["owner"], detail["spectators"]),
+                         ({"1": "愛麗絲", "2": "鮑伯"}, "愛麗絲", ["卡蘿"]))
+        self.assertEqual([m["name"] for m in seen.json()["chat"]], ["愛麗絲"])
+        self.assertNotIn("login-alice", seen.content.decode())
+        rooms = clients[bob].get("/join/").content.decode()  # 房間列表的房主
+        self.assertIn("愛麗絲", rooms)
+        self.assertNotIn("login-alice", rooms)
+        # 觀戰的人的頁面用名稱標出「你」（app.js 的 ME 和玩家列表的名稱比對）
+        page = clients[carol].get(f"/gomoku/?watch={game.id}").content.decode()
+        self.assertIn(f'<script id="viewer-name" type="application/json">{json.dumps("卡蘿")}</script>', page)
+
+    def test_the_host_runs_the_room_by_name(self):
+        # 網頁只知道別人的名稱：請人離開、轉讓房主都用名稱找人，用帳號反而找不到（名稱唯一，所以不會找錯人）
+        alice = User.objects.create_user("login-alice", password="x")
+        bob = User.objects.create_user("login-bob", password="x")
+        Profile.objects.filter(user=bob).update(name="鮑伯")
+        game, _ = operations.start_game(GOMOKU, 1, {}, alice, "pvp")
+        operations.join_game(game.room_code, bob)
+        host = Client()
+        host.force_login(alice)
+
+        def kick(who):
+            return host.post(f"/api/gomoku/games/{game.id}/kick/", json.dumps({"player": who}),
+                             content_type="application/json")
+
+        self.assertEqual(kick("login-bob").status_code, 400)
+        self.assertEqual(kick("鮑伯").status_code, 200)
+        self.assertIsNone(game.players.get(seat=2).user)
+
+    def test_old_accounts_keep_their_account_as_their_name(self):
+        # migration 0013：舊帳號沿用帳號當名稱（使用者決定），大家看到的名字不變
+        migration = importlib.import_module("arena.migrations.0013_profile")
+        old = User.objects.create_user("old-timer", password="x")
+        Profile.objects.all().delete()
+        migration.names_from_accounts(apps, SimpleNamespace(connection=connection))
+        self.assertEqual(Profile.objects.get(user=old).name, "old-timer")
+
+    def test_accounts_made_outside_the_signup_page_still_get_a_free_name(self):
+        # createsuperuser、後台建立的帳號也要有名稱；帳號和別人的名稱一樣時加編號，不能讓兩個人同名
+        sign_up(Client(), "carol01", "boss")
+        admin = User.objects.create_superuser("boss")
+        self.assertEqual(admin.profile.name, "boss-2")
+
+    def test_a_guest_is_named_like_its_account_and_may_keep_that_name(self):
+        client = Client()
+        client.post("/accounts/guest/")
+        guest = User.objects.get(pk=client.session["_auth_user_id"])
+        guest_name = guest.username
+        self.assertTrue(guest_name.startswith("遊客-"))
+        self.assertEqual(guest.profile.name, guest_name)
+        # 升級頁：帳號欄空白，使用者名稱先填好遊客名稱；不改名稱直接送出也行（不算和自己重複）
+        page = client.get("/accounts/upgrade/").content.decode()
+        self.assertIn(f'value="{guest_name}"', page.split('name="name"')[1].split(">")[0])
+        response = client.post("/accounts/upgrade/", {"username": "dora", "name": guest_name,
+                                                      "password1": "a-Long-pass-88", "password2": "a-Long-pass-88"})
+        self.assertRedirects(response, "/", fetch_redirect_response=False)
+        guest = User.objects.get(pk=guest.pk)
+        self.assertEqual((guest.username, guest.profile.name), ("dora", guest_name))
+        self.assertTrue(guest.has_usable_password())
+
+    def test_a_guest_cannot_upgrade_to_someone_elses_name_and_stays_a_guest(self):
+        sign_up(Client(), "carol01", "小卡")
+        client = Client()
+        client.post("/accounts/guest/")
+        guest = User.objects.get(pk=client.session["_auth_user_id"])
+        response = client.post("/accounts/upgrade/", {"username": "dora", "name": "小卡",
+                                                      "password1": "a-Long-pass-88", "password2": "a-Long-pass-88"})
+        self.assertContains(response, "這個使用者名稱已經有人用了")
+        self.assertContains(response, "設定帳號密碼")  # 頂端仍是遊客的選項：沒有升級成功
+        guest.refresh_from_db()
+        self.assertFalse(guest.has_usable_password())
+        self.assertTrue(guest.username.startswith("遊客-"))
 
 TUNNEL = {"HTTP_HOST": "abc-def.trycloudflare.com", "HTTP_CF_CONNECTING_IP": "198.51.100.7"}  # 經過通道：從本機的 cloudflared 連進來
 

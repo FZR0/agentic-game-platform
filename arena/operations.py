@@ -20,7 +20,7 @@ from django.utils import timezone
 
 from . import agent, games, narrator
 from .base import ESTIMATE, RULE
-from .models import AiNote, ChatMessage, Game, GamePlayer, GameSpectator, ModelRun, Presence
+from .models import AiNote, ChatMessage, Game, GamePlayer, GameSpectator, ModelRun, Presence, display_name
 
 MOVE_REF_RE = re.compile(r"第\s*(\d{1,3})\s*[手步](?!牌)")  # 撲克的「第 3 手牌」不是第 3 步
 
@@ -31,8 +31,8 @@ def settings_of(game, seat=None):
     settings = {**game.settings, "secret": game.secret}
     if seat is not None:
         settings["viewer"] = seat
-    if game.settings.get("table") and game.pk:  # 撲克開放牌桌：畫面上的真人寫帳號名稱（成員代號 → 名稱）
-        settings["names"] = {p.seat: p.user.username for p in game.players.select_related("user") if p.user}
+    if game.settings.get("table") and game.pk:  # 撲克開放牌桌：畫面上的真人寫使用者名稱（成員代號 → 名稱）
+        settings["names"] = {p.seat: display_name(p.user) for p in game.players.select_related("user__profile") if p.user}
     return settings
 
 
@@ -172,7 +172,7 @@ def _card(game, user):
     result = _result(game, user)
     url = reverse("arena:play", args=[module.key])
     seat = game.seat_of(user)
-    opponents = [p.user.username for p in game.players.all() if p.user and p.user_id != user.id] if game.pvp else []
+    opponents = [display_name(p.user) for p in game.players.all() if p.user and p.user_id != user.id] if game.pvp else []
     room = _room_status(game)
     return {"id": game.id, "module": module, "when": game.updated_at, "steps": len(game.actions),
             # 撲克玩家固定 1 號位，寫「執 1 號位」沒有意義
@@ -252,7 +252,7 @@ def room_list(user):
         else:
             seats = f"座位 {sum(1 for p in game.players.all() if p.user_id or p.ai)}／{len(game.players.all())} 人"
         mine = user.id in members
-        rows.append({"code": game.room_code, "module": module, "owner": game.owner.username if game.owner else "",
+        rows.append({"code": game.room_code, "module": module, "owner": display_name(game.owner) if game.owner else "",
                      "seats": seats, "watching": len(watching), "locked": bool(game.room_password), "mine": mine,
                      "status": "對戰中" if game.started_at is not None
                      else "等人加入" if game.waiting else "等房主按「開始」",
@@ -429,11 +429,12 @@ def _lobby(game):
 
 
 def _member(game, name):
-    """房間裡（坐在座位上或觀戰中）叫這個名稱的帳號；不在房間裡時丟出 ValueError。"""
-    player = game.players.filter(user__username=name).select_related("user").first()
+    """房間裡（坐在座位上或觀戰中）叫這個使用者名稱的帳號；不在房間裡時丟出 ValueError。
+    用使用者名稱找（網頁只知道名稱，不知道別人的帳號）；名稱不會重複（Profile.name 唯一），所以不會找錯人。"""
+    player = game.players.filter(user__profile__name=name).select_related("user").first()
     if player:
         return player.user
-    spectator = game.spectators.filter(user__username=name).select_related("user").first()
+    spectator = game.spectators.filter(user__profile__name=name).select_related("user").first()
     if spectator:
         return spectator.user
     raise ValueError(f"{name} 不在這個房間裡")
@@ -920,7 +921,7 @@ def table_action(module, game, user, op, kind="", seat=0):
             elif any(e.get("token") == token for e in queue):
                 raise ValueError("你已經在隊列裡了")
             else:
-                queue.append({"token": token, "name": user.username})
+                queue.append({"token": token, "name": display_name(user)})
         elif op == "unqueue":
             if seat:
                 if not 1 <= seat <= len(queue):
@@ -1115,7 +1116,7 @@ def send_chat(game, user, seat, text):
         raise ValueError("你不在這個房間裡")
     if game.finished:
         raise ValueError("對局已經結束，聊天室只能看、不能再發言")
-    message = ChatMessage.objects.create(game=game, user=user, name=user.username, room=_chat_room(game, seat),
+    message = ChatMessage.objects.create(game=game, user=user, name=display_name(user), room=_chat_room(game, seat),
                                          text=clean_chat_text(text))
     return message.to_dict(user)
 
@@ -1247,7 +1248,7 @@ def opponents(module, game, seat):
     和 AI 的對局不做：AI 的每一步就是引擎的選擇，復盤標準一致時本來就找不到問題。"""
     if not game.pvp:
         return []
-    names = {p.seat: p.user.username for p in game.players.all() if p.user}
+    names = {p.seat: display_name(p.user) for p in game.players.all() if p.user}
     result = []
     for opp in sorted(game.human_seats() - {seat}):
         # 撲克開放牌桌的真人換過座位（opp 是成員代號，2026-11-16），只寫名稱
