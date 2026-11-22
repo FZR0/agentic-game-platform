@@ -14,7 +14,7 @@ from pathlib import Path
 from arena.base import CONDITIONAL, ESTIMATE, RULE, GameModule
 
 from . import cards
-from .rules import HUMAN, MEMBER, STREETS, Table, action_text, seat_label
+from .rules import HUMAN, MEMBER, STREETS, Table, action_text
 
 SB, BB = 10, 20
 EQUITY_FILE = Path(__file__).with_name("preflop_equity.json")  # manage.py poker_equity_table 產生
@@ -496,7 +496,7 @@ class HoldemModule(GameModule):
         return self._raise_ev(t, seat, target)
 
     def _assumption_points(self, t, seat, a):
-        me = seat_label(seat)
+        me = t.label(seat)
         parts, any_reads = [], False
         for o in t.in_hand():
             if o == seat:
@@ -504,7 +504,7 @@ class HoldemModule(GameModule):
             reads = self._reads(t, o)
             any_reads = any_reads or bool(reads)
             said = "、".join(f"{STREETS[street]}{READ_WORDS[kind]}" for street, kind in reads)
-            parts.append(f"{seat_label(o)}{RANGE_TEXT[t.pre.get(o)]}" + (f"，翻牌後{said}" if said else ""))
+            parts.append(f"{t.label(o)}{RANGE_TEXT[t.pre.get(o)]}" + (f"，翻牌後{said}" if said else ""))
         points = [(CONDITIONAL, f"假設：{'；'.join(parts) or '沒有對手'}。")]
         if any_reads:
             points.append((CONDITIONAL, f"判斷對手牌力：{READ_RULE}。"))
@@ -523,7 +523,7 @@ class HoldemModule(GameModule):
     def _bot(self, t, seat):
         """風格機器人：翻牌前看起手牌強度，翻牌後看勝率；各風格的門檻不同。"""
         style = STYLES[t.roles[seat]]
-        name = f"{seat_label(seat)}（{style['name']}機器人）"
+        name = f"{t.label(seat)}（{style['name']}機器人）"
         rng = random.Random(f"{t.seed}:{len(t.actions)}:bot")
         hole = t.hole[seat]
         L = t.legal(seat)
@@ -588,7 +588,7 @@ play_move 的 reason 用繁體中文一句話說明，只能提到工具結果�
 
     def board_text(self, t, actions):
         seat = t.to_act
-        label = lambda s: "你" if s == seat else seat_label(s)
+        label = lambda s: "你" if s == seat else t.label(s)
         L = t.legal(seat)
         lines = [f"第 {t.hand_no} 手牌，{STREETS[t.street]}。你坐 {seat} 號位（{self._position(t, seat)}）。",
                  f"你的底牌：{cards.show_all(t.hole[seat])}。公共牌：{cards.show_all(t.board) or '還沒發'}。",
@@ -607,7 +607,7 @@ play_move 的 reason 用繁體中文一句話說明，只能提到工具結果�
         return self.normalize(args.get("action"))
 
     def _board_points(self, t, seat):
-        me = seat_label(seat)
+        me = t.label(seat)
         hole = t.hole[seat]
         points = [(RULE, f"{me}的底牌是 {cards.show_all(hole)}；公共牌 {cards.show_all(t.board) or '還沒發'}（{STREETS[t.street]}）。")]
         if t.board:
@@ -633,7 +633,7 @@ play_move 的 reason 用繁體中文一句話說明，只能提到工具結果�
 
     def _candidate_points(self, t, seat):
         a = self.analysis(t, seat)
-        me = seat_label(seat)
+        me = t.label(seat)
         points = self._assumption_points(t, seat, a)
         points.append((CONDITIONAL, f"在這些假設下，{me}各選擇的期望值（平均每次比棄牌多賺或少虧的籌碼）：{self._ev_text(a['ev'])}。"))
         if any(k.startswith(("raise", "allin")) for k in a["ev"]):
@@ -645,7 +645,7 @@ play_move 的 reason 用繁體中文一句話說明，只能提到工具結果�
         return points
 
     def _check_points(self, t, seat, action):
-        me = seat_label(seat)
+        me = t.label(seat)
         problem = self.rejection(t, action)
         if problem:
             return [(RULE, f"{me}不能{action_text(action)}：{problem}。")]
@@ -700,7 +700,7 @@ play_move 的 reason 用繁體中文一句話說明，只能提到工具結果�
         a = self.analysis(state, seat)
         return {"action": action, "points": self._assumption_points(state, seat, a) + [
             (CONDITIONAL, f"各選擇的期望值：{self._ev_text(a['ev'])}。"),
-            (CONDITIONAL, f"在這些假設下，{seat_label(seat)}選擇{action_text(action)}：{why}。")]}
+            (CONDITIONAL, f"在這些假設下，{state.label(seat)}選擇{action_text(action)}：{why}。")]}
 
     def _style(self, settings, actions, seat):
         """seat 的打法統計（整體評論與對手觀察共用）：打完幾手、主動入池、翻牌前加注、攤牌、贏下的手數，
@@ -813,7 +813,7 @@ play_move 的 reason 用繁體中文一句話說明，只能提到工具結果�
             if note["index"] < state.hand_start or state.hand_over or state.left:  # 離場後牌局結束，可以看
                 result.append(note)
             else:
-                text = f"{seat_label(note['seat'])}{action_text(state.actions[note['index']])}。"
+                text = f"{state.label(note['seat'])}{action_text(state.actions[note['index']])}。"
                 result.append({**note, "facts": {"kind": "ai_move", "points": [{"evidence": RULE, "text": text}]},
                                "narration": None, "hidden": True})
         return result
@@ -950,7 +950,7 @@ play_move 的 reason 用繁體中文一句話說明，只能提到工具結果�
                     points += self._check_points(t, t.viewer, action)
         if next_action:
             actor = t.viewer if t.to_act is None else t.to_act
-            points.append((RULE, f"紀錄中接下來是{seat_label(actor)}{action_text(next_action)}。"))
+            points.append((RULE, f"紀錄中接下來是{t.label(actor)}{action_text(next_action)}。"))
         return [{"evidence": ev, "text": text} for ev, text in points]
 
     def explain_action(self, settings, actions, n):
@@ -966,7 +966,7 @@ play_move 的 reason 用繁體中文一句話說明，只能提到工具結果�
         if t.hand_over:
             return [{"evidence": RULE, "text": f"第 {n} 步是開始第 {t.hand_no + 1} 手牌。"}]
         actor = t.to_act
-        points = [(RULE, f"第 {n} 步是第 {t.hand_no} 手牌{STREETS[t.street]}，{seat_label(actor)}{action_text(action)}"
+        points = [(RULE, f"第 {n} 步是第 {t.hand_no} 手牌{STREETS[t.street]}，{t.label(actor)}{action_text(action)}"
                          f"（當時底池 {t.pot()}，要跟注 {t.legal(actor)['to_call']}）。")]
         if actor == t.viewer:
             points += self._check_points(t, t.viewer, action)

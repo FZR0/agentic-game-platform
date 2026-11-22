@@ -848,6 +848,23 @@ class OpenTableViewTests(SimpleTestCase):
         self.assertNotEqual(MODULE.frame(t, a)["seats"][0]["cards"], hand2_b)  # a 已經下桌，看不到 b 的牌
         self.assertIsNone(MODULE.frame(t, a)["my_table_seat"])
 
+    def test_nobody_at_an_open_table_is_called_the_player(self):
+        # 2026-11-22 例行檢查：開放牌桌的 1 號位坐的是鬆兇機器人，它的思路卻寫「玩家（1 號位）棄牌」
+        # （機器人名稱更寫成「玩家（1 號位）（鬆兇機器人）」）。開放牌桌沒有固定的「玩家」，一律寫座位號碼
+        a = MEMBER + 1
+        settings = {**MODULE.clean_settings({"players": 3, "table": True}), "secret": {"seed": 11}}
+        t = MODULE.new_state(settings)
+        for action in ("sit 1 lag", f"sit 2 {a}", "sit 3 agent", "deal"):
+            t = MODULE.apply(t, action)
+        texts = []
+        while not t.hand_over:  # 機器人（forced）與引擎代下（engine_move）的思路事實
+            move = MODULE.forced(t) or MODULE.engine_move(t)
+            texts += [text for _, text in move["points"]]
+            t = MODULE.apply(t, move["action"])
+        self.assertTrue(texts)
+        for text in texts:
+            self.assertNotIn("玩家（1 號位）", text)
+
     def test_the_seat_changes_between_hands_only(self):
         a = MEMBER + 1
         settings = {**MODULE.clean_settings({"players": 3, "table": True}), "secret": {"seed": 11}}

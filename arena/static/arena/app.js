@@ -432,6 +432,12 @@ function returnToRoom(nextId, lastResult) {
   returnTimer = setTimeout(async () => {
     returnTimer = null;
     await openGame(nextId, mode);
+    // 打不開（2026-11-22 例行檢查）：房主在撲克牌局中換遊戲時先結束牌局、馬上把下一盤換成別的遊戲，
+    // 這裡用撲克的網址讀不到那一盤（404），非房主停在「無法打開對局」。改用網址打開，伺服器（views._opening）轉到對的遊戲頁
+    if (state.gameId !== nextId) {
+      window.location.replace(`/${CONFIG.key}/?${mode}=${nextId}`);
+      return;
+    }
     showNotice(`${lastResult}這一盤可以到「對局紀錄」復盤。`);
   }, RETURN_DELAY_MS);
   updateButtons();
@@ -1178,7 +1184,8 @@ function renderChat(messages) {
     li.classList.toggle("mine", m.mine);
     const meta = document.createElement("span");
     meta.className = "chat-meta";
-    meta.textContent = `${m.mine ? "你" : m.name}・${m.time}${started && m.room === "lobby" ? "・開始前" : ""}`;
+    const time = new Date(m.at).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+    meta.textContent = `${m.mine ? "你" : m.name}・${time}${started && m.room === "lobby" ? "・開始前" : ""}`;
     li.append(meta, m.text);
     return li;
   }));

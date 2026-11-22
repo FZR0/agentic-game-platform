@@ -1343,16 +1343,15 @@ def _ai_note_points(module, game, n, points):
 def ask_points_by_rules(module, game, question, at, seat):
     """原本的做法：用正規表示式從問題找出座標與「第 N 手」，再查那些事實。"""
     points = position_points(module, game, at, module.question_focus(question), seat)
-    if module.outcome(module.replay(settings_of(game), game.actions[:at])):
-        return points
-    # 玩家常用「第 N 手」（撲克「第 N 步」）指稱；第 at+1 步就是上面的「實際下一步」，不重複
+    # 玩家常用「第 N 手」（撲克「第 N 步」）指稱；第 at+1 步就是上面的「實際下一步」，不重複。
+    # 終局也要查（2026-11-22）：復盤預設停在最後局面，原本這時直接回傳，問「第 7 手為什麼不好」只拿到終局事實
     refs = []
     for s in MOVE_REF_RE.findall(question):
         n = int(s)
         if 1 <= n <= len(game.actions) and n != at + 1 and n not in refs:
             refs.append(n)
     for n in refs[:2]:
-        points += action_points(module, game, n, seat)
+        points += [p for p in action_points(module, game, n, seat) if p not in points]  # 認輸那一步終局已附上
     return points
 
 

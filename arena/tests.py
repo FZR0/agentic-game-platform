@@ -826,6 +826,18 @@ class RequestAgentTests(TestCase):
         self.assertEqual(r["handled"]["by"], "fallback")
         self.assertEqual(r["facts"]["points"], operations.ask_points_by_rules(GOMOKU, game, "第 1 手好嗎？", 3, 1))
 
+    def test_fallback_answers_about_the_named_move_after_the_game_ended(self):
+        # 2026-11-22 例行檢查：復盤預設停在最後局面，AI 連不上時問「第 3 手為什麼不好？」，
+        # 補上的事實只有終局與認輸前的局面，完全沒有第 3 手，答非所問。結束的局面也要照問題裡的「第 N 手」去查
+        game = Game.objects.create(game_type="gomoku", human_seat=1, actions=["H8", "H9", "I8", "I9", "resign"],
+                                   winner=2)
+        points = operations.ask_points_by_rules(GOMOKU, game, "第 3 手為什麼不好？", 5, 1)
+        for p in operations.action_points(GOMOKU, game, 3, 1):
+            self.assertIn(p, points)
+        # 問的是認輸那一步時，終局事實已經附上認輸前的局面，不要重複
+        points = operations.ask_points_by_rules(GOMOKU, game, "第 5 手為什麼認輸？", 5, 1)
+        self.assertEqual(len(points), len({p["text"] for p in points}))
+
     def test_a_question_cannot_look_up_every_step(self):
         # 2026-11-19 情境測試：問「我哪一步最差」時，AI 助理一次查了每一步（14 到 35 次），事實多到 30–90 則，
         # 等 40–240 秒，還讓研究用伺服器的模型出錯一次。一次提問最多查 MAX_ACTION_QUERIES 步，其餘不執行
@@ -2832,6 +2844,15 @@ class RoomChatTests(RefusalAssertions, TestCase):
             self.assertEqual(self.say("bob", "   ").status_code, 400)
             self.assertEqual(self.say("bob", "字" * (ChatMessage.MAX_LENGTH + 1)).status_code, 400)
         self.assertFalse(ChatMessage.objects.exists())
+
+    def test_message_time_is_sent_with_its_time_zone_so_the_page_shows_local_time(self):
+        # 2026-11-22 例行檢查：伺服器的 TIME_ZONE 是 UTC，原本送「14:30」這種只有時分的字串，
+        # 台灣的玩家晚上 10:30 說的話顯示成 14:30。改送帶時區的 ISO 時間，由瀏覽器換成看的人所在的時區
+        self.say("bob", "現在幾點")
+        sent = ChatMessage.objects.get().to_dict(self.users["bob"])
+        when = datetime.fromisoformat(sent["at"])
+        self.assertIsNotNone(when.tzinfo)
+        self.assertEqual(when, ChatMessage.objects.get().created_at)
 
     def test_after_the_game_the_chat_is_kept_but_read_only(self):
         self.say("bob", "請多指教")

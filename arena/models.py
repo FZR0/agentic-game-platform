@@ -209,7 +209,8 @@ class ChatMessage(models.Model):
 
     def to_dict(self, user):
         return {"id": self.id, "name": self.name, "room": self.room, "text": self.text,
-                "mine": self.user_id == user.id, "time": timezone.localtime(self.created_at).strftime("%H:%M")}
+                # 帶時區的 ISO 時間，網頁換成看的人所在的時區（伺服器的 TIME_ZONE 是 UTC；2026-11-22 原本直接送「時:分」，差 8 小時）
+                "mine": self.user_id == user.id, "at": self.created_at.isoformat()}
 
 
 class AiNote(models.Model):
