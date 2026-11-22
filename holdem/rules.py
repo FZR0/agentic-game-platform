@@ -422,10 +422,22 @@ class Table:
             share, extra = divmod(amount, len(winners))
             for i, s in enumerate(winners):  # 除不盡的籌碼從按鈕左邊開始一人一個
                 won[s] = won.get(s, 0) + share + (1 if i < extra else 0)
-        self._award(won, ranks=ranks)
+        # 投入最多的人比第二多的人多出的部分沒人跟注，是退回不是贏（2026-11-22 使用者決定）：
+        # 分池照樣把它算給他（只有他有資格），這裡從「贏得」分出來，籌碼一樣回到他身上
+        returned = {}
+        top = max(self.total, key=self.total.get)
+        rest = [v for s, v in self.total.items() if s != top]
+        back = self.total[top] - max(rest, default=0)
+        if back > 0 and won.get(top, 0) >= back:
+            returned[top] = back
+            won[top] -= back
+            if not won[top]:
+                del won[top]
+        self._award(won, ranks=ranks, returned=returned)
 
-    def _award(self, won, by_fold=False, ranks=None):
-        for s, amount in won.items():
+    def _award(self, won, by_fold=False, ranks=None, returned=None):
+        returned = returned or {}
+        for s, amount in [*won.items(), *returned.items()]:
             self.stacks[s] += amount
         self.winnings = won
         self.hand_over, self.to_act = True, None
@@ -434,6 +446,7 @@ class Table:
             self.hand_result = f"其他人都棄牌，{self.label(s)}贏得 {amount}。"
         else:
             parts = [f"{self.label(s)}以{cards.describe(ranks[s])} 贏得 {won[s]}" for s in sorted(won, key=lambda x: -won[x])]
+            parts += [f"沒人跟注的 {amount} 退回給{self.label(s)}" for s, amount in returned.items()]
             self.hand_result = "攤牌：" + "；".join(parts) + "。"
 
     # ---- 牌局結束 ----

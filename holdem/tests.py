@@ -142,9 +142,25 @@ class RuleTests(SimpleTestCase):
         t.button = 3
         t.hole = {1: ["2c", "3d"], 2: ["2d", "3c"], 3: ["7c", "8d"]}
         t.board = ["As", "Ks", "Qh", "Jd", "Tc"]  # 公共牌就是順子，三人平分
-        t.total, t.stacks, t.folded = {1: 101, 2: 100, 3: 0}, {1: 0, 2: 0, 3: 0}, {3}
+        # 棄牌的 3 號位投了 1，底池 201 除不盡（原本寫成 1 號位多投 1，那 1 是沒人跟到的退回，不是零頭）
+        t.total, t.stacks, t.folded = {1: 100, 2: 100, 3: 1}, {1: 0, 2: 0, 3: 0}, {3}
         t._showdown()
         self.assertEqual(t.winnings, {1: 101, 2: 100})
+
+    def test_chips_nobody_called_are_returned_not_won(self):
+        # 2026-11-22 例行檢查、使用者決定寫成「退回」：玩家 All in 2050，對手最多只跟到 2000，
+        # 多出的 50 沒人跟、退回給他，原本卻寫「玩家（1 號位）以一對 K 贏得 50」，輸了的人看起來像贏了一部分，
+        # 「贏得」標籤和贏下手數的統計也把這手算成他贏。籌碼照樣回到他身上，分池的計算不變
+        t = Table(3, 1000, 10, 20, 4)
+        t.hole = {1: ["Jc", "8h"], 2: ["Tc", "Kc"], 3: ["7c", "2d"]}
+        t.board = ["4c", "9d", "Qd", "Kd", "Ks"]
+        t.total, t.stacks, t.folded = {1: 2050, 2: 2000, 3: 20}, {1: 0, 2: 0, 3: 980}, {3}
+        t._showdown()
+        self.assertEqual(t.winnings, {2: 4020})  # 1 號位沒有贏
+        self.assertEqual(t.stacks, {1: 50, 2: 4020, 3: 980})
+        self.assertIn("2 號位以三條 K 贏得 4020", t.hand_result)
+        self.assertIn("沒人跟注的 50 退回給玩家（1 號位）", t.hand_result)
+        self.assertNotIn("玩家（1 號位）以", t.hand_result)
 
     def test_two_to_ten_players_and_a_full_table_plays_out(self):
         # 使用者要求 2 到 10 人（含玩家）；10 人桌要發得出 20 張不重複的底牌，打到攤牌籌碼不能多也不能少

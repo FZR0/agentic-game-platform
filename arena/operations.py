@@ -268,7 +268,7 @@ def play_context(module):
                        "minSteps": agent.MIN_STEPS, "maxSteps": agent.MAX_STEPS, "stepWord": module.step_word,
                        "pickHumanSeats": module.pvp_pick_seats,
                        # 房主在房間大廳換遊戲用（2026-11-15）
-                       "games": [{"key": m.key, "name": m.name, "pickSeats": m.pvp_pick_seats}
+                       "games": [{"key": m.key, "name": m.name, "pickSeats": m.pvp_pick_seats, "seats": list(m.seat_names)}
                                  for m in games.GAMES.values()]}}
 
 
@@ -314,7 +314,7 @@ def change_room(module, game, user, seat, settings):
     """房主在房間裡改設定或換遊戲（2026-11-08 先開房、等人時能改；2026-11-15 使用者要求「房主可以自由選擇」：
     朋友坐下後也能改，也能換別的遊戲）。module 是改完的遊戲（換遊戲時和 game.game_type 不同）。
     同一個房間（編號、房間密碼不變），設定、座位、撲克的洗牌種子換成新的，回傳 (對局, 開局畫面)。
-    座位照新的設定重排：房主坐 seat，其他已經坐下的人依原本的座位順序坐進剩下的真人座位，坐不下的改成觀戰。
+    座位照新的設定重排：房主坐 seat，其他已經坐下的人留在原本的座位號碼（2026-11-22），沒有那個座位才依序坐進剩下的真人座位，坐不下的改成觀戰。
     只在按「開始」之前（_lobby）。"""
     if not game.pvp or game.owner_id != user.id:
         raise ValueError("只有房主能改房間設定")
@@ -330,7 +330,7 @@ def change_room(module, game, user, seat, settings):
             return game, module.frame(module.replay(settings_of(game), game.actions), seat)
         # 觀戰中的房主（2026-11-18）改完設定照樣觀戰；從撲克開放牌桌換過來時照舊坐 seat（牌桌的房主預設在觀戰席）
         watching = not open_table(game) and game.seat_of(user) is None
-        friends = [p.user for p in game.players.exclude(user=user).filter(user__isnull=False).select_related("user")]
+        friends = [(p.seat, p.user) for p in game.players.exclude(user=user).filter(user__isnull=False).select_related("user")]
         ai_seats = [p.seat for p in game.players.filter(ai=True)]  # 房主請 AI 坐的座位（2026-11-18）改設定後照樣由 AI 坐
         game.players.all().delete()
         if not watching:
@@ -342,11 +342,22 @@ def change_room(module, game, user, seat, settings):
         game.players.filter(seat__in=ai_seats, user__isnull=True).update(ai=True)
         if not game.players.filter(ai=False).exists():  # 不能全是 AI：留一個座位給真人
             game.players.filter(seat=max(ai_seats)).update(ai=False)
-        free = list(game.players.filter(user__isnull=True, ai=False).order_by("seat"))
-        for place, friend in zip(free, friends):
+        # 每個人先回到原本的座位號碼（2026-11-22 使用者決定：換遊戲、改設定不對調先後手；四種棋的 1 號位都是先手），
+        # 那個座位沒有了或被佔了（例如從撲克牌桌換過來，座位是成員代號）才依序坐進剩下的座位，坐不下的改成觀戰
+        free = {p.seat: p for p in game.players.filter(user__isnull=True, ai=False)}
+        later = []
+        for old_seat, friend in friends:
+            place = free.pop(old_seat, None)
+            if place is None:
+                later.append(friend)
+                continue
             place.user, place.joined_at = friend, timezone.now()
             place.save()
-        for friend in friends[len(free):]:
+        rest = [free[s] for s in sorted(free)]
+        for place, friend in zip(rest, later):
+            place.user, place.joined_at = friend, timezone.now()
+            place.save()
+        for friend in later[len(rest):]:
             GameSpectator.objects.get_or_create(game=game, user=friend)
     return game, module.frame(module.new_state(settings_of(game)), None if watching else seat)
 

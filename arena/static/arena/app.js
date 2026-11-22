@@ -966,7 +966,10 @@ async function switchGame() {
       closeSocket(); // 結束牌局的推送會帶著頁面回到大廳；這裡自己接著換遊戲
       gameId = (await api(`games/${gameId}/end_table/`, {})).game.next_round ?? gameId;
     }
-    const data = await api(`games/${gameId}/room/`, { game_type: target.key, seat: 1, settings });
+    // 房主留在原本的座位號碼（2026-11-22 使用者決定；原本寫死 1 號位，坐白棋的房主換遊戲後和對方對調先後手）。
+    // 撲克牌桌上的座位和棋類的不是同一回事，從牌桌換過來、或新遊戲沒有這個座位時才坐 1 號位
+    const keep = !table && !isTable() && !state.watching && target.seats.includes(state.human);
+    const data = await api(`games/${gameId}/room/`, { game_type: target.key, seat: keep ? state.human : 1, settings });
     closeSocket();
     window.location.href = `/${target.key}/?resume=${data.game.id}`;
   } catch (err) {

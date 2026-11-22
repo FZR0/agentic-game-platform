@@ -3051,6 +3051,25 @@ class RoomLobbyTests(RefusalAssertions, TestCase):
         self.assertTrue(self.clients["carol"].get(f"{url}/").json()["is_owner"])
         self.assertFalse(self.clients["alice"].get(f"{url}/").json()["is_owner"])
 
+    def test_switching_games_keeps_everyone_in_their_seat(self):
+        # 2026-11-22 例行檢查、使用者決定「保留原本座位」：房主坐白棋、bob 坐黑棋時換成國際象棋，
+        # 原本房主一律被排到 1 號位、bob 被擠到 2 號位，兩人在大廳說好的先後手無聲對調。四種棋的 1 號位都是先手，
+        # 所以換遊戲、改設定後每個人留在原本的座位號碼
+        game = self.room()
+        url = f"/api/gomoku/games/{game.id}"
+        self.post("alice", f"{url}/seat/", {"player": "bob", "seat": 1})  # 交換：bob 黑棋、alice 白棋
+        self.assertEqual(self.seats(game), {1: "bob", 2: "alice"})
+        r = self.post("alice", f"{url}/room/", {"game_type": "chess", "seat": 2, "settings": {}})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.seats(game), {1: "bob", 2: "alice"})
+        self.assertEqual(r.json()["my_seat"], 2)
+        # 房主起身觀戰後改設定：坐著的 bob 也留在原本的座位，不會被移到空出來的 1 號位
+        self.post("alice", f"/api/chess/games/{game.id}/seat/", {"player": "bob", "seat": 2})
+        self.post("alice", f"/api/chess/games/{game.id}/seat/", {"seat": 0})
+        self.assertEqual(self.seats(game), {1: None, 2: "bob"})
+        self.post("alice", f"/api/chess/games/{game.id}/room/", {"game_type": "xiangqi", "seat": 1, "settings": {}})
+        self.assertEqual(self.seats(game), {1: None, 2: "bob"})
+
     def test_the_host_can_switch_games_and_whoever_does_not_fit_watches(self):
         # 換成撲克（2026-11-16 起是開放牌桌）：牌桌是空的，房間裡的人都到觀戰席，自己上桌
         from holdem.module import MODULE as HOLDEM
@@ -3092,14 +3111,14 @@ class RoomLobbyTests(RefusalAssertions, TestCase):
         self.assertEqual(sorted(game.summary()["spectators"]), ["alice", "carol"])
         detail = self.clients["alice"].get(f"{url}/").json()
         self.assertEqual((detail["my_seat"], detail["is_owner"], detail["game"]["owner"]), (None, True, "alice"))
-        # 觀戰中改設定：照樣觀戰，坐著的人照樣坐著
+        # 觀戰中改設定：照樣觀戰，坐著的人照樣坐在原本的座位（2026-11-22 使用者決定保留原本座位；原本會被移到 1 號位）
         r = self.post("alice", f"{url}/room/", {"seat": 1, "settings": {}})
         self.assertEqual((r.status_code, r.json()["my_seat"]), (200, None))
-        self.assertEqual(self.seats(game), {1: "bob", 2: None})
+        self.assertEqual(self.seats(game), {1: None, 2: "bob"})
         self.assertIn("alice", game.summary()["spectators"])
         # 觀戰中幫人換座位、把房主交給觀戰的人再拿回來
-        self.assertEqual(self.post("alice", f"{url}/seat/", {"player": "carol", "seat": 2}).status_code, 200)
-        self.assertEqual(self.seats(game), {1: "bob", 2: "carol"})
+        self.assertEqual(self.post("alice", f"{url}/seat/", {"player": "carol", "seat": 1}).status_code, 200)
+        self.assertEqual(self.seats(game), {1: "carol", 2: "bob"})
         self.assertEqual(self.post("alice", f"{url}/host/", {"player": "dave"}).status_code, 400)  # 不在房間裡
         operations.watch_game(game.room_code, self.users["dave"])
         self.assertEqual(self.post("alice", f"{url}/host/", {"player": "dave"}).status_code, 200)
@@ -3108,14 +3127,14 @@ class RoomLobbyTests(RefusalAssertions, TestCase):
         with patch.object(operations.time, "sleep"), patch.object(operations, "START_COUNTDOWN", 0):
             self.assertEqual(self.post("alice", f"{url}/start/").status_code, 200)
         self.assertEqual(self.post("alice", f"{url}/move/", {"action": "H8"}).status_code, 404)  # 觀戰不能下
-        r = self.post("bob", f"{url}/move/", {"action": "resign"})  # bob 執黑認輸，carol 贏
+        r = self.post("carol", f"{url}/move/", {"action": "resign"})  # carol 執黑認輸，bob 贏
         nxt = Game.objects.get(pk=r.json()["next_round"])
         game.refresh_from_db()
         # 這盤不是房主的：不列在他的對局紀錄、不進戰績、不能復盤；下一盤他照樣是觀戰的房主
         self.assertNotIn(game, operations._played_games(self.users["alice"]))
         self.assertEqual(self.clients["alice"].get(f"{url}/review/").status_code, 404)
         self.assertEqual(self.clients["bob"].get(f"{url}/review/").status_code, 200)
-        self.assertEqual((nxt.owner.username, self.seats(nxt)), ("alice", {1: "bob", 2: "carol"}))
+        self.assertEqual((nxt.owner.username, self.seats(nxt)), ("alice", {1: "carol", 2: "bob"}))
         self.assertIn("alice", nxt.summary()["spectators"])
         # 頂端的「回到房間」照樣帶房主回去
         self.assertEqual([r["id"] for r in operations.active_rooms(self.users["alice"])], [nxt.id])
