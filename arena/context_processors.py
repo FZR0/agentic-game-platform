@@ -1,5 +1,13 @@
 """每一頁的模板都拿得到的資料（config/settings.py 的 TEMPLATES 登記）。"""
 from . import operations
+from .models import display_name
+
+
+def viewer_name(request):
+    """登入的人在畫面上的名稱（models.display_name，遊客加「（遊客）」）。play.html 的 viewer-name 要和玩家列表的名稱
+    一模一樣，app.js 才標得出「你」，所以模板不自己拼 user.profile.name。"""
+    user = getattr(request, "user", None)
+    return {"viewer_name": display_name(user)} if user is not None and user.is_authenticated else {}
 
 
 def active_room(request):

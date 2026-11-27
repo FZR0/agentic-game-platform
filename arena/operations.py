@@ -20,7 +20,7 @@ from django.utils import timezone
 
 from . import agent, games, narrator
 from .base import ESTIMATE, RULE
-from .models import AiNote, ChatMessage, Game, GamePlayer, GameSpectator, ModelRun, Presence, display_name
+from .models import GUEST_MARK, AiNote, ChatMessage, Game, GamePlayer, GameSpectator, ModelRun, Presence, display_name
 
 MOVE_REF_RE = re.compile(r"第\s*(\d{1,3})\s*[手步](?!牌)")  # 撲克的「第 3 手牌」不是第 3 步
 WHOLE_GAME_RE = re.compile("策略|風格|習慣|整體|整盤|表現|打法|下法")  # 關於整盤的提問（AI 助理沒查完時的備用查法）
@@ -442,13 +442,13 @@ def _lobby(game):
 
 def _member(game, name):
     """房間裡（坐在座位上或觀戰中）叫這個使用者名稱的帳號；不在房間裡時丟出 ValueError。
-    用使用者名稱找（網頁只知道名稱，不知道別人的帳號）；名稱不會重複（Profile.name 唯一），所以不會找錯人。"""
-    player = game.players.filter(user__profile__name=name).select_related("user").first()
-    if player:
-        return player.user
-    spectator = game.spectators.filter(user__profile__name=name).select_related("user").first()
-    if spectator:
-        return spectator.user
+    用使用者名稱找（網頁只知道名稱，不知道別人的帳號）；名稱不會重複（Profile.name 唯一），所以不會找錯人。
+    網頁送來的是畫面上的名稱（遊客多了「（遊客）」），所以比對 display_name。"""
+    names = {name, name.removesuffix(GUEST_MARK)}
+    for rows in (game.players, game.spectators):
+        for row in rows.filter(user__profile__name__in=names).select_related("user__profile"):
+            if display_name(row.user) == name:
+                return row.user
     raise ValueError(f"{name} 不在這個房間裡")
 
 

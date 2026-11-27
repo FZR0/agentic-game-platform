@@ -164,6 +164,7 @@ TEMPLATES = [
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
                 'arena.context_processors.active_room',  # 每一頁頂端的「回到房間」（2026-11-13）
+                'arena.context_processors.viewer_name',  # 頂端與 play.html 的自己名稱，和別人看到的一樣（遊客加「（遊客）」）
             ],
         },
     },

@@ -5,6 +5,7 @@
 - 註冊、登入不經過 AI 助理：密碼不能交給模型，而且這是安全檢查，不是遊戲的請求。
 - 每次登入記一筆 LoginRecord（IP、瀏覽器）；PresenceMiddleware 記每個瀏覽器最後活動的時間，後台看得到目前在線的人。
 - 遊客（2026-11-06）：不註冊也能玩，建立一個沒有密碼的暫時帳號；之後設定帳號、使用者名稱與密碼就升級成正式帳號，對局都保留。
+  2026-11-27 起遊客進來前要取使用者名稱，別人看到的是「名稱（遊客）」（models.display_name）。
 - 三個欄位（2026-11-20 使用者要求）：帳號（User.username，只用來登入）、使用者名稱（Profile.name，畫面上顯示、不能重複）、密碼。
   登入只用帳號（使用者決定）：名稱是公開的，拿來登入就等於把登入用的 ID 公開了。
 """
@@ -17,7 +18,7 @@ from django.conf import settings
 from django.contrib.auth import login, update_session_auth_hash
 from django.contrib.auth.models import User
 from django.contrib.auth.decorators import login_not_required
-from django.contrib.auth.forms import UserCreationForm
+from django.contrib.auth.forms import AuthenticationForm, UserCreationForm
 from django.contrib.auth.signals import user_logged_in
 from django.contrib.auth.views import LoginView, redirect_to_login
 from django.core.exceptions import ValidationError
@@ -29,7 +30,7 @@ from django.shortcuts import redirect, render
 from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
 
-from .models import LoginRecord, Presence, Profile, display_name
+from .models import GUEST_MARK, LoginRecord, Presence, Profile
 
 LOOPBACK = {"127.0.0.1", "::1"}
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "[::1]"}
@@ -138,15 +139,39 @@ class SignInView(LoginView):
     redirect_authenticated_user = True
 
     def get_context_data(self, **kwargs):
-        return {**super().get_context_data(**kwargs), **_page_context()}
+        return {**super().get_context_data(**kwargs), "guest_form": GuestForm(), **_page_context()}
+
+
+def _name_field():
+    return forms.CharField(label="使用者名稱", max_length=NAME_MAX,
+                           help_text=f"其他玩家看到的名字，最多 {NAME_MAX} 個字，不能和別人一樣。")
+
+
+def check_name(name, own_user_id=None):
+    """使用者名稱不分大小寫不能重複（SQL Server 的唯一索引本來就不分大小寫）；自己原本的名稱可以留著（遊客升級）。
+    不能用「（遊客）」結尾：遊客的名稱顯示時會加上它（models.display_name），否則正式帳號能取得和某個遊客看起來一模一樣。"""
+    if name.endswith(GUEST_MARK):
+        raise ValidationError(f"使用者名稱不能用「{GUEST_MARK}」結尾。")
+    if Profile.objects.filter(name__iexact=name).exclude(user_id=own_user_id).exists():
+        raise ValidationError("這個使用者名稱已經有人用了，請換一個。")
+    return name
+
+
+class GuestForm(forms.Form):
+    """以遊客身分進入時要填的使用者名稱（使用者決定，2026-11-27：原本自動叫「遊客-XXXXXX」，房間裡分不出誰是誰）。
+    規則和註冊一樣；帳號仍是自動的「遊客-XXXXXX」，只用來分辨，沒有密碼也不能登入。"""
+
+    name = _name_field()
+
+    def clean_name(self):
+        return check_name(self.cleaned_data["name"])
 
 
 class AccountForm(UserCreationForm):
     """註冊與遊客升級共用的三個欄位：帳號（登入用）、使用者名稱（畫面上顯示）、密碼（2026-11-20）。
     Django 的 username 欄位中文叫「使用者名稱」，這裡改叫「帳號」，免得和顯示的名稱搞混。"""
 
-    name = forms.CharField(label="使用者名稱", max_length=NAME_MAX,
-                           help_text=f"其他玩家看到的名字，最多 {NAME_MAX} 個字，不能和別人一樣。")
+    name = _name_field()
     field_order = ["username", "name", "password1", "password2"]
 
     class Meta(UserCreationForm.Meta):
@@ -161,11 +186,7 @@ class AccountForm(UserCreationForm):
         return username
 
     def clean_name(self):
-        """使用者名稱不分大小寫不能重複（SQL Server 的唯一索引本來就不分大小寫）；自己原本的名稱可以留著（遊客升級）。"""
-        name = self.cleaned_data["name"]
-        if Profile.objects.filter(name__iexact=name).exclude(user_id=self.instance.pk).exists():
-            raise ValidationError("這個使用者名稱已經有人用了，請換一個。")
-        return name
+        return check_name(self.cleaned_data["name"], self.instance.pk)
 
     def save_account(self):
         """存帳號與使用者名稱；名稱剛好被同時註冊的人搶走時（唯一索引擋下）整筆不存，回 None 並標在名稱欄。"""
@@ -207,32 +228,52 @@ def _safe_next(request):
 
 @login_not_required
 def guest(request):
-    """以遊客身分進入：建立暫時帳號並登入。邀請連結帶來的 next 會保留，朋友可以直接到加入對局的頁面。"""
+    """以遊客身分進入：填使用者名稱（2026-11-27 起必填），建立暫時帳號並登入。邀請連結帶來的 next 會保留，朋友可以直接到加入對局的頁面。"""
     if request.method != "POST":
         # 直接在網址列打這個網址：轉到登入頁按按鈕（2026-11-09，原本是看不懂的 405）。
         # 不能用打開網址就建立帳號：聊天軟體產生連結預覽時也會打開網址，每傳一次就多一個沒人用的遊客。
         next_url = request.GET.get("next")
         return redirect_to_login(next_url) if next_url else redirect("login")
     if not request.user.is_authenticated:
-        while True:
-            name = GUEST_PREFIX + "".join(secrets.choice(GUEST_LETTERS) for _ in range(6))
-            # 帳號和使用者名稱都是「遊客-XXXXXX」（使用者決定），所以兩邊都要沒人用
-            if not User.objects.filter(username=name).exists() and not Profile.objects.filter(name=name).exists():
-                break
-        user = User(username=name)
-        user.set_unusable_password()
-        user.save()  # create_profile 建立同名的使用者名稱
-        login(request, user)  # 也會記一筆登入紀錄
+        form = GuestForm(request.POST)
+        if form.is_valid():
+            user = _create_guest(form)
+            if user:
+                login(request, user)  # 也會記一筆登入紀錄
+        if not request.user.is_authenticated:  # 名稱沒填、重複：回登入頁標出原因，邀請連結的去處照樣保留
+            return render(request, "registration/login.html", {
+                "form": AuthenticationForm(request), "guest_form": form,
+                "next": request.POST.get("next", ""), **_page_context()})
     return redirect(_safe_next(request))
+
+
+def _create_guest(form):
+    """帳號是自動的「遊客-XXXXXX」（只用來分辨，沒有密碼），使用者名稱是填的。名稱剛好被同時註冊的人搶走時整筆不存，回 None。"""
+    while True:
+        account = GUEST_PREFIX + "".join(secrets.choice(GUEST_LETTERS) for _ in range(6))
+        if not User.objects.filter(username=account).exists():
+            break
+    try:
+        with transaction.atomic():
+            user = User(username=account)
+            user.set_unusable_password()
+            user.save()  # create_profile 先建一個預設名稱，下一行換成填的
+            Profile.objects.filter(user=user).update(name=form.cleaned_data["name"])
+            user.profile.refresh_from_db()
+            return user
+    except IntegrityError:
+        form.add_error("name", "這個使用者名稱已經有人用了，請換一個。")
+        return None
 
 
 def upgrade(request):
     """遊客設定帳號、使用者名稱與密碼，變成正式帳號；是同一個帳號，所以對局、戰績、真人對戰的座位都保留。"""
     if not is_guest(request.user):
         return redirect("arena:home")
-    # 帳號欄一開始是空的，請遊客取一個登入用的帳號；使用者名稱先填好目前的「遊客-XXXXXX」，想保留就不用改（使用者決定）
+    # 帳號欄一開始是空的，請遊客取一個登入用的帳號；使用者名稱先填好遊客進來時取的名稱（舊遊客是「遊客-XXXXXX」），
+    # 想保留就不用改（使用者決定）。填的是 Profile.name 本身，不是畫面上加了「（遊客）」的名稱
     form = AccountForm(request.POST or None, instance=request.user,
-                       initial={"username": "", "name": display_name(request.user)})
+                       initial={"username": "", "name": request.user.profile.name})
     if request.method == "POST" and form.is_valid():
         user = form.save_account()
         if user:

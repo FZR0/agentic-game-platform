@@ -343,9 +343,17 @@ class Profile(models.Model):
         return self.name
 
 
+GUEST_MARK = "（遊客）"  # 遊客自己取的名稱後面加這個（使用者決定，2026-11-27），別人看得出是沒有密碼的暫時帳號
+
+
 def display_name(user):
-    """畫面上顯示的使用者名稱。沒有 Profile 的帳號（不經過 save 建立的，例如 bulk_create）退回帳號。"""
+    """畫面上顯示的使用者名稱。沒有 Profile 的帳號（不經過 save 建立的，例如 bulk_create）退回帳號。
+    遊客（沒有可用密碼，accounts.is_guest）的名稱後面加「（遊客）」；舊遊客的名稱本來就是「遊客-XXXXXX」，不再加。
+    升級成正式帳號後就不加。註冊、升級、遊客取名都不能用「（遊客）」結尾（accounts.check_name），所以不會和別人顯示得一樣。"""
     try:
-        return user.profile.name
+        name = user.profile.name
     except Profile.DoesNotExist:
-        return user.username
+        name = user.username
+    if not user.has_usable_password() and not name.startswith("遊客-"):
+        name += GUEST_MARK
+    return name
