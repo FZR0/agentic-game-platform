@@ -297,6 +297,50 @@ class NumCtxTests(SimpleTestCase):
     def test_default_is_8192(self):
         self.assertEqual(settings.OLLAMA_NUM_CTX, 8192)  # 沒設環境變數 OLLAMA_NUM_CTX 時
 
+    @override_settings(OLLAMA_NUM_CTX=None, OLLAMA_KEEP_ALIVE=None)
+    def test_servers_with_a_fixed_setup_get_neither_num_ctx_nor_keep_alive(self):
+        # 借用的 5080（2026-11-27）把上下文固定成 16384：送 num_ctx 會蓋過它並讓模型對所有人重新載入，
+        # keep_alive 也要用伺服器的預設值。三種請求都不能帶，取樣參數照送
+        for run in (lambda: narrator._ask_ollama(self.FACTS, narrator.model_config(), GOMOKU.name),
+                    lambda: agent._chat([], narrator.model_config(), []),
+                    lambda: orchestrator._chat([], [])):
+            body = self.sent_bodies(run)[0]
+            self.assertNotIn("num_ctx", body["options"])
+            self.assertNotIn("keep_alive", body)
+            self.assertIn("temperature", body["options"])
+
+    @override_settings(OLLAMA_KEEP_ALIVE=None)
+    def test_benchmark_never_unloads_the_shared_model_on_such_servers(self):
+        # 那台只有一個對話模型，卸載它等於讓正在用的人重新等載入
+        from .management.commands import benchmark_models
+        sent = self.sent_bodies(lambda: self.assertTrue(benchmark_models._unload("qwen3:8b")))
+        self.assertEqual(sent, [])
+
+
+class ServerSettingsTests(SimpleTestCase):
+    # 暫時借用 5080 時只有它要用自己的模型清單與參數；換回研究用伺服器（只改 OLLAMA_URL）時要自動回到預設
+    def test_settings_apply_only_to_their_own_host(self):
+        from config import local
+        with tempfile.TemporaryDirectory() as tmp:
+            private = Path(tmp) / "private.json"
+            private.write_text(json.dumps({"OLLAMA_SERVER_SETTINGS": {"192.0.2.20": {"num_ctx": None}}}),
+                               encoding="utf-8")
+            with patch.object(local, "PRIVATE_FILE", private), patch.object(local, "LOCAL_FILE", Path(tmp) / "x"):
+                self.assertEqual(local.server_settings("http://192.0.2.20:11434"), {"num_ctx": None})
+                self.assertEqual(local.server_settings("http://192.0.2.10:11434"), {})
+                self.assertEqual(local.server_settings("http://127.0.0.1:11434"), {})
+
+    def test_a_server_known_only_by_its_alias_stays_secret(self):
+        # 改用 5080 後，研究用伺服器的位址只剩 OLLAMA_SERVER_NAMES 裡有；存檔前的檢查仍要擋下它
+        from config import local
+        from tools import git_menu
+        with tempfile.TemporaryDirectory() as tmp:
+            private = Path(tmp) / "private.json"
+            private.write_text(json.dumps({"OLLAMA_URL": "http://192.0.2.20:11434", "OLLAMA_SERVER_NAMES": {
+                "192.0.2.10": "research", "192.0.2.20": "5080"}}), encoding="utf-8")
+            with patch.object(local, "PRIVATE_FILE", private), patch.object(local, "LOCAL_FILE", Path(tmp) / "x"):
+                self.assertEqual(sorted(git_menu.secret_values()), ["192.0.2.10", "192.0.2.20"])
+
 
 class TunnelProtocolTests(SimpleTestCase):
     """連著學校 VPN 時，cloudflared 預設的 QUIC（UDP）一直斷線重連、從沒連上 Cloudflare，朋友打開網址只看到

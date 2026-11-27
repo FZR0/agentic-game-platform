@@ -12,6 +12,7 @@ git worktree 的資料夾裡沒有不進儲存庫的檔案（private/、config/l
 import json
 import os
 import secrets
+import urllib.parse
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -46,6 +47,14 @@ def get(name, default=None):
         if value:
             return value
     return default
+
+
+def server_settings(url):
+    """某台 Ollama 伺服器自己的設定：OLLAMA_SERVER_SETTINGS 是 {主機: {...}}，可以有 model、models、num_ctx、keep_alive。
+    例如借用的 5080（2026-11-27）只能用一個模型、上下文固定、不能設 keep_alive；換回別台時只改 OLLAMA_URL，
+    這些設定就自動不再套用。"""
+    host = urllib.parse.urlsplit(url).hostname
+    return (get("OLLAMA_SERVER_SETTINGS") or {}).get(host, {})
 
 
 def save(name, value):

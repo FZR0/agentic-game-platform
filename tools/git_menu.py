@@ -579,9 +579,12 @@ def secret_values():
     """不能進公開儲存庫的值：這台電腦的 SECRET_KEY 與遠端 Ollama 伺服器的主機名稱。"""
     values = [local.read(local.LOCAL_FILE).get("SECRET_KEY")]
     for path in (local.PRIVATE_FILE, local.LOCAL_FILE):
-        host = urllib.parse.urlsplit(local.read(path).get("OLLAMA_URL") or "").hostname
-        if host not in LOCAL_HOSTS:
-            values.append(host)
+        data = local.read(path)
+        host = urllib.parse.urlsplit(data.get("OLLAMA_URL") or "").hostname
+        # 有代稱的伺服器也算：暫時借用別台時（5080，2026-11-27），原本的研究用伺服器只剩代稱裡有它的位址
+        for host in [host, *(data.get("OLLAMA_SERVER_NAMES") or {})]:
+            if host not in LOCAL_HOSTS and host not in values:
+                values.append(host)
     return [v for v in values if v]
 
 

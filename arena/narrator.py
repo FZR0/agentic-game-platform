@@ -166,8 +166,7 @@ def request_body(facts, config, game_name):
         "model": config["name"],
         "stream": False,
         "think": config["think"],
-        "keep_alive": settings.OLLAMA_KEEP_ALIVE,
-        "options": {"temperature": 0.3, "num_predict": predict, "num_ctx": settings.OLLAMA_NUM_CTX},
+        "options": {"temperature": 0.3, "num_predict": predict},
         "messages": [{"role": "system", "content": SYSTEM_PROMPT.format(game=game_name, body=body, pick=pick)},
                      {"role": "user", "content": "\n".join(lines)}],
     }
@@ -200,10 +199,22 @@ class _QuickHandler(urllib.request.HTTPHandler):
 urllib.request.install_opener(urllib.request.build_opener(_QuickHandler))
 
 
+def with_server_params(body):
+    """加上依伺服器而定的 keep_alive 與 options.num_ctx（每個送出的請求都經過這裡，不會漏）。
+    設定是 None 時不送，用伺服器自己的值（借用的 5080，2026-11-27）。"""
+    body = dict(body)
+    if settings.OLLAMA_KEEP_ALIVE is not None:
+        body["keep_alive"] = settings.OLLAMA_KEEP_ALIVE
+    if settings.OLLAMA_NUM_CTX is not None:
+        body["options"] = {**body.get("options", {}), "num_ctx": settings.OLLAMA_NUM_CTX}
+    return body
+
+
 def chat(body):
     """送出 /api/chat 並回傳結果（Agent 與說明共用）。連不上或逾時後的 OLLAMA_RETRY_AFTER 秒內直接丟出 OSError，
     讓呼叫端立刻改用引擎：伺服器卡住時只有第一次要等到逾時，不會每一步都等 OLLAMA_TIMEOUT 秒。"""
     global _retry_at
+    body = with_server_params(body)
     where = f"{server_label()}的 {body.get('model')}"
     wait = _retry_at - time.monotonic()
     if wait > 0:

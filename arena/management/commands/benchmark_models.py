@@ -13,13 +13,15 @@ from arena.models import ModelRun
 
 def _unload(name):
     """把指定模型從 Ollama 記憶體卸載，成功時回傳 True。伺服器是共用的，只動要測的模型，不卸載別人載入的模型。
-    伺服器忙著沒回應時回傳 False，讓測速繼續，不要整批中斷。"""
+    伺服器忙著沒回應時回傳 False，讓測速繼續，不要整批中斷。
+    OLLAMA_KEEP_ALIVE 是 None 的伺服器（借用的 5080，2026-11-27）不卸載：那裡只有一個對話模型，大家共用。"""
+    if settings.OLLAMA_KEEP_ALIVE is None:
+        return True
     try:
         with urllib.request.urlopen(f"{settings.OLLAMA_URL}/api/ps", timeout=10) as resp:
             loaded = [m["name"] for m in json.load(resp)["models"]]
         if name in loaded:
-            body = json.dumps({"model": name, "keep_alive": 0,
-                               "options": {"num_ctx": settings.OLLAMA_NUM_CTX}}).encode("utf-8")
+            body = json.dumps(narrator.with_server_params({"model": name}) | {"keep_alive": 0}).encode("utf-8")
             req = urllib.request.Request(f"{settings.OLLAMA_URL}/api/generate", data=body,
                                          headers={"Content-Type": "application/json"})
             urllib.request.urlopen(req, timeout=60).close()

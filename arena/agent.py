@@ -7,8 +7,6 @@
 import json
 import time
 
-from django.conf import settings
-
 from . import narrator
 from .base import ESTIMATE, as_facts
 
@@ -17,9 +15,8 @@ UNREACHABLE = "無法呼叫模型"  # 呼叫 Ollama 出錯時的代下原因；�
 
 
 def _chat(messages, config, tools):
-    body = {"model": config["name"], "stream": False, "think": config["think"], "keep_alive": settings.OLLAMA_KEEP_ALIVE,
-            "tools": tools, "messages": messages, "options": {"temperature": 0.2, "num_predict": 400,
-                                                            "num_ctx": settings.OLLAMA_NUM_CTX}}
+    body = {"model": config["name"], "stream": False, "think": config["think"],
+            "tools": tools, "messages": messages, "options": {"temperature": 0.2, "num_predict": 400}}
     return narrator.chat(body)["message"]
 
 

@@ -12,8 +12,6 @@ import json
 import logging
 import time
 
-from django.conf import settings
-
 from . import agent, games, narrator, operations, realtime
 from .models import ModelRun
 
@@ -50,9 +48,8 @@ def _same(got, want):
 
 def _chat(messages, tools, model=None):
     config = narrator.model_config(model)
-    body = {"model": config["name"], "stream": False, "think": config["think"], "keep_alive": settings.OLLAMA_KEEP_ALIVE,
-            "tools": tools, "messages": messages, "options": {"temperature": 0.1, "num_predict": 300,
-                                                            "num_ctx": settings.OLLAMA_NUM_CTX}}
+    body = {"model": config["name"], "stream": False, "think": config["think"],
+            "tools": tools, "messages": messages, "options": {"temperature": 0.1, "num_predict": 300}}
     return narrator.chat(body)["message"]
 
 
