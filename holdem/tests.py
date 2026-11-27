@@ -142,9 +142,25 @@ class RuleTests(SimpleTestCase):
         t.button = 3
         t.hole = {1: ["2c", "3d"], 2: ["2d", "3c"], 3: ["7c", "8d"]}
         t.board = ["As", "Ks", "Qh", "Jd", "Tc"]  # 公共牌就是順子，三人平分
-        t.total, t.stacks, t.folded = {1: 101, 2: 100, 3: 0}, {1: 0, 2: 0, 3: 0}, {3}
+        # 棄牌的 3 號位投了 1，底池 201 除不盡（原本寫成 1 號位多投 1，那 1 是沒人跟到的退回，不是零頭）
+        t.total, t.stacks, t.folded = {1: 100, 2: 100, 3: 1}, {1: 0, 2: 0, 3: 0}, {3}
         t._showdown()
         self.assertEqual(t.winnings, {1: 101, 2: 100})
+
+    def test_chips_nobody_called_are_returned_not_won(self):
+        # 2026-11-22 例行檢查、使用者決定寫成「退回」：玩家 All in 2050，對手最多只跟到 2000，
+        # 多出的 50 沒人跟、退回給他，原本卻寫「玩家（1 號位）以一對 K 贏得 50」，輸了的人看起來像贏了一部分，
+        # 「贏得」標籤和贏下手數的統計也把這手算成他贏。籌碼照樣回到他身上，分池的計算不變
+        t = Table(3, 1000, 10, 20, 4)
+        t.hole = {1: ["Jc", "8h"], 2: ["Tc", "Kc"], 3: ["7c", "2d"]}
+        t.board = ["4c", "9d", "Qd", "Kd", "Ks"]
+        t.total, t.stacks, t.folded = {1: 2050, 2: 2000, 3: 20}, {1: 0, 2: 0, 3: 980}, {3}
+        t._showdown()
+        self.assertEqual(t.winnings, {2: 4020})  # 1 號位沒有贏
+        self.assertEqual(t.stacks, {1: 50, 2: 4020, 3: 980})
+        self.assertIn("2 號位以三條 K 贏得 4020", t.hand_result)
+        self.assertIn("沒人跟注的 50 退回給玩家（1 號位）", t.hand_result)
+        self.assertNotIn("玩家（1 號位）以", t.hand_result)
 
     def test_two_to_ten_players_and_a_full_table_plays_out(self):
         # 使用者要求 2 到 10 人（含玩家）；10 人桌要發得出 20 張不重複的底牌，打到攤牌籌碼不能多也不能少
@@ -847,6 +863,23 @@ class OpenTableViewTests(SimpleTestCase):
         self.assertEqual(MODULE.frame(t, b)["seats"][0]["cards"], hand2_b)
         self.assertNotEqual(MODULE.frame(t, a)["seats"][0]["cards"], hand2_b)  # a 已經下桌，看不到 b 的牌
         self.assertIsNone(MODULE.frame(t, a)["my_table_seat"])
+
+    def test_nobody_at_an_open_table_is_called_the_player(self):
+        # 2026-11-22 例行檢查：開放牌桌的 1 號位坐的是鬆兇機器人，它的思路卻寫「玩家（1 號位）棄牌」
+        # （機器人名稱更寫成「玩家（1 號位）（鬆兇機器人）」）。開放牌桌沒有固定的「玩家」，一律寫座位號碼
+        a = MEMBER + 1
+        settings = {**MODULE.clean_settings({"players": 3, "table": True}), "secret": {"seed": 11}}
+        t = MODULE.new_state(settings)
+        for action in ("sit 1 lag", f"sit 2 {a}", "sit 3 agent", "deal"):
+            t = MODULE.apply(t, action)
+        texts = []
+        while not t.hand_over:  # 機器人（forced）與引擎代下（engine_move）的思路事實
+            move = MODULE.forced(t) or MODULE.engine_move(t)
+            texts += [text for _, text in move["points"]]
+            t = MODULE.apply(t, move["action"])
+        self.assertTrue(texts)
+        for text in texts:
+            self.assertNotIn("玩家（1 號位）", text)
 
     def test_the_seat_changes_between_hands_only(self):
         a = MEMBER + 1

@@ -20,9 +20,10 @@ from django.utils import timezone
 
 from . import agent, games, narrator
 from .base import ESTIMATE, RULE
-from .models import AiNote, ChatMessage, Game, GamePlayer, GameSpectator, ModelRun, Presence, display_name
+from .models import GUEST_MARK, AiNote, ChatMessage, Game, GamePlayer, GameSpectator, ModelRun, Presence, display_name
 
 MOVE_REF_RE = re.compile(r"第\s*(\d{1,3})\s*[手步](?!牌)")  # 撲克的「第 3 手牌」不是第 3 步
+WHOLE_GAME_RE = re.compile("策略|風格|習慣|整體|整盤|表現|打法|下法")  # 關於整盤的提問（AI 助理沒查完時的備用查法）
 
 
 def settings_of(game, seat=None):
@@ -268,7 +269,7 @@ def play_context(module):
                        "minSteps": agent.MIN_STEPS, "maxSteps": agent.MAX_STEPS, "stepWord": module.step_word,
                        "pickHumanSeats": module.pvp_pick_seats,
                        # 房主在房間大廳換遊戲用（2026-11-15）
-                       "games": [{"key": m.key, "name": m.name, "pickSeats": m.pvp_pick_seats}
+                       "games": [{"key": m.key, "name": m.name, "pickSeats": m.pvp_pick_seats, "seats": list(m.seat_names)}
                                  for m in games.GAMES.values()]}}
 
 
@@ -314,7 +315,7 @@ def change_room(module, game, user, seat, settings):
     """房主在房間裡改設定或換遊戲（2026-11-08 先開房、等人時能改；2026-11-15 使用者要求「房主可以自由選擇」：
     朋友坐下後也能改，也能換別的遊戲）。module 是改完的遊戲（換遊戲時和 game.game_type 不同）。
     同一個房間（編號、房間密碼不變），設定、座位、撲克的洗牌種子換成新的，回傳 (對局, 開局畫面)。
-    座位照新的設定重排：房主坐 seat，其他已經坐下的人依原本的座位順序坐進剩下的真人座位，坐不下的改成觀戰。
+    座位照新的設定重排：房主坐 seat，其他已經坐下的人留在原本的座位號碼（2026-11-22），沒有那個座位才依序坐進剩下的真人座位，坐不下的改成觀戰。
     只在按「開始」之前（_lobby）。"""
     if not game.pvp or game.owner_id != user.id:
         raise ValueError("只有房主能改房間設定")
@@ -330,7 +331,7 @@ def change_room(module, game, user, seat, settings):
             return game, module.frame(module.replay(settings_of(game), game.actions), seat)
         # 觀戰中的房主（2026-11-18）改完設定照樣觀戰；從撲克開放牌桌換過來時照舊坐 seat（牌桌的房主預設在觀戰席）
         watching = not open_table(game) and game.seat_of(user) is None
-        friends = [p.user for p in game.players.exclude(user=user).filter(user__isnull=False).select_related("user")]
+        friends = [(p.seat, p.user) for p in game.players.exclude(user=user).filter(user__isnull=False).select_related("user")]
         ai_seats = [p.seat for p in game.players.filter(ai=True)]  # 房主請 AI 坐的座位（2026-11-18）改設定後照樣由 AI 坐
         game.players.all().delete()
         if not watching:
@@ -342,11 +343,22 @@ def change_room(module, game, user, seat, settings):
         game.players.filter(seat__in=ai_seats, user__isnull=True).update(ai=True)
         if not game.players.filter(ai=False).exists():  # 不能全是 AI：留一個座位給真人
             game.players.filter(seat=max(ai_seats)).update(ai=False)
-        free = list(game.players.filter(user__isnull=True, ai=False).order_by("seat"))
-        for place, friend in zip(free, friends):
+        # 每個人先回到原本的座位號碼（2026-11-22 使用者決定：換遊戲、改設定不對調先後手；四種棋的 1 號位都是先手），
+        # 那個座位沒有了或被佔了（例如從撲克牌桌換過來，座位是成員代號）才依序坐進剩下的座位，坐不下的改成觀戰
+        free = {p.seat: p for p in game.players.filter(user__isnull=True, ai=False)}
+        later = []
+        for old_seat, friend in friends:
+            place = free.pop(old_seat, None)
+            if place is None:
+                later.append(friend)
+                continue
             place.user, place.joined_at = friend, timezone.now()
             place.save()
-        for friend in friends[len(free):]:
+        rest = [free[s] for s in sorted(free)]
+        for place, friend in zip(rest, later):
+            place.user, place.joined_at = friend, timezone.now()
+            place.save()
+        for friend in later[len(rest):]:
             GameSpectator.objects.get_or_create(game=game, user=friend)
     return game, module.frame(module.new_state(settings_of(game)), None if watching else seat)
 
@@ -430,13 +442,13 @@ def _lobby(game):
 
 def _member(game, name):
     """房間裡（坐在座位上或觀戰中）叫這個使用者名稱的帳號；不在房間裡時丟出 ValueError。
-    用使用者名稱找（網頁只知道名稱，不知道別人的帳號）；名稱不會重複（Profile.name 唯一），所以不會找錯人。"""
-    player = game.players.filter(user__profile__name=name).select_related("user").first()
-    if player:
-        return player.user
-    spectator = game.spectators.filter(user__profile__name=name).select_related("user").first()
-    if spectator:
-        return spectator.user
+    用使用者名稱找（網頁只知道名稱，不知道別人的帳號）；名稱不會重複（Profile.name 唯一），所以不會找錯人。
+    網頁送來的是畫面上的名稱（遊客多了「（遊客）」），所以比對 display_name。"""
+    names = {name, name.removesuffix(GUEST_MARK)}
+    for rows in (game.players, game.spectators):
+        for row in rows.filter(user__profile__name__in=names).select_related("user__profile"):
+            if display_name(row.user) == name:
+                return row.user
     raise ValueError(f"{name} 不在這個房間裡")
 
 
@@ -1234,6 +1246,16 @@ def problem_points(module, game, seat):
     return points
 
 
+def overview_points(module, game, seat):
+    """提問用：整盤的總結。2026-11-27 使用者問「你認為我下棋的策略是什麼」，AI 只查了正在看的那一步，
+    回答「引擎目前無法判斷你的策略」。這裡給整體評論的事實（結果、問題檢查的統計、最常出現的問題、遊戲自己的統計）
+    加上這位玩家整盤下法的統計（module.style_points）。"""
+    coach_allowed(game)
+    moments = module.review(settings_of(game), game.actions, seat)
+    points = _overall(module, game, moments, seat)["points"]
+    return points + [{"evidence": e, "text": t} for e, t in module.style_points(settings_of(game), game.actions, seat)]
+
+
 def _steps_text(module, indexes):
     steps = [str(i + 1) for i in indexes]
     first = f"第一次在第 {steps[0]} {module.step_word}"
@@ -1343,16 +1365,17 @@ def _ai_note_points(module, game, n, points):
 def ask_points_by_rules(module, game, question, at, seat):
     """原本的做法：用正規表示式從問題找出座標與「第 N 手」，再查那些事實。"""
     points = position_points(module, game, at, module.question_focus(question), seat)
-    if module.outcome(module.replay(settings_of(game), game.actions[:at])):
-        return points
-    # 玩家常用「第 N 手」（撲克「第 N 步」）指稱；第 at+1 步就是上面的「實際下一步」，不重複
+    # 玩家常用「第 N 手」（撲克「第 N 步」）指稱；第 at+1 步就是上面的「實際下一步」，不重複。
+    # 終局也要查（2026-11-22）：復盤預設停在最後局面，原本這時直接回傳，問「第 7 手為什麼不好」只拿到終局事實
     refs = []
     for s in MOVE_REF_RE.findall(question):
         n = int(s)
         if 1 <= n <= len(game.actions) and n != at + 1 and n not in refs:
             refs.append(n)
     for n in refs[:2]:
-        points += action_points(module, game, n, seat)
+        points += [p for p in action_points(module, game, n, seat) if p not in points]  # 認輸那一步終局已附上
+    if WHOLE_GAME_RE.search(question):
+        points += [p for p in overview_points(module, game, seat) if p not in points]
     return points
 
 

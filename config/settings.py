@@ -92,29 +92,36 @@ STOCKFISH = {
 # 存在 config/local.json（tools/launch.py）。伺服器換位址時改 private/settings.json；暫時改用別台就設環境變數 OLLAMA_URL。
 # 都沒有時才用這台電腦的 Ollama。
 OLLAMA_URL = local.get('OLLAMA_URL', 'http://127.0.0.1:11434')
-# {主機: 代稱}：測速檔用代稱命名（narrator.benchmark_file），公開的儲存庫裡才不會露出伺服器位址
-OLLAMA_SERVER_NAMES = local.get('OLLAMA_SERVER_NAMES', {})
-OLLAMA_MODEL = os.environ.get('OLLAMA_MODEL', 'gemma4:26b')  # 研究用伺服器上測得最快最穩（2026-10-14 使用者決定）
-OLLAMA_TIMEOUT = 120  # 秒；模型第一次載入約需 40 秒
-# 建立連線最多等幾秒（arena/narrator.py::_QuickConnection）：伺服器不在時不必等 Windows 預設的約 21 秒
-OLLAMA_CONNECT_TIMEOUT = 3
-# 每個 Ollama 請求的上下文長度（options.num_ctx）。不指定時 Ollama 用伺服器預設值，可能開得非常大，
-# 共用伺服器的記憶體會被吃光而當掉（gemma4:31b 曾載入後佔約 100 GB）。所以每個請求都要明確帶這個值。
-OLLAMA_NUM_CTX = int(os.environ.get('OLLAMA_NUM_CTX', '8192'))
-OLLAMA_RETRY_AFTER = 180  # 秒；呼叫 Ollama 連不上或逾時後，這段時間內直接由引擎代下，不再每一步都等到逾時
+OLLAMA_TIMEOUT = 180  # 秒；模型第一次載入可能超過 1 分鐘，借用的 5080 一次只處理一個請求，還要排隊（2026-11-27）
 if sys.argv[1:2] == ['test']:
     # 測試絕不能連到共用的研究用伺服器：所有請求（包括頁面，2026-10-28 起每個請求都會呼叫 AI 助理）都改送到
     # 不存在的位址，立刻失敗而走原本的程式；要測模型的回應時，測試自己 patch。
+    # 伺服器自己的設定（下面的 _server）因此也不套用，測試照預設值跑。
     OLLAMA_URL, OLLAMA_TIMEOUT = 'http://127.0.0.1:9', 2
-# 模型閒置多久後由 Ollama 卸載；啟動對戰平台-本機AI.bat 設成 2m，讓本機的顯示卡記憶體盡快釋放
-OLLAMA_KEEP_ALIVE = os.environ.get('OLLAMA_KEEP_ALIVE', '30m')
+# {主機: 代稱}：測速檔用代稱命名（narrator.benchmark_file），公開的儲存庫裡才不會露出伺服器位址
+OLLAMA_SERVER_NAMES = local.get('OLLAMA_SERVER_NAMES', {})
+# 這台伺服器自己的設定（private/settings.json 的 OLLAMA_SERVER_SETTINGS，以主機為鍵；config/local.py::server_settings）。
+# 沒有設定的伺服器（研究用伺服器、本機）用下面的預設值。
+_server = local.server_settings(OLLAMA_URL)
+OLLAMA_MODEL = os.environ.get('OLLAMA_MODEL', _server.get('model', 'gemma4:26b'))  # 研究用伺服器上測得最快最穩（2026-10-14 使用者決定）
+# 建立連線最多等幾秒（arena/narrator.py::_QuickConnection）：伺服器不在時不必等 Windows 預設的約 21 秒
+OLLAMA_CONNECT_TIMEOUT = 3
+# 每個 Ollama 請求的上下文長度（options.num_ctx，narrator.chat 加上）。不指定時 Ollama 用伺服器預設值，可能開得非常大，
+# 研究用伺服器的記憶體會被吃光而當掉（gemma4:31b 曾載入後佔約 100 GB），所以預設每個請求都明確帶這個值。
+# None 表示不送：借用的 5080 已把模型固定成 16384，自己設定會蓋過它，並讓模型對所有人重新載入（2026-11-27）。
+OLLAMA_NUM_CTX = int(os.environ['OLLAMA_NUM_CTX']) if 'OLLAMA_NUM_CTX' in os.environ else _server.get('num_ctx', 8192)
+OLLAMA_RETRY_AFTER = 180  # 秒；呼叫 Ollama 連不上或逾時後，這段時間內直接由引擎代下，不再每一步都等到逾時
+# 模型閒置多久後由 Ollama 卸載；啟動對戰平台-本機AI.bat 設成 2m，讓本機的顯示卡記憶體盡快釋放。
+# None 表示不送、用伺服器的預設值，測速也不卸載模型（5080 不能動別人在用的模型，2026-11-27）。
+OLLAMA_KEEP_ALIVE = os.environ.get('OLLAMA_KEEP_ALIVE', _server.get('keep_alive', '30m'))
 # 使用者可選的 AI 模型（Agent 下棋與說明），依智慧程度由高到低排列（依參數量與世代估計，不是實測）。
 # think：是否開啟思考模式（只能思考的模型要開，回答才不會混入推理過程）。目前清單裡沒有這種模型。
 # agent：能否擔任 Agent 棋手（要能呼叫工具、速度可接受）。
 # 每個模型的實測速度由 `manage.py benchmark_models` 寫入 arena/ 下目前伺服器的測速檔（narrator.benchmark_file）。
 # 都是研究用伺服器上可呼叫工具的模型（2026-10-11 確認）；只在原開發機本機的 gemma4:latest
 # 與兩種 qwen3:4b 已在 2026-10-14 移除。
-OLLAMA_MODELS = [
+# 伺服器自己的設定有 models 時改用那份清單：5080 只能用一個對話模型，呼叫別的會把它擠出顯示記憶體（2026-11-27）。
+OLLAMA_MODELS = _server.get('models') or [
     {'name': 'gemma4:31b', 'label': 'Gemma 4 31B', 'think': False, 'agent': True},
     {'name': 'batiai/gemma4-26b:q6', 'label': 'Gemma 4 26B Q6（社群版）', 'think': False, 'agent': True},
     {'name': 'gemma4:26b', 'label': 'Gemma 4 26B', 'think': False, 'agent': True},
@@ -157,6 +164,7 @@ TEMPLATES = [
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
                 'arena.context_processors.active_room',  # 每一頁頂端的「回到房間」（2026-11-13）
+                'arena.context_processors.viewer_name',  # 頂端與 play.html 的自己名稱，和別人看到的一樣（遊客加「（遊客）」）
             ],
         },
     },

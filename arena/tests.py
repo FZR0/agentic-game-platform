@@ -29,7 +29,7 @@ from weiqi.module import MODULE as WEIQI
 from . import agent, games, health, narrator, operations, orchestrator
 from .base import ESTIMATE
 from .management.commands.model_report import summarize
-from .models import AiNote, ChatMessage, Game, GamePlayer, LoginRecord, ModelRun, Presence, Profile
+from .models import AiNote, ChatMessage, Game, GamePlayer, LoginRecord, ModelRun, Presence, Profile, display_name
 
 
 class AdminClient(Client):
@@ -79,7 +79,18 @@ class NarrationCheckTests(SimpleTestCase):
         self.assertIsNotNone(narrator.check_text("H9 一定是最好的一手。", self.FACTS, GOMOKU.coord_re))
 
     def test_accepts_faithful_text(self):
-        self.assertIsNone(narrator.check_text("依引擎估計，我下在 H9 是為了形成橫向活三。", self.FACTS, GOMOKU.coord_re))
+        self.assertIsNone(narrator.check_text("大致來看，我下在 H9 是為了形成橫向活三。", self.FACTS, GOMOKU.coord_re))
+
+    def test_quoting_the_engine_is_not_a_reason(self):
+        # 2026-11-27 使用者：「AI 後期的下棋和問題檢查都說依照引擎，看起來只是在抄引擎給的思路，而非 AI 在思考」。
+        # 第 295 盤後半盤 AI 每手都寫「根據引擎評估，O2 是目前最好的候選點」。說明要講局面上的理由，
+        # 提到引擎就不採用（改顯示畫面上已換成白話的事實）；提示也不再要求寫「依引擎估計」
+        for text in ("根據引擎評估，H9 是目前最好的候選點。", "依引擎估計，我下在 H9 是為了形成橫向活三。"):
+            self.assertIsNotNone(narrator.check_text(text, self.FACTS, GOMOKU.coord_re), text)
+        prompt = narrator.request_body(self.FACTS, narrator.model_config(), "五子棋")["messages"][0]["content"]
+        self.assertNotIn("依引擎估計", prompt)
+        self.assertIn("不要提到引擎", prompt)
+        self.assertIn("大致來看", prompt)
 
     def test_the_solved_wording_needs_a_solved_fact(self):
         # 2026-11-16 情境測試：約 9% 的說明把「在搜尋範圍內已確認」寫在條件式計算或引擎估計上
@@ -107,7 +118,7 @@ class NarrationCheckTests(SimpleTestCase):
     def test_a_hedge_is_not_a_certainty(self):
         # 2026-11-16 情境測試：對手觀察的建議寫「他不一定找得到殺法」，模型照著說卻被當成「一定」擋下。
         # 「不一定」正是估計該有的保留說法；「一定」照樣要擋
-        self.assertIsNone(narrator.check_text("依引擎估計，H9 不一定是最好的一手。", self.FACTS, GOMOKU.coord_re))
+        self.assertIsNone(narrator.check_text("大致來看，H9 不一定是最好的一手。", self.FACTS, GOMOKU.coord_re))
         self.assertIsNotNone(narrator.check_text("H9 不錯，一定能贏。", self.FACTS, GOMOKU.coord_re))
 
     def test_thinking_only_model_is_called_with_thinking_on(self):
@@ -296,6 +307,50 @@ class NumCtxTests(SimpleTestCase):
 
     def test_default_is_8192(self):
         self.assertEqual(settings.OLLAMA_NUM_CTX, 8192)  # 沒設環境變數 OLLAMA_NUM_CTX 時
+
+    @override_settings(OLLAMA_NUM_CTX=None, OLLAMA_KEEP_ALIVE=None)
+    def test_servers_with_a_fixed_setup_get_neither_num_ctx_nor_keep_alive(self):
+        # 借用的 5080（2026-11-27）把上下文固定成 16384：送 num_ctx 會蓋過它並讓模型對所有人重新載入，
+        # keep_alive 也要用伺服器的預設值。三種請求都不能帶，取樣參數照送
+        for run in (lambda: narrator._ask_ollama(self.FACTS, narrator.model_config(), GOMOKU.name),
+                    lambda: agent._chat([], narrator.model_config(), []),
+                    lambda: orchestrator._chat([], [])):
+            body = self.sent_bodies(run)[0]
+            self.assertNotIn("num_ctx", body["options"])
+            self.assertNotIn("keep_alive", body)
+            self.assertIn("temperature", body["options"])
+
+    @override_settings(OLLAMA_KEEP_ALIVE=None)
+    def test_benchmark_never_unloads_the_shared_model_on_such_servers(self):
+        # 那台只有一個對話模型，卸載它等於讓正在用的人重新等載入
+        from .management.commands import benchmark_models
+        sent = self.sent_bodies(lambda: self.assertTrue(benchmark_models._unload("qwen3:8b")))
+        self.assertEqual(sent, [])
+
+
+class ServerSettingsTests(SimpleTestCase):
+    # 暫時借用 5080 時只有它要用自己的模型清單與參數；換回研究用伺服器（只改 OLLAMA_URL）時要自動回到預設
+    def test_settings_apply_only_to_their_own_host(self):
+        from config import local
+        with tempfile.TemporaryDirectory() as tmp:
+            private = Path(tmp) / "private.json"
+            private.write_text(json.dumps({"OLLAMA_SERVER_SETTINGS": {"192.0.2.20": {"num_ctx": None}}}),
+                               encoding="utf-8")
+            with patch.object(local, "PRIVATE_FILE", private), patch.object(local, "LOCAL_FILE", Path(tmp) / "x"):
+                self.assertEqual(local.server_settings("http://192.0.2.20:11434"), {"num_ctx": None})
+                self.assertEqual(local.server_settings("http://192.0.2.10:11434"), {})
+                self.assertEqual(local.server_settings("http://127.0.0.1:11434"), {})
+
+    def test_a_server_known_only_by_its_alias_stays_secret(self):
+        # 改用 5080 後，研究用伺服器的位址只剩 OLLAMA_SERVER_NAMES 裡有；存檔前的檢查仍要擋下它
+        from config import local
+        from tools import git_menu
+        with tempfile.TemporaryDirectory() as tmp:
+            private = Path(tmp) / "private.json"
+            private.write_text(json.dumps({"OLLAMA_URL": "http://192.0.2.20:11434", "OLLAMA_SERVER_NAMES": {
+                "192.0.2.10": "research", "192.0.2.20": "5080"}}), encoding="utf-8")
+            with patch.object(local, "PRIVATE_FILE", private), patch.object(local, "LOCAL_FILE", Path(tmp) / "x"):
+                self.assertEqual(sorted(git_menu.secret_values()), ["192.0.2.10", "192.0.2.20"])
 
 
 class TunnelProtocolTests(SimpleTestCase):
@@ -826,6 +881,18 @@ class RequestAgentTests(TestCase):
         self.assertEqual(r["handled"]["by"], "fallback")
         self.assertEqual(r["facts"]["points"], operations.ask_points_by_rules(GOMOKU, game, "第 1 手好嗎？", 3, 1))
 
+    def test_fallback_answers_about_the_named_move_after_the_game_ended(self):
+        # 2026-11-22 例行檢查：復盤預設停在最後局面，AI 連不上時問「第 3 手為什麼不好？」，
+        # 補上的事實只有終局與認輸前的局面，完全沒有第 3 手，答非所問。結束的局面也要照問題裡的「第 N 手」去查
+        game = Game.objects.create(game_type="gomoku", human_seat=1, actions=["H8", "H9", "I8", "I9", "resign"],
+                                   winner=2)
+        points = operations.ask_points_by_rules(GOMOKU, game, "第 3 手為什麼不好？", 5, 1)
+        for p in operations.action_points(GOMOKU, game, 3, 1):
+            self.assertIn(p, points)
+        # 問的是認輸那一步時，終局事實已經附上認輸前的局面，不要重複
+        points = operations.ask_points_by_rules(GOMOKU, game, "第 5 手為什麼認輸？", 5, 1)
+        self.assertEqual(len(points), len({p["text"] for p in points}))
+
     def test_a_question_cannot_look_up_every_step(self):
         # 2026-11-19 情境測試：問「我哪一步最差」時，AI 助理一次查了每一步（14 到 35 次），事實多到 30–90 則，
         # 等 40–240 秒，還讓研究用伺服器的模型出錯一次。一次提問最多查 MAX_ACTION_QUERIES 步，其餘不執行
@@ -859,6 +926,23 @@ class RequestAgentTests(TestCase):
         self.assertEqual([t.split("：")[1].split("（")[0] for t in ranked[1:]], ["第 6 手", "第 5 手", "第 3 手", "第 1 手"])
         # 整體評論列出的三步也是最嚴重的三步，不是最早的三步
         self.assertIn("「目數損失」4 次（第 6 手、第 5 手、第 3 手）", " ".join(p["text"] for p in overall["points"]))
+
+    def test_strategy_questions_get_the_whole_game(self):
+        # 2026-11-27 使用者問「你認為我下棋的策略是甚麼」，AI 只查了正在看的那一步，回答「引擎目前無法判斷你的策略」。
+        # game_overview 給整體評論的事實加上整盤下法的統計；AI 助理沒查完時，備用的查法看到「策略」也要給
+        game = Game.objects.create(game_type="gomoku", human_seat=1, actions=["H8", "H9", "I8", "I9", "J8", "J9"])
+        question = "你認為我下棋的策略是甚麼"
+        style = "你（黑棋）這盤下了 3 手：自己形成活三以上的進攻手 1 手"
+        with patch("arena.orchestrator._chat", side_effect=scripted([("game_overview", {})])), \
+                patch("arena.narrator._ask_ollama", return_value="重點：還可以。\n說明：開局常見。"):
+            r = self.post(f"/api/gomoku/games/{game.id}/ask/", {"question": question, "at": 2}).json()
+        texts = " ".join(p["text"] for p in r["facts"]["points"])
+        self.assertIn("這盤一共 6 手", texts)
+        self.assertIn(style, texts)
+        with patch("arena.orchestrator._chat", side_effect=OSError("timed out")), \
+                patch("arena.narrator._ask_ollama", return_value="重點：還可以。\n說明：開局常見。"):
+            r = self.post(f"/api/gomoku/games/{game.id}/ask/", {"question": question, "at": 2}).json()
+        self.assertIn(style, " ".join(p["text"] for p in r["facts"]["points"]))
 
     def test_asking_about_an_ai_move_shows_what_the_ai_looked_up(self):
         # 2026-11-19 情境測試：撲克問「AI 第 23 手的想法」只拿到「它跟注了」一則，答不出 AI 用了什麼假設。
@@ -2069,7 +2153,8 @@ class GuestTests(TestCase):
 
     def enter_as_guest(self, client=None, **extra):
         client = client or Client()
-        response = client.post("/accounts/guest/", extra.pop("data", {}), REMOTE_ADDR="203.0.113.40", **extra)
+        data = {"name": "小遊", **extra.pop("data", {})}
+        response = client.post("/accounts/guest/", data, REMOTE_ADDR="203.0.113.40", **extra)
         return client, response, User.objects.get(pk=client.session["_auth_user_id"])
 
     def test_a_guest_is_a_logged_in_account_without_a_password(self):
@@ -2083,7 +2168,7 @@ class GuestTests(TestCase):
     def test_an_invite_link_still_leads_to_the_join_page(self):
         _, response, _ = self.enter_as_guest(data={"next": "/join/ABCDEF/"})
         self.assertRedirects(response, "/join/ABCDEF/", fetch_redirect_response=False)
-        _, response, _ = self.enter_as_guest(data={"next": "https://evil.example.com/"})
+        _, response, _ = self.enter_as_guest(data={"name": "小遊二", "next": "https://evil.example.com/"})
         self.assertRedirects(response, "/", fetch_redirect_response=False)
 
     def test_guests_can_play_and_join_pvp_like_accounts(self):
@@ -2146,7 +2231,8 @@ class AccountNameTests(TestCase):
     """帳號的三個欄位（使用者要求，2026-11-20：「帳號類別要有三個 一個是使用者名稱 一個是帳號 一個是密碼」）。
     帳號只用來登入，使用者名稱是別人在畫面上看到的；分開之後，房間裡的對手、觀戰的人、房間列表都只看到名稱，
     猜不到你登入用的帳號。使用者決定：名稱不能和別人重複（房間的換座位、請人離開、轉讓房主用名稱找人，也不能冒充別人）、
-    只用帳號登入、舊帳號的名稱沿用帳號、遊客的帳號和名稱都是「遊客-XXXXXX」。"""
+    只用帳號登入、舊帳號的名稱沿用帳號。遊客的帳號是「遊客-XXXXXX」，名稱原本也是，2026-11-27 起要自己取，
+    別人看到時後面加「（遊客）」（使用者決定）。"""
 
     def setUp(self):
         for patcher in (patch.object(orchestrator, "_chat", side_effect=OSError("測試不連模型")),
@@ -2252,27 +2338,86 @@ class AccountNameTests(TestCase):
         admin = User.objects.create_superuser("boss")
         self.assertEqual(admin.profile.name, "boss-2")
 
-    def test_a_guest_is_named_like_its_account_and_may_keep_that_name(self):
-        client = Client()
-        client.post("/accounts/guest/")
+    def test_a_guest_must_pick_a_name_before_entering(self):
+        # 使用者決定（2026-11-27）：遊客也要寫名稱，原本房間裡全是「遊客-XXXXXX」分不出誰是誰。
+        # 沒填或和別人重複就不建立帳號，留在登入頁說明原因，邀請連結的去處也要留著，改好名稱再按就能到
+        sign_up(Client(), "carol01", "小卡")
+        for name, reason in (("", "這個欄位是必須的"), ("小卡", "這個使用者名稱已經有人用了"),
+                             ("阿明（遊客）", "不能用「（遊客）」結尾")):
+            client = Client()
+            response = client.post("/accounts/guest/", {"name": name, "next": "/join/ABCDEF/"})
+            self.assertContains(response, reason)
+            self.assertContains(response, 'name="next" value="/join/ABCDEF/"')
+            self.assertNotIn("_auth_user_id", client.session)
+        self.assertEqual(User.objects.count(), 1)
+        response = client.post("/accounts/guest/", {"name": "阿明", "next": "/join/ABCDEF/"})
+        self.assertRedirects(response, "/join/ABCDEF/", fetch_redirect_response=False)
         guest = User.objects.get(pk=client.session["_auth_user_id"])
-        guest_name = guest.username
-        self.assertTrue(guest_name.startswith("遊客-"))
-        self.assertEqual(guest.profile.name, guest_name)
+        self.assertTrue(guest.username.startswith("遊客-"))  # 帳號仍是自動的，只有名稱是填的
+        self.assertEqual(guest.profile.name, "阿明")
+
+    def test_a_guest_name_taken_at_the_same_moment_saves_nothing(self):
+        # 表單檢查過了才被同時註冊的人搶走名稱：唯一索引擋下，不能留下一個名稱不對的遊客帳號
+        sign_up(Client(), "carol01", "小卡")
+        from . import accounts
+        with patch.object(accounts.GuestForm, "clean_name", lambda form: form.cleaned_data["name"]):
+            response = Client().post("/accounts/guest/", {"name": "小卡"})
+        self.assertContains(response, "這個使用者名稱已經有人用了")
+        self.assertEqual(User.objects.count(), 1)
+
+    def test_others_see_a_guest_marked_until_it_upgrades(self):
+        # 使用者決定：遊客的名稱後面加「（遊客）」，別人看得出是沒有密碼的暫時帳號；升級後就不加。
+        # 網頁拿畫面上的名稱來請人離開，所以加了標記的名稱也要找得到人；正式帳號也不能取一個看起來一樣的名稱
+        alice = User.objects.create_user("login-alice", password="x")
+        Profile.objects.filter(user=alice).update(name="愛麗絲")
+        guest_client = Client()
+        guest_client.post("/accounts/guest/", {"name": "阿明"})
+        guest = User.objects.get(pk=guest_client.session["_auth_user_id"])
+        game, _ = operations.start_game(GOMOKU, 1, {}, alice, "pvp")
+        operations.join_game(game.room_code, guest)
+        host = Client()
+        host.force_login(alice)
+        url = f"/api/gomoku/games/{game.id}"
+        self.assertEqual(host.get(f"{url}/").json()["game"]["players"], {"1": "愛麗絲", "2": "阿明（遊客）"})
+        self.assertContains(guest_client.get("/"), '<span class="account-name">阿明（遊客）</span>')
+        page = guest_client.get(f"/gomoku/?resume={game.id}").content.decode()  # app.js 用它和玩家列表比對標出「你」
+        self.assertIn(f'<script id="viewer-name" type="application/json">{json.dumps("阿明（遊客）")}</script>', page)
+        self.assertContains(sign_up(Client(), "mallory", "阿明（遊客）"), "不能用「（遊客）」結尾")
+        # 升級頁先填好的是取的名稱本身，不是加了標記的；升級後不再標成遊客
+        upgrade_page = guest_client.get("/accounts/upgrade/").content.decode()
+        self.assertIn('value="阿明"', upgrade_page.split('name="name"')[1].split(">")[0])
+        guest_client.post("/accounts/upgrade/", {"username": "ming", "name": "阿明",
+                                                 "password1": "a-Long-pass-88", "password2": "a-Long-pass-88"})
+        self.assertEqual(host.get(f"{url}/").json()["game"]["players"]["2"], "阿明")
+        # 還是遊客時用畫面上的名稱請他離開
+        other = Client()
+        other.post("/accounts/guest/", {"name": "小華"})
+        operations.watch_game(game.room_code, User.objects.get(pk=other.session["_auth_user_id"]))
+        kick = host.post(f"{url}/kick/", json.dumps({"player": "小華（遊客）"}), content_type="application/json")
+        self.assertEqual(kick.status_code, 200)
+        self.assertEqual(host.get(f"{url}/").json()["game"]["spectators"], [])
+
+    def test_old_guests_keep_their_name_without_a_second_mark(self):
+        # 2026-11-27 以前的遊客名稱就是「遊客-XXXXXX」，再加「（遊客）」只是重複
+        old = User.objects.create_user("遊客-ABC234")
+        self.assertEqual(display_name(old), "遊客-ABC234")
+
+    def test_a_guest_may_keep_its_name_when_upgrading(self):
+        client = Client()
+        client.post("/accounts/guest/", {"name": "阿明"})
+        guest = User.objects.get(pk=client.session["_auth_user_id"])
         # 升級頁：帳號欄空白，使用者名稱先填好遊客名稱；不改名稱直接送出也行（不算和自己重複）
-        page = client.get("/accounts/upgrade/").content.decode()
-        self.assertIn(f'value="{guest_name}"', page.split('name="name"')[1].split(">")[0])
-        response = client.post("/accounts/upgrade/", {"username": "dora", "name": guest_name,
+        response = client.post("/accounts/upgrade/", {"username": "dora", "name": "阿明",
                                                       "password1": "a-Long-pass-88", "password2": "a-Long-pass-88"})
         self.assertRedirects(response, "/", fetch_redirect_response=False)
         guest = User.objects.get(pk=guest.pk)
-        self.assertEqual((guest.username, guest.profile.name), ("dora", guest_name))
+        self.assertEqual((guest.username, guest.profile.name), ("dora", "阿明"))
         self.assertTrue(guest.has_usable_password())
 
     def test_a_guest_cannot_upgrade_to_someone_elses_name_and_stays_a_guest(self):
         sign_up(Client(), "carol01", "小卡")
         client = Client()
-        client.post("/accounts/guest/")
+        client.post("/accounts/guest/", {"name": "阿明"})
         guest = User.objects.get(pk=client.session["_auth_user_id"])
         response = client.post("/accounts/upgrade/", {"username": "dora", "name": "小卡",
                                                       "password1": "a-Long-pass-88", "password2": "a-Long-pass-88"})
@@ -2341,10 +2486,10 @@ class ExpiredFormTests(TestCase):
     def test_a_second_press_after_logging_in_gets_a_plain_explanation(self):
         login_page = self.client.get("/accounts/login/")
         old_token = str(login_page.context["csrf_token"])
-        self.client.post("/accounts/guest/", {"csrfmiddlewaretoken": old_token})
+        self.client.post("/accounts/guest/", {"csrfmiddlewaretoken": old_token, "name": "小遊"})
         self.assertEqual(User.objects.count(), 1)
         with self.assertLogs("django.security.csrf", "WARNING") as logs:  # 原因寫進網站紀錄，才查得到
-            again = self.client.post("/accounts/guest/", {"csrfmiddlewaretoken": old_token},
+            again = self.client.post("/accounts/guest/", {"csrfmiddlewaretoken": old_token, "name": "小遊二"},
                                      HTTP_REFERER="http://testserver/accounts/login/")
         self.assertEqual(again.status_code, 403)
         self.assertEqual(User.objects.count(), 1)  # 照樣擋下：沒有多建一個帳號
@@ -2833,6 +2978,15 @@ class RoomChatTests(RefusalAssertions, TestCase):
             self.assertEqual(self.say("bob", "字" * (ChatMessage.MAX_LENGTH + 1)).status_code, 400)
         self.assertFalse(ChatMessage.objects.exists())
 
+    def test_message_time_is_sent_with_its_time_zone_so_the_page_shows_local_time(self):
+        # 2026-11-22 例行檢查：伺服器的 TIME_ZONE 是 UTC，原本送「14:30」這種只有時分的字串，
+        # 台灣的玩家晚上 10:30 說的話顯示成 14:30。改送帶時區的 ISO 時間，由瀏覽器換成看的人所在的時區
+        self.say("bob", "現在幾點")
+        sent = ChatMessage.objects.get().to_dict(self.users["bob"])
+        when = datetime.fromisoformat(sent["at"])
+        self.assertIsNotNone(when.tzinfo)
+        self.assertEqual(when, ChatMessage.objects.get().created_at)
+
     def test_after_the_game_the_chat_is_kept_but_read_only(self):
         self.say("bob", "請多指教")
         start_now(self.game)
@@ -3030,6 +3184,25 @@ class RoomLobbyTests(RefusalAssertions, TestCase):
         self.assertTrue(self.clients["carol"].get(f"{url}/").json()["is_owner"])
         self.assertFalse(self.clients["alice"].get(f"{url}/").json()["is_owner"])
 
+    def test_switching_games_keeps_everyone_in_their_seat(self):
+        # 2026-11-22 例行檢查、使用者決定「保留原本座位」：房主坐白棋、bob 坐黑棋時換成國際象棋，
+        # 原本房主一律被排到 1 號位、bob 被擠到 2 號位，兩人在大廳說好的先後手無聲對調。四種棋的 1 號位都是先手，
+        # 所以換遊戲、改設定後每個人留在原本的座位號碼
+        game = self.room()
+        url = f"/api/gomoku/games/{game.id}"
+        self.post("alice", f"{url}/seat/", {"player": "bob", "seat": 1})  # 交換：bob 黑棋、alice 白棋
+        self.assertEqual(self.seats(game), {1: "bob", 2: "alice"})
+        r = self.post("alice", f"{url}/room/", {"game_type": "chess", "seat": 2, "settings": {}})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.seats(game), {1: "bob", 2: "alice"})
+        self.assertEqual(r.json()["my_seat"], 2)
+        # 房主起身觀戰後改設定：坐著的 bob 也留在原本的座位，不會被移到空出來的 1 號位
+        self.post("alice", f"/api/chess/games/{game.id}/seat/", {"player": "bob", "seat": 2})
+        self.post("alice", f"/api/chess/games/{game.id}/seat/", {"seat": 0})
+        self.assertEqual(self.seats(game), {1: None, 2: "bob"})
+        self.post("alice", f"/api/chess/games/{game.id}/room/", {"game_type": "xiangqi", "seat": 1, "settings": {}})
+        self.assertEqual(self.seats(game), {1: None, 2: "bob"})
+
     def test_the_host_can_switch_games_and_whoever_does_not_fit_watches(self):
         # 換成撲克（2026-11-16 起是開放牌桌）：牌桌是空的，房間裡的人都到觀戰席，自己上桌
         from holdem.module import MODULE as HOLDEM
@@ -3071,14 +3244,14 @@ class RoomLobbyTests(RefusalAssertions, TestCase):
         self.assertEqual(sorted(game.summary()["spectators"]), ["alice", "carol"])
         detail = self.clients["alice"].get(f"{url}/").json()
         self.assertEqual((detail["my_seat"], detail["is_owner"], detail["game"]["owner"]), (None, True, "alice"))
-        # 觀戰中改設定：照樣觀戰，坐著的人照樣坐著
+        # 觀戰中改設定：照樣觀戰，坐著的人照樣坐在原本的座位（2026-11-22 使用者決定保留原本座位；原本會被移到 1 號位）
         r = self.post("alice", f"{url}/room/", {"seat": 1, "settings": {}})
         self.assertEqual((r.status_code, r.json()["my_seat"]), (200, None))
-        self.assertEqual(self.seats(game), {1: "bob", 2: None})
+        self.assertEqual(self.seats(game), {1: None, 2: "bob"})
         self.assertIn("alice", game.summary()["spectators"])
         # 觀戰中幫人換座位、把房主交給觀戰的人再拿回來
-        self.assertEqual(self.post("alice", f"{url}/seat/", {"player": "carol", "seat": 2}).status_code, 200)
-        self.assertEqual(self.seats(game), {1: "bob", 2: "carol"})
+        self.assertEqual(self.post("alice", f"{url}/seat/", {"player": "carol", "seat": 1}).status_code, 200)
+        self.assertEqual(self.seats(game), {1: "carol", 2: "bob"})
         self.assertEqual(self.post("alice", f"{url}/host/", {"player": "dave"}).status_code, 400)  # 不在房間裡
         operations.watch_game(game.room_code, self.users["dave"])
         self.assertEqual(self.post("alice", f"{url}/host/", {"player": "dave"}).status_code, 200)
@@ -3087,14 +3260,14 @@ class RoomLobbyTests(RefusalAssertions, TestCase):
         with patch.object(operations.time, "sleep"), patch.object(operations, "START_COUNTDOWN", 0):
             self.assertEqual(self.post("alice", f"{url}/start/").status_code, 200)
         self.assertEqual(self.post("alice", f"{url}/move/", {"action": "H8"}).status_code, 404)  # 觀戰不能下
-        r = self.post("bob", f"{url}/move/", {"action": "resign"})  # bob 執黑認輸，carol 贏
+        r = self.post("carol", f"{url}/move/", {"action": "resign"})  # carol 執黑認輸，bob 贏
         nxt = Game.objects.get(pk=r.json()["next_round"])
         game.refresh_from_db()
         # 這盤不是房主的：不列在他的對局紀錄、不進戰績、不能復盤；下一盤他照樣是觀戰的房主
         self.assertNotIn(game, operations._played_games(self.users["alice"]))
         self.assertEqual(self.clients["alice"].get(f"{url}/review/").status_code, 404)
         self.assertEqual(self.clients["bob"].get(f"{url}/review/").status_code, 200)
-        self.assertEqual((nxt.owner.username, self.seats(nxt)), ("alice", {1: "bob", 2: "carol"}))
+        self.assertEqual((nxt.owner.username, self.seats(nxt)), ("alice", {1: "carol", 2: "bob"}))
         self.assertIn("alice", nxt.summary()["spectators"])
         # 頂端的「回到房間」照樣帶房主回去
         self.assertEqual([r["id"] for r in operations.active_rooms(self.users["alice"])], [nxt.id])

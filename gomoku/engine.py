@@ -298,9 +298,35 @@ def point_value(board, x, y, color, rules=FREESTYLE):
     return attack + defense * 0.9
 
 
+def _windows(x, y, dx, dy):
+    """經過 (x, y)、方向 (dx, dy) 的每一段 5 格。"""
+    for start in range(-4, 1):
+        cells = [(x + (start + k) * dx, y + (start + k) * dy) for k in range(5)]
+        if all(0 <= a < SIZE and 0 <= b < SIZE for a, b in cells):
+            yield cells
+
+
+def five_open_at(board, x, y, color):
+    """還有沒有一段經過 (x, y)、只有 color 的棋子或空點的 5 格：沒有的話，color 再怎麼下都不會經過這裡連成五子。"""
+    return any(all(board[b][a] in (EMPTY, color) for a, b in cells)
+               for dx, dy in DIRS for cells in _windows(x, y, dx, dy))
+
+
+def dead_board_fact(board):
+    """黑白雙方在整個棋盤上都已經不可能連成五子時，寫成規則確認的事實；還有可能時回傳 None。
+    2026-11-27 使用者回報第 295 盤：第 190 手起雙方都連不成五，引擎仍把每個點寫成「延伸佈局」，
+    AI 只能說「根據引擎評估，O2 是最好的候選」，看起來只是在抄引擎。"""
+    empty = [(x, y) for y in range(SIZE) for x in range(SIZE) if board[y][x] == EMPTY]
+    if any(five_open_at(board, x, y, c) for x, y in empty for c in (BLACK, WHITE)):
+        return None
+    return (RULE, "棋盤上已經沒有任何一段能讓黑棋或白棋連成五子：這盤會是和局，接下來下在哪裡都不會改變結果。")
+
+
 def move_labels(board, x, y, color, rules=FREESTYLE):
     """把一手棋的作用寫成短句，例如「形成活三（橫向）」。"""
     opp = other(color)
+    if not five_open_at(board, x, y, color) and not five_open_at(board, x, y, opp):
+        return ["這裡雙方都已經連不成五子"]  # 棋形再好看也沒有用，不要寫成「延伸佈局」
     ban = forbidden(board, x, y, opp, rules)
     labels = []
     for name, mine, theirs in zip(DIR_NAMES, shapes_at(board, x, y, color), shapes_at(board, x, y, opp)):
@@ -613,6 +639,8 @@ def explain_position(board, focus=(), next_move=None, rules=FREESTYLE):
     points = [(RULE, f"目前輪到{me}下。")]
     if rules_fact(rules):
         points.append(rules_fact(rules))
+    if dead_board_fact(board):
+        points.append(dead_board_fact(board))
 
     decision = choose_move(board, color, rules)
     best = tuple(decision["move"])
@@ -709,6 +737,8 @@ def continuation(board, x, y, color, plies=CONTINUATION_PLIES, rules=FREESTYLE):
     line = []
     for _ in range(plies):
         name = COLOR_NAMES[side]
+        if not candidates(b, side, rules):
+            break  # 棋盤下滿了（快下滿時問「為什麼」，原本在這裡找不到點而出錯，2026-11-27）
         decision = choose_move(b, side, rules)
         mx, my = decision["move"]
         if makes_five(b, mx, my, side, rules):
@@ -734,6 +764,8 @@ def _move_facts(board, x, y, color, name, rules=FREESTYLE):
     points = [(RULE, f"{name}是{COLOR_NAMES[color]} {coord(x, y)}。")]
     if rules_fact(rules):
         points.append(rules_fact(rules))
+    if dead_board_fact(board):
+        points.append(dead_board_fact(board))
     m = judge_move(board, x, y, color, rules)
     if m:
         label = {"key": "關鍵時刻", "minor": "小失誤", "suggest": "建議"}[m["level"]]
@@ -745,6 +777,40 @@ def _move_facts(board, x, y, color, name, rules=FREESTYLE):
     if m and m.get("best") and tuple(m["best"]) != (x, y):  # 和引擎建議的下法比：各自下完之後怎麼發展
         points += continuation(board, *m["best"], color, rules=rules)
     return points
+
+
+def style_points(moves, color, rules=FREESTYLE):
+    """整盤下法的統計（提問「我的策略是什麼」用，2026-11-27）：color 的每一手是進攻（自己形成活三以上）
+    還是防守（擋住對方眠三以上），以及衝四、活三的次數。偏向哪邊由程式依次數判斷，模型只改寫。"""
+    board = new_board()
+    total = attack = defend = both = fours = threes = 0
+    for i, (x, y) in enumerate(moves):
+        mover = BLACK if i % 2 == 0 else WHITE
+        if mover == color:
+            mine = shapes_at(board, x, y, color)
+            ban = forbidden(board, x, y, other(color), rules)  # 對方本來就不能下的點不算擋
+            attacks = max(mine) >= OPEN_THREE
+            defends = not ban and max(shapes_at(board, x, y, other(color))) >= THREE
+            total += 1
+            attack += attacks
+            defend += defends
+            both += attacks and defends
+            fours += any(s in (FOUR, OPEN_FOUR) for s in mine)
+            threes += OPEN_THREE in mine
+        board[y][x] = mover
+    if not total:
+        return []
+    name = COLOR_NAMES[color]
+    if attack >= 3 and attack >= 2 * defend:
+        lean = "偏向進攻：形成自己棋形的手明顯比擋對方的多"
+    elif defend >= 3 and defend >= 2 * attack:
+        lean = "偏向防守：擋對方的手明顯比形成自己棋形的多"
+    else:
+        lean = "攻守都有，沒有明顯偏向哪一邊"
+    return [(RULE, f"你（{name}）這盤下了 {total} 手：自己形成活三以上的進攻手 {attack} 手，"
+                   f"擋住對方眠三以上的防守手 {defend} 手（其中 {both} 手同時做到），其餘 {total - attack - defend + both} 手兩者都不是。"),
+            (RULE, f"你下出衝四或活四 {fours} 次、活三 {threes} 次。"),
+            (ESTIMATE, f"依這些次數，你這盤的下法{lean}（進攻手至少是防守手的兩倍才算偏向進攻，反過來算偏向防守）。")]
 
 
 def review(moves, color, rules=FREESTYLE):

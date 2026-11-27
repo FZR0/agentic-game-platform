@@ -12,8 +12,6 @@ import json
 import logging
 import time
 
-from django.conf import settings
-
 from . import agent, games, narrator, operations, realtime
 from .models import ModelRun
 
@@ -50,9 +48,8 @@ def _same(got, want):
 
 def _chat(messages, tools, model=None):
     config = narrator.model_config(model)
-    body = {"model": config["name"], "stream": False, "think": config["think"], "keep_alive": settings.OLLAMA_KEEP_ALIVE,
-            "tools": tools, "messages": messages, "options": {"temperature": 0.1, "num_predict": 300,
-                                                            "num_ctx": settings.OLLAMA_NUM_CTX}}
+    body = {"model": config["name"], "stream": False, "think": config["think"],
+            "tools": tools, "messages": messages, "options": {"temperature": 0.1, "num_predict": 300}}
     return narrator.chat(body)["message"]
 
 
@@ -258,7 +255,9 @@ class Ask(Request):
              _tool("explain_action", f"查詢這盤棋第 n 步（從 1 起算）的分析；一次提問最多查 {MAX_ACTION_QUERIES} 步",
                    n=("integer", "第幾步")),
              _tool("list_problems", "列出問題檢查找到的使用者失誤，依嚴重程度排序（整盤一次查完）；"
-                                    "問「哪一步最差」「輸在哪裡」這類整盤的問題時用，不要逐步查")]
+                                    "問「哪一步最差」「輸在哪裡」這類整盤的問題時用，不要逐步查"),
+             _tool("game_overview", "整盤的總結：結果、問題檢查的統計、最常出現的問題，以及使用者整盤下法的統計"
+                                    "（例如進攻和防守各幾手）；問策略、風格、整體表現、習慣這類關於整盤的問題時用")]
 
     def task(self, ctx):
         p = ctx["params"]
@@ -267,7 +266,8 @@ class Ask(Request):
                 + (f"使用者是{side}，" if side else "")
                 + f"正在看第 {p['at']} 步之後的局面，問：「{p['question']}」。"
                 "請用工具查出回答這個問題需要的分析（可以查不只一項），查完回覆「完成」。"
-                f"整盤的問題（例如哪一步最差）先用 list_problems；explain_action 最多查 {MAX_ACTION_QUERIES} 步。")
+                f"整盤的問題（例如哪一步最差）先用 list_problems；問策略、風格、整體表現時用 game_overview；"
+                f"explain_action 最多查 {MAX_ACTION_QUERIES} 步。")
 
     def call(self, ctx, name, args):
         module, game, at, seat = ctx["module"], ctx["game"], ctx["params"]["at"], ctx["seat"]
@@ -277,6 +277,8 @@ class Ask(Request):
                                                     seat)
             elif name == "list_problems":
                 points = operations.problem_points(module, game, seat)
+            elif name == "game_overview":
+                points = operations.overview_points(module, game, seat)
             else:
                 if ctx.get("action_queries", 0) >= MAX_ACTION_QUERIES:
                     return (f"這次提問已經查了 {MAX_ACTION_QUERIES} 步，不再查更多，沒有執行。"

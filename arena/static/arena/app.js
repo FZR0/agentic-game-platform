@@ -432,6 +432,12 @@ function returnToRoom(nextId, lastResult) {
   returnTimer = setTimeout(async () => {
     returnTimer = null;
     await openGame(nextId, mode);
+    // 打不開（2026-11-22 例行檢查）：房主在撲克牌局中換遊戲時先結束牌局、馬上把下一盤換成別的遊戲，
+    // 這裡用撲克的網址讀不到那一盤（404），非房主停在「無法打開對局」。改用網址打開，伺服器（views._opening）轉到對的遊戲頁
+    if (state.gameId !== nextId) {
+      window.location.replace(`/${CONFIG.key}/?${mode}=${nextId}`);
+      return;
+    }
     showNotice(`${lastResult}這一盤可以到「對局紀錄」復盤。`);
   }, RETURN_DELAY_MS);
   updateButtons();
@@ -960,7 +966,10 @@ async function switchGame() {
       closeSocket(); // 結束牌局的推送會帶著頁面回到大廳；這裡自己接著換遊戲
       gameId = (await api(`games/${gameId}/end_table/`, {})).game.next_round ?? gameId;
     }
-    const data = await api(`games/${gameId}/room/`, { game_type: target.key, seat: 1, settings });
+    // 房主留在原本的座位號碼（2026-11-22 使用者決定；原本寫死 1 號位，坐白棋的房主換遊戲後和對方對調先後手）。
+    // 撲克牌桌上的座位和棋類的不是同一回事，從牌桌換過來、或新遊戲沒有這個座位時才坐 1 號位
+    const keep = !table && !isTable() && !state.watching && target.seats.includes(state.human);
+    const data = await api(`games/${gameId}/room/`, { game_type: target.key, seat: keep ? state.human : 1, settings });
     closeSocket();
     window.location.href = `/${target.key}/?resume=${data.game.id}`;
   } catch (err) {
@@ -1178,7 +1187,8 @@ function renderChat(messages) {
     li.classList.toggle("mine", m.mine);
     const meta = document.createElement("span");
     meta.className = "chat-meta";
-    meta.textContent = `${m.mine ? "你" : m.name}・${m.time}${started && m.room === "lobby" ? "・開始前" : ""}`;
+    const time = new Date(m.at).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+    meta.textContent = `${m.mine ? "你" : m.name}・${time}${started && m.room === "lobby" ? "・開始前" : ""}`;
     li.append(meta, m.text);
     return li;
   }));
@@ -1454,13 +1464,27 @@ function entry(headText, facts, placeholder = "說明產生中…") {
 
 // 伺服器存的紀錄是給研究用的（含連線錯誤訊息、檢查失敗的原因），畫面上換成白話；原文仍可在「查看電腦分析原文」展開
 const TAKEOVER_RE = /Agent 沒有完成這一手（[\s\S]*?），改由引擎代下。/g;
-const plainFacts = (text) => text.replace(TAKEOVER_RE, "AI 這一步沒有完成查證，改由電腦直接下。");
+// 事實原文保留研究用的「依引擎估計」等寫法（伺服器與「查看電腦分析原文」不變），說明與問題標題裡換成局面上的說法。
+// 2026-11-27 使用者：「AI 後期的下棋和問題檢查都說依照引擎，看起來只是在抄引擎給的思路」
+const PLAIN_WORDS = [
+  [TAKEOVER_RE, "AI 這一步沒有完成查證，改由電腦直接下。"],
+  [/依引擎估計(?:（[^）]*）)?[，,]?/g, "大致來看，"],
+  [/引擎候選（依評估由好到壞）/g, "候選點（由好到壞）"],
+  [/看引擎候選/g, "看候選點"],
+  [/建議：引擎推薦 /g, "建議：可以改下 "],
+  [/引擎(?:把|沒有在)/g, (m) => m.replace("引擎", "問題檢查")],
+  [/引擎的(?:最佳)?選擇/g, "最好的選擇"],
+  [/引擎會?(?=(?:比較|更)?(?:推薦|建議))/g, ""],
+  [/引擎/g, "電腦"],
+];
+const plainFacts = (text) => PLAIN_WORDS.reduce((t, [re, to]) => t.replace(re, to), text);
 
 function plainNote(note) {
   if (note.startsWith("Ollama 無法使用")) return "AI 說明暫時連不上";
   if (note.startsWith("模型提到事實中沒有的座標")) return "AI 的說明提到了分析裡沒有的位置，所以不採用";
   if (note.startsWith("只有引擎估計或條件式計算")) return "AI 的說明講得比分析更肯定，所以不採用";
   if (note.startsWith("沒有求解確認的事實")) return "AI 的說明講得比分析更肯定，所以不採用";
+  if (note.startsWith("模型提到了「引擎」")) return "AI 的說明沒有講出局面上的理由，所以不採用";
   return note;
 }
 
@@ -1621,7 +1645,7 @@ function renderMoments(moments, overall) {
     section.append(heading, hint, list);
     $("moments").append(section);
     for (const m of items) {
-      const li = entry(`第 ${m.index + 1} ${STEP} ${actionText(m.played)}：${m.title}`, m.facts);
+      const li = entry(`第 ${m.index + 1} ${STEP} ${actionText(m.played)}：${plainFacts(m.title)}`, m.facts);
       li.addEventListener("click", () => showMoment(m, li));
       list.append(li);
       // 關鍵時刻自動請 AI 說明；其他的數量可能很多，按了再請，免得排隊等很久
@@ -1667,7 +1691,7 @@ function renderOpponents(rivals) {
       signs.className = "entries moments opponent-signs";
       for (const sign of r.signs) {
         const item = document.createElement("li");
-        item.textContent = `第 ${sign.index + 1} ${STEP} ${actionText(sign.played)}：${sign.title}`;
+        item.textContent = `第 ${sign.index + 1} ${STEP} ${actionText(sign.played)}：${plainFacts(sign.title)}`;
         item.addEventListener("click", (event) => {
           event.stopPropagation();
           showMoment(sign, item);

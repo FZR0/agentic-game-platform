@@ -150,6 +150,11 @@ class GameModule:
         """整體評論用的遊戲統計（例如撲克的入池率）：[(證據種類, 文字)]；沒有就回傳空清單。"""
         return []
 
+    def style_points(self, settings, actions, human_seat):
+        """提問「我的策略、風格是什麼」用的整盤下法統計（例如五子棋的進攻手與防守手）：[(證據種類, 文字)]；
+        偏向的判斷由程式寫進事實，模型只改寫。沒有就回傳空清單（整體評論的事實照樣會給）。"""
+        return []
+
     def public_notes(self, state, notes):
         """AI 思路送到網頁前的過濾（3.3.1 問題 4）。撲克的思路含底牌，這手牌結束前要遮住。
         notes 是 [{"index", "seat", "facts", "narration", ...}]；遮住的要加 "hidden": True。"""

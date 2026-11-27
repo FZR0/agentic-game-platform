@@ -221,7 +221,7 @@ def _report(problem, model):
     else:
         lines += ["可能原因：", *[f"- {c}" for c in problem["causes"]]]
     lines.append(f"設定：逾時 {settings.OLLAMA_TIMEOUT} 秒、連不上後暫停 {settings.OLLAMA_RETRY_AFTER} 秒、"
-                 f"num_ctx {settings.OLLAMA_NUM_CTX}")
+                 f"num_ctx {settings.OLLAMA_NUM_CTX or '用伺服器的設定'}")
     return _redact("\n".join(lines))
 
 

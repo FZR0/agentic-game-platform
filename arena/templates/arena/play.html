@@ -243,7 +243,7 @@
 
   {{ config|json_script:"game-config" }}
   {# 登入的人的使用者名稱：房間成員裡標出「你」（觀戰的人沒有座位，只能靠名字認；2026-11-18） #}
-  {{ user.profile.name|default:user.username|json_script:"viewer-name" }}
+  {{ viewer_name|json_script:"viewer-name" }}
   <script src="{% static module.board_script %}?v={{ asset_version }}"></script>
   <script src="{% static 'arena/app.js' %}?v={{ asset_version }}"></script>
 </body>
