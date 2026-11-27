@@ -23,6 +23,7 @@ from .base import ESTIMATE, RULE
 from .models import AiNote, ChatMessage, Game, GamePlayer, GameSpectator, ModelRun, Presence, display_name
 
 MOVE_REF_RE = re.compile(r"第\s*(\d{1,3})\s*[手步](?!牌)")  # 撲克的「第 3 手牌」不是第 3 步
+WHOLE_GAME_RE = re.compile("策略|風格|習慣|整體|整盤|表現|打法|下法")  # 關於整盤的提問（AI 助理沒查完時的備用查法）
 
 
 def settings_of(game, seat=None):
@@ -1245,6 +1246,16 @@ def problem_points(module, game, seat):
     return points
 
 
+def overview_points(module, game, seat):
+    """提問用：整盤的總結。2026-11-27 使用者問「你認為我下棋的策略是什麼」，AI 只查了正在看的那一步，
+    回答「引擎目前無法判斷你的策略」。這裡給整體評論的事實（結果、問題檢查的統計、最常出現的問題、遊戲自己的統計）
+    加上這位玩家整盤下法的統計（module.style_points）。"""
+    coach_allowed(game)
+    moments = module.review(settings_of(game), game.actions, seat)
+    points = _overall(module, game, moments, seat)["points"]
+    return points + [{"evidence": e, "text": t} for e, t in module.style_points(settings_of(game), game.actions, seat)]
+
+
 def _steps_text(module, indexes):
     steps = [str(i + 1) for i in indexes]
     first = f"第一次在第 {steps[0]} {module.step_word}"
@@ -1363,6 +1374,8 @@ def ask_points_by_rules(module, game, question, at, seat):
             refs.append(n)
     for n in refs[:2]:
         points += [p for p in action_points(module, game, n, seat) if p not in points]  # 認輸那一步終局已附上
+    if WHOLE_GAME_RE.search(question):
+        points += [p for p in overview_points(module, game, seat) if p not in points]
     return points
 
 

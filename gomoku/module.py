@@ -244,6 +244,9 @@ play_move 的 reason 用繁體中文一句話說明為什麼下這裡，只能�
             m["best"] = engine.coord(*m["best"])
         return moments
 
+    def style_points(self, settings, actions, human_seat):
+        return engine.style_points([cell(a) for a in actions if a != RESIGN], human_seat, engine.Rules.of(settings))
+
     def explain_position(self, state, focus, next_action):
         return engine.explain_position(state.board, [cell(f) for f in focus],
                                        cell(next_action) if next_action and next_action != RESIGN else None, state.rules)
@@ -281,6 +284,8 @@ def find_threats(board, color, rules=engine.FREESTYLE):
             points.append((SOLVED, f"在搜尋範圍內已確認，如果輪到{name}下，{engine.vcf_text(name, line, board, c, rules)}。"))
         else:
             points.append((ESTIMATE, f"在搜尋範圍內未發現{name}有連續衝四。"))
+    if engine.dead_board_fact(board):
+        points.append(engine.dead_board_fact(board))
     return points
 
 
@@ -289,6 +294,8 @@ def list_candidates(board, color, rules=engine.FREESTYLE):
     items = "；".join(f"{i}. {engine.coord(*p)}（{'、'.join(engine.move_labels(board, *p, color, rules))}）"
                      for i, p in enumerate(ranked, 1))
     points = [(ESTIMATE, f"引擎候選（依評估由好到壞）：{items}。")]
+    if engine.dead_board_fact(board):
+        points.append(engine.dead_board_fact(board))
     banned = engine.forbidden_points(board, rules) if color == engine.BLACK else []
     if banned:
         points.append((RULE, f"黑棋現在的禁手點（不能下）：{'、'.join(engine.coord(*p) for p in banned)}。"))

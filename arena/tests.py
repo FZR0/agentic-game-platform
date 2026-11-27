@@ -79,7 +79,18 @@ class NarrationCheckTests(SimpleTestCase):
         self.assertIsNotNone(narrator.check_text("H9 一定是最好的一手。", self.FACTS, GOMOKU.coord_re))
 
     def test_accepts_faithful_text(self):
-        self.assertIsNone(narrator.check_text("依引擎估計，我下在 H9 是為了形成橫向活三。", self.FACTS, GOMOKU.coord_re))
+        self.assertIsNone(narrator.check_text("大致來看，我下在 H9 是為了形成橫向活三。", self.FACTS, GOMOKU.coord_re))
+
+    def test_quoting_the_engine_is_not_a_reason(self):
+        # 2026-11-27 使用者：「AI 後期的下棋和問題檢查都說依照引擎，看起來只是在抄引擎給的思路，而非 AI 在思考」。
+        # 第 295 盤後半盤 AI 每手都寫「根據引擎評估，O2 是目前最好的候選點」。說明要講局面上的理由，
+        # 提到引擎就不採用（改顯示畫面上已換成白話的事實）；提示也不再要求寫「依引擎估計」
+        for text in ("根據引擎評估，H9 是目前最好的候選點。", "依引擎估計，我下在 H9 是為了形成橫向活三。"):
+            self.assertIsNotNone(narrator.check_text(text, self.FACTS, GOMOKU.coord_re), text)
+        prompt = narrator.request_body(self.FACTS, narrator.model_config(), "五子棋")["messages"][0]["content"]
+        self.assertNotIn("依引擎估計", prompt)
+        self.assertIn("不要提到引擎", prompt)
+        self.assertIn("大致來看", prompt)
 
     def test_the_solved_wording_needs_a_solved_fact(self):
         # 2026-11-16 情境測試：約 9% 的說明把「在搜尋範圍內已確認」寫在條件式計算或引擎估計上
@@ -107,7 +118,7 @@ class NarrationCheckTests(SimpleTestCase):
     def test_a_hedge_is_not_a_certainty(self):
         # 2026-11-16 情境測試：對手觀察的建議寫「他不一定找得到殺法」，模型照著說卻被當成「一定」擋下。
         # 「不一定」正是估計該有的保留說法；「一定」照樣要擋
-        self.assertIsNone(narrator.check_text("依引擎估計，H9 不一定是最好的一手。", self.FACTS, GOMOKU.coord_re))
+        self.assertIsNone(narrator.check_text("大致來看，H9 不一定是最好的一手。", self.FACTS, GOMOKU.coord_re))
         self.assertIsNotNone(narrator.check_text("H9 不錯，一定能贏。", self.FACTS, GOMOKU.coord_re))
 
     def test_thinking_only_model_is_called_with_thinking_on(self):
@@ -915,6 +926,23 @@ class RequestAgentTests(TestCase):
         self.assertEqual([t.split("：")[1].split("（")[0] for t in ranked[1:]], ["第 6 手", "第 5 手", "第 3 手", "第 1 手"])
         # 整體評論列出的三步也是最嚴重的三步，不是最早的三步
         self.assertIn("「目數損失」4 次（第 6 手、第 5 手、第 3 手）", " ".join(p["text"] for p in overall["points"]))
+
+    def test_strategy_questions_get_the_whole_game(self):
+        # 2026-11-27 使用者問「你認為我下棋的策略是甚麼」，AI 只查了正在看的那一步，回答「引擎目前無法判斷你的策略」。
+        # game_overview 給整體評論的事實加上整盤下法的統計；AI 助理沒查完時，備用的查法看到「策略」也要給
+        game = Game.objects.create(game_type="gomoku", human_seat=1, actions=["H8", "H9", "I8", "I9", "J8", "J9"])
+        question = "你認為我下棋的策略是甚麼"
+        style = "你（黑棋）這盤下了 3 手：自己形成活三以上的進攻手 1 手"
+        with patch("arena.orchestrator._chat", side_effect=scripted([("game_overview", {})])), \
+                patch("arena.narrator._ask_ollama", return_value="重點：還可以。\n說明：開局常見。"):
+            r = self.post(f"/api/gomoku/games/{game.id}/ask/", {"question": question, "at": 2}).json()
+        texts = " ".join(p["text"] for p in r["facts"]["points"])
+        self.assertIn("這盤一共 6 手", texts)
+        self.assertIn(style, texts)
+        with patch("arena.orchestrator._chat", side_effect=OSError("timed out")), \
+                patch("arena.narrator._ask_ollama", return_value="重點：還可以。\n說明：開局常見。"):
+            r = self.post(f"/api/gomoku/games/{game.id}/ask/", {"question": question, "at": 2}).json()
+        self.assertIn(style, " ".join(p["text"] for p in r["facts"]["points"]))
 
     def test_asking_about_an_ai_move_shows_what_the_ai_looked_up(self):
         # 2026-11-19 情境測試：撲克問「AI 第 23 手的想法」只拿到「它跟注了」一則，答不出 AI 用了什麼假設。

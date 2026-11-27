@@ -10,7 +10,7 @@ from arena.models import AiNote, Game
 
 from . import engine
 from .engine import BLACK, WHITE, RULE, SOLVED, ESTIMATE
-from .module import MODULE, list_candidates
+from .module import MODULE, find_threats, list_candidates
 
 
 def at(name):
@@ -276,6 +276,51 @@ class ReviewTests(SimpleTestCase):
                 flagged = [(m["index"] + 1, m["type"]) for m in engine.review(moves, color)
                            if m["index"] >= len(opening)]
                 self.assertEqual(flagged, [], f"開局 {opening}，{engine.COLOR_NAMES[color]}被誤判的手數")
+
+
+class WholeGameFactsTests(SimpleTestCase):
+    """2026-11-27 使用者回報第 295 盤（下滿 225 手的和局）：後半盤 AI 每手都寫「根據引擎評估，O2 是目前最好的候選點」，
+    問「你認為我下棋的策略是什麼」只得到「引擎目前無法判斷你的策略」。"""
+
+    @staticmethod
+    def dead_board(*empty):
+        # 每條線上同色最多連兩顆的下滿棋盤，再空出幾格：任何一段 5 格都有黑有白，雙方都不可能再連成五子
+        b = [[BLACK if (x // 2 + y) % 2 == 0 else WHITE for x in range(engine.SIZE)] for y in range(engine.SIZE)]
+        for name in empty:
+            x, y = at(name)
+            b[y][x] = engine.EMPTY
+        return b
+
+    def test_a_point_where_nobody_can_make_five_says_so(self):
+        # 後半盤每個點都寫「延伸佈局」，AI 只能照抄第一名；這種點要照實寫出「已經連不成五子」
+        board = self.dead_board("H8", "A1")
+        self.assertEqual(engine.move_labels(board, *at("H8"), WHITE), ["這裡雙方都已經連不成五子"])
+        self.assertNotIn("這裡雙方都已經連不成五子", engine.move_labels(board_with(["H8"]), *at("I8"), WHITE))
+
+    def test_a_board_where_nobody_can_make_five_is_called_a_draw(self):
+        # 第 295 盤第 190 手起雙方都連不成五：AI 查威脅、看候選、提問時都要知道這盤已經是和局，下哪裡都一樣
+        fact = (RULE, "棋盤上已經沒有任何一段能讓黑棋或白棋連成五子：這盤會是和局，接下來下在哪裡都不會改變結果。")
+        board = self.dead_board("H8", "A1")
+        self.assertEqual(engine.dead_board_fact(board), fact)
+        self.assertIn(fact, find_threats(board, WHITE))
+        self.assertIn(fact, list_candidates(board, WHITE))
+        self.assertIn({"evidence": RULE, "text": fact[1]}, engine.explain_position(board))
+        # 還有任何一段能連五就不能這樣說
+        self.assertIsNone(engine.dead_board_fact(self.dead_board("A1", "B1", "C1", "D1", "E1")))
+        self.assertIsNone(engine.dead_board_fact(engine.new_board()))
+
+    def test_style_counts_attacking_and_defending_moves(self):
+        # 問策略、風格時，偏向進攻或防守由程式依次數判斷（模型不自己評斷數字）
+        names = ["H2", "A15", "I2", "O15", "J2", "K2", "H8", "A11", "I8", "O11", "J8", "A5", "H14", "O5", "I14",
+                 "O1", "J14"]
+        moves = [at(n) for n in names]
+        black = " ".join(t for _, t in engine.style_points(moves, BLACK))
+        self.assertIn("你（黑棋）這盤下了 9 手：自己形成活三以上的進攻手 3 手，擋住對方眠三以上的防守手 0 手", black)
+        self.assertIn("活三 3 次", black)
+        self.assertIn("偏向進攻", black)
+        white = " ".join(t for _, t in engine.style_points(moves, WHITE))
+        self.assertIn("你（白棋）這盤下了 8 手：自己形成活三以上的進攻手 0 手，擋住對方眠三以上的防守手 1 手", white)
+        self.assertIn("沒有明顯偏向哪一邊", white)  # 次數太少不下結論
 
 
 @override_settings(OLLAMA_URL="http://127.0.0.1:9", OLLAMA_TIMEOUT=2)

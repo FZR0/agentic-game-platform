@@ -11,6 +11,10 @@ from . import narrator
 from .base import ESTIMATE, as_facts
 
 MIN_STEPS, MAX_STEPS = 2, 10  # 「Agent 每手查證次數」設定的允許範圍
+# play_move 的理由就是畫面上 AI 這一手的重點句。2026-11-27 使用者：AI 後期每手都寫「根據引擎評估，O2 是目前最好的候選點」，
+# 看起來只是在抄引擎。理由要講局面上的作用；寫到「引擎」的理由不採用（narrator.check_text），只顯示查證過程
+REASON_RULE = ("play_move 的 reason 要寫這一手在局面上的作用（形成或擋住了什麼、之後會怎麼發展），"
+               "不要寫「引擎推薦」「候選第一」「評估最高」這類引用工具的話；估計的部分用「大致來看」。")
 UNREACHABLE = "無法呼叫模型"  # 呼叫 Ollama 出錯時的代下原因；測速靠它分辨「模型答不出」和「根本呼叫不到」
 
 
@@ -42,7 +46,7 @@ def agent_move(module, state, actions, model=None, steps=None):
     run = {"model": config["name"], "steps": steps, "calls": 0, "model_seconds": 0.0, "rejected": 0}
 
     seat = module.to_move(state)
-    messages = [{"role": "system", "content": module.agent_prompt(seat)},
+    messages = [{"role": "system", "content": f"{module.agent_prompt(seat)}\n{REASON_RULE}"},
                 {"role": "user", "content": module.board_text(state, actions)}]
     play_only = [t for t in module.tools if t["function"]["name"] == "play_move"]
     points, done = [], []
